@@ -20,6 +20,7 @@
 #![cfg(target_os = "linux")]
 
 use crate::support;
+use crate::support::git;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -77,22 +78,6 @@ struct Iso {
     s2: SandboxRecord,
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@t")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@t")
-        .output()?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).into_owned().into())
-    }
-}
-
 fn clone_repo(data: &Path, sandbox: &str) -> TestResult {
     let origin = data.join(format!("origin-{sandbox}.git"));
     std::fs::create_dir_all(&origin)?;
@@ -118,7 +103,8 @@ fn clone_repo(data: &Path, sandbox: &str) -> TestResult {
             &origin.to_string_lossy(),
             &repo.to_string_lossy(),
         ],
-    )
+    )?;
+    Ok(())
 }
 
 fn ensure_base(data: &Path, exe: &Path) -> TestResult {

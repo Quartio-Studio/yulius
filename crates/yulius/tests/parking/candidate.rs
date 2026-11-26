@@ -250,7 +250,7 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
         // fake agent writes no record that closes the turn.
         assert!(told.iter().any(|(task, _)| task == &id), "{told:?}");
         {
-            super::wait_for(
+            crate::support::eventually(
                 "the owner's answer to the notice",
                 Duration::from_secs(30),
                 || {
@@ -270,7 +270,7 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             )
             .await?;
             let rounds = app.runtime(&id).transcript_rounds();
-            super::wait_for(
+            crate::support::eventually(
                 "the answer read to its end",
                 Duration::from_secs(30),
                 || {
@@ -290,7 +290,7 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
             // A round begun since has ended any probe that still saw the owner working; then
             // the count is known again before anything is counted.
             let rounds = app.runtime(&id).transcript_rounds();
-            super::wait_for(
+            crate::support::eventually(
                 "a round of the owner at rest",
                 Duration::from_secs(30),
                 || {
@@ -382,7 +382,7 @@ fn a_live_owner_with_a_pending_candidate_is_shown_waiting_not_done() -> TestResu
         };
         tokio::time::timeout(Duration::from_secs(10), reading.notified()).await?;
         let rounds = app.runtime(&id).transcript_rounds();
-        super::wait_for(
+        crate::support::eventually(
             "a watcher round during the pass",
             // Below the hold's own 15 s bound, so a starved run names this wait.
             Duration::from_secs(10),
@@ -522,7 +522,7 @@ fn final_notice_verification_keeps_the_session_when_the_candidate_applies_again(
         let peer = queued_candidate_peer(app, &owner).await?;
         let queued = app.deps.store.task(&peer).await?.ok_or("queued")?;
         remote.remote.lock().map_err(|_| "origin")?.take();
-        let base = crate::pr_watch::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
+        let base = crate::support::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
         remote.pulls.lock().map_err(|_| "pulls")?[0].base_sha = "moved-base".into();
         let (checking, release) =
             super::pause_watch_or_queue(super::Point::ArmedNoticePublicationRead, &id);
@@ -564,7 +564,7 @@ fn a_candidate_refresh_waits_for_the_launch_to_reserve_its_verified_slot() -> Te
             .await?;
         let peer = queued_candidate_peer(app, &owner).await?;
         remote.remote.lock().map_err(|_| "origin")?.take();
-        let base = crate::pr_watch::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
+        let base = crate::support::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
         {
             let mut pulls = remote.pulls.lock().map_err(|_| "pulls")?;
             pulls[0].state = "closed".into();
@@ -686,7 +686,7 @@ fn a_rearm_on_an_earlier_capacity_row_keeps_a_queued_launch_in_line() -> TestRes
             yulius_app::model::TaskMode::Prompt,
         )
         .await?;
-        super::wait_for("second owner idle", Duration::from_secs(20), || async {
+        crate::support::eventually("second owner idle", Duration::from_secs(20), || async {
             super::status_of(app, &second).await.1 == Some(Activity::Waiting)
         })
         .await?;
@@ -782,7 +782,7 @@ async fn candidate_peer(
 }
 
 fn replacement_request(owner: &yulius_app::model::TaskRecord) -> Result<Vec<u8>, Error> {
-    let head = crate::pr_watch::git(
+    let head = crate::support::git(
         Path::new(owner.worktree_path.as_deref().ok_or("worktree")?),
         &["rev-parse", "HEAD"],
     )?;
@@ -809,11 +809,11 @@ fn the_watch_releases_the_achieved_owners_slot_after_external_pr_closure() -> Te
             Some("Waiting for a free session: 1 of 1 in use"),
         );
         remote.remote.lock().map_err(|_| "remote")?.take();
-        let head = crate::pr_watch::git(
+        let head = crate::support::git(
             Path::new(task.worktree_path.as_deref().ok_or("tree")?),
             &["rev-parse", "HEAD"],
         )?;
-        let base = crate::pr_watch::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
+        let base = crate::support::git(&data.join("origin.git"), &["rev-parse", "dev"])?;
         {
             let mut pulls = remote.pulls.lock().map_err(|_| "PR")?;
             pulls[0].state = "closed".into();
@@ -965,10 +965,10 @@ fn a_published_repair_on_the_same_base_releases_the_candidate_owner() -> TestRes
     with_idle_candidate(async |_, app, remote, id, _| {
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
         let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
-        crate::pr_watch::git(tree, &["commit", "--allow-empty", "-qm", "Repair latency"])?;
-        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        crate::support::git(tree, &["commit", "--allow-empty", "-qm", "Repair latency"])?;
+        let head = crate::support::git(tree, &["rev-parse", "HEAD"])?;
         let branch = task.branch.as_deref().ok_or("task branch")?;
-        crate::pr_watch::git(
+        crate::support::git(
             tree,
             &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
         )?;
@@ -1537,7 +1537,7 @@ fn a_closed_owner_can_arm_during_a_capacity_delayed_continue_after_a_superseded_
                 assert!(result.is_ok(), "{result:?}");
             },
         );
-        super::wait_for("the superseding close", Duration::from_secs(30), || async {
+        crate::support::eventually("the superseding close", Duration::from_secs(30), || async {
             if super::status_of(app, &id).await.0 == Some(TaskStatus::Running) {
                 app.park_idle_sessions_now().await;
             }
@@ -1611,7 +1611,7 @@ fn continued_after_capacity_stop(after_reap: bool) -> TestResult {
                 },
             );
         }
-        super::wait_for("the park before Stop", Duration::from_secs(20), || async {
+        crate::support::eventually("the park before Stop", Duration::from_secs(20), || async {
             app.park_idle_sessions_now().await == 1
         })
         .await?;
@@ -1648,7 +1648,7 @@ fn continue_before_old_park_settles(queue: bool) -> TestResult {
                 yulius_app::model::TaskMode::Prompt,
             )
             .await?;
-            super::wait_for(
+            crate::support::eventually(
                 "the occupied session slot",
                 Duration::from_secs(30),
                 || async { super::screen(app, &peer).contains("ECHO: Use the available slot") },
@@ -1682,7 +1682,7 @@ fn continue_before_old_park_settles(queue: bool) -> TestResult {
                 assert!(result.is_ok(), "{result:?}");
             },
         );
-        super::wait_for(
+        crate::support::eventually(
             "the park with a capacity hold",
             Duration::from_secs(20),
             || async { app.park_idle_sessions_now().await == 1 },
@@ -1914,7 +1914,7 @@ fn capacity_pause_merge(parking: bool) -> TestResult {
         let ctx = pending_owner_merge(app, remote, &id, &head).await?;
         let release = if parking {
             let (taken, release) = super::pause_watch_or_queue(super::Point::RunEndTaken, &id);
-            super::wait_for(
+            crate::support::eventually(
                 "the run to commit its park",
                 Duration::from_secs(10),
                 || async { app.park_idle_sessions_now().await == 1 },
@@ -1931,7 +1931,7 @@ fn capacity_pause_merge(parking: bool) -> TestResult {
         let armed = app.merge_state_for_person(&ctx, id.as_str()).await;
         if let Some(release) = release {
             release.notify_one();
-            super::wait_for(
+            crate::support::eventually(
                 "the paused ending run to close",
                 Duration::from_secs(10),
                 || async { super::status_of(app, &id).await.0 == Some(TaskStatus::Closed) },
@@ -1972,7 +1972,7 @@ async fn expect_park_deferred(
         },
     );
     let started = std::cell::Cell::new(0);
-    super::wait_for(
+    crate::support::eventually(
         "the original owner's final park decision",
         Duration::from_secs(10),
         || async {
@@ -2045,7 +2045,7 @@ fn a_parked_candidate_owner_stays_parked_until_a_person_messages_it() -> TestRes
             &json!({"task_id": id.as_str(), "text": "Please continue the investigation"}),
         )
         .await?;
-        super::wait_for(
+        crate::support::eventually(
             "the person's message in the original session",
             Duration::from_secs(60),
             || async { super::screen(app, id).contains("Please continue the investigation") },
@@ -2544,11 +2544,11 @@ async fn seed_candidate(
     let (id, caller) = answered(&app, data).await?;
     let task = app.deps.store.task(&id).await?.ok_or("task")?;
     let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
-    crate::pr_watch::git(&data.join("seed"), &["push", "-q", "origin", "main:dev"])?;
-    crate::pr_watch::git(tree, &["fetch", "-q", "origin"])?;
+    crate::support::git(&data.join("seed"), &["push", "-q", "origin", "main:dev"])?;
+    crate::support::git(tree, &["fetch", "-q", "origin"])?;
     std::fs::write(tree.join("latency-check"), b"search limit")?;
-    crate::pr_watch::git(tree, &["add", "latency-check"])?;
-    crate::pr_watch::git(tree, &["commit", "-qm", "Check latency"])?;
+    crate::support::git(tree, &["add", "latency-check"])?;
+    crate::support::git(tree, &["commit", "-qm", "Check latency"])?;
     let head = app
         .deps
         .git
@@ -2556,7 +2556,7 @@ async fn seed_candidate(
         .await?
         .ok_or("head")?;
     let branch = task.branch.as_deref().ok_or("task branch")?;
-    crate::pr_watch::git(
+    crate::support::git(
         tree,
         &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
     )?;
@@ -2642,7 +2642,7 @@ async fn seed_candidate(
         "  stderr ───\n",
         "    search took 292.1 ms, limit 200 ms\n",
     );
-    let integrated = crate::pr_watch::git(
+    let integrated = crate::support::git(
         tree,
         &[
             "commit-tree",
@@ -2724,8 +2724,8 @@ async fn seed_candidate(
         .await?;
     // A different train tested the same tree. Only the queue's accepted
     // singleton decision connects that source run to this PR owner.
-    let base = crate::pr_watch::git(tree, &["rev-parse", "origin/dev"])?;
-    let tested_tree = crate::pr_watch::git(tree, &["rev-parse", "HEAD^{tree}"])?;
+    let base = crate::support::git(tree, &["rev-parse", "origin/dev"])?;
+    let tested_tree = crate::support::git(tree, &["rev-parse", "HEAD^{tree}"])?;
     app.deps
     .store
     .insert_span(&yulius_app::stages::NewSpan {
@@ -2817,7 +2817,7 @@ async fn restore_owner(
     // idle shells (unknown until then) and replays the transcript to its end, publishing and
     // settling the activity on its own clock. A test sees the owner after that round, not
     // racing it (SPEC-640 FLK-001).
-    super::wait_for(
+    crate::support::eventually(
         "the reattached transcript replay",
         Duration::from_secs(30),
         || async { cold.runtime(id).transcript_rounds() >= 2 },
@@ -3308,11 +3308,11 @@ async fn check_live_queue(
             let branch = task.branch.as_deref().ok_or("branch")?;
             let other = data.join("repair-clone");
             let tree = if matches!(case, ColdCandidate::ExternalRepair) {
-                crate::pr_watch::git(
+                crate::support::git(
                     tree,
                     &["clone", "-q", ".", other.to_str().ok_or("clone path")?],
                 )?;
-                crate::pr_watch::git(
+                crate::support::git(
                     &other,
                     &[
                         "remote",
@@ -3325,7 +3325,7 @@ async fn check_live_queue(
             } else {
                 tree
             };
-            crate::pr_watch::git(
+            crate::support::git(
                 tree,
                 &[
                     "commit",
@@ -3335,21 +3335,21 @@ async fn check_live_queue(
                     "Repair the failed check",
                 ],
             )?;
-            crate::pr_watch::git(
+            crate::support::git(
                 tree,
                 &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
             )?;
             if matches!(case, ColdCandidate::ExternalRepair) {
                 let checkout = Path::new(task.worktree_path.as_deref().ok_or("owner checkout")?);
                 assert_eq!(
-                    crate::pr_watch::git(
+                    crate::support::git(
                         checkout,
                         &["rev-parse", &format!("refs/remotes/origin/{branch}")]
                     )?,
                     head
                 );
                 assert_ne!(
-                    crate::pr_watch::git(&origin, &["rev-parse", &format!("refs/heads/{branch}")])?,
+                    crate::support::git(&origin, &["rev-parse", &format!("refs/heads/{branch}")])?,
                     head
                 );
             }
@@ -3691,17 +3691,17 @@ async fn check_recorded_decision(
         let seed = data.join("seed");
         for (checkout, contents) in [(tree, "replacement"), (seed.as_path(), "integration")] {
             std::fs::write(checkout.join("replacement-check"), contents)?;
-            crate::pr_watch::git(checkout, &["add", "replacement-check"])?;
-            crate::pr_watch::git(checkout, &["commit", "-qm", contents])?;
+            crate::support::git(checkout, &["add", "replacement-check"])?;
+            crate::support::git(checkout, &["commit", "-qm", contents])?;
         }
-        crate::pr_watch::git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
+        crate::support::git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
         let branch = task.branch.as_deref().ok_or("branch")?;
-        crate::pr_watch::git(
+        crate::support::git(
             tree,
             &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
         )?;
-        crate::pr_watch::git(tree, &["fetch", "-q", "origin"])?;
-        let new_head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        crate::support::git(tree, &["fetch", "-q", "origin"])?;
+        let new_head = crate::support::git(tree, &["rev-parse", "HEAD"])?;
         set_pull_head(&remote, 1481, &new_head)?;
         let news = Box::pin(cold.watch_prs(&bounds)).await;
         let repeated = Box::pin(cold.watch_prs(&bounds)).await;
@@ -3842,7 +3842,7 @@ async fn check_recorded_decision(
     if matches!(case, ColdCandidate::Stall) {
         // A later stall check-in requires an idle turn. The first watch returns once its
         // diagnosis is typed, before the real PTY agent necessarily finishes answering it.
-        super::wait_for(
+        crate::support::eventually(
             "the candidate diagnosis to be answered",
             Duration::from_secs(30),
             || async {
@@ -3902,13 +3902,13 @@ async fn check_changed_owner_inputs(
     let origin = data.join("origin.git");
     // The remote base advanced while the daemon's origin/dev still names the tested base.
     let seed = data.join("seed");
-    let base = crate::pr_watch::git(&origin, &["rev-parse", "dev"])?;
+    let base = crate::support::git(&origin, &["rev-parse", "dev"])?;
     std::fs::write(seed.join("changed-base"), b"new integration tree")?;
-    crate::pr_watch::git(&seed, &["add", "changed-base"])?;
-    crate::pr_watch::git(&seed, &["commit", "-qm", "Advance integration"])?;
-    crate::pr_watch::git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
+    crate::support::git(&seed, &["add", "changed-base"])?;
+    crate::support::git(&seed, &["commit", "-qm", "Advance integration"])?;
+    crate::support::git(&seed, &["push", "-q", "origin", "HEAD:dev"])?;
     let obsolete = Box::pin(cold.watch_prs(&bounds)).await;
-    crate::pr_watch::git(&origin, &["update-ref", "refs/heads/dev", &base])?;
+    crate::support::git(&origin, &["update-ref", "refs/heads/dev", &base])?;
     assert!(
         obsolete.is_empty(),
         "superseded integration tree: {obsolete:?}"

@@ -6,12 +6,12 @@
 //! new server releases it; the session is the same process, never respawned.
 
 use crate::support;
+use crate::support::{eventually, git};
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use support::TestResult;
 use support::agents::{FakeAgentHarness, FakeAgentOptions};
@@ -83,21 +83,6 @@ async fn start(
         .into_make_service_with_connect_info::<SocketAddr>();
     tokio::spawn(async move { axum::serve(listener, internal).await });
     Ok((app, port))
-}
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
 }
 
 /// The superadmin, a sandbox cloned from a bare origin and a Claude account.
@@ -184,21 +169,6 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserRecord), BoxErro
     Ok((sandbox.id, user))
 }
 
-async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -244,16 +214,16 @@ fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() ->
             })
             .await?;
         let id = task.id;
-        wait_for("the session", Duration::from_secs(60), || async {
+        eventually("the session", Duration::from_secs(60), || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&id, b"write the parser\r").await?;
-        wait_for("the first turn", Duration::from_secs(60), || async {
+        eventually("the first turn", Duration::from_secs(60), || async {
             screen(&app, &id).contains("ECHO: write the parser")
         })
         .await?;
-        wait_for("the turn end", Duration::from_secs(30), || async {
+        eventually("the turn end", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .task(&id)
@@ -317,7 +287,7 @@ fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() ->
         helper.report(&install, HelperState::Done, "succeeded", None);
         let _ = app.update_round().await;
         let _ = app.update_round().await;
-        wait_for("the held prompt", Duration::from_secs(30), || async {
+        eventually("the held prompt", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: now add tests")
         })
         .await?;
@@ -329,7 +299,7 @@ fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() ->
         assert_eq!(attempts.len(), 1, "the same session, never respawned");
         assert_eq!(attempts[0].child_pid, pid);
         app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
+        eventually("the stop", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .task(&id)

@@ -1429,8 +1429,8 @@ every task appends to (the changes log, the decision index) merge by union in ev
 from Yulius's block in the clone's `info/attributes`; Yulius merges the integration branch
 locally before GitHub merges (SPEC-050 DLV-203), so GitHub never sees those conflicts. A review
 carries over Git's own merges of the integration branch, checked with `git merge-tree`. Yulius's own
-decision index gives each new number a separate insertion point under
-[decision 0403](decisions/0403-reserve-edit-locations-in-the-decision-index.md).
+decision index is generated from the records (`python3 scripts/check_repository.py
+--decision-index`), and its repository check asks for a new run when a merge left it stale.
 
 ## The discipline gate
 

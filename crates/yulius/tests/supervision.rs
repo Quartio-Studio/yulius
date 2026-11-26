@@ -4,6 +4,7 @@
 //! AC-RUN-1..4).
 
 use crate::support;
+use crate::support::{eventually, git};
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -103,25 +104,6 @@ fn build_custom(
     Ok(App::new(config, deps))
 }
 
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!(
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        )
-        .into());
-    }
-    Ok(())
-}
-
 /// Bare origin with one commit on `main`, cloned as the sandbox repository.
 pub(crate) fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
     seed_repo_with(data, sandbox, &[])
@@ -217,21 +199,6 @@ pub(crate) async fn seed_records(
     Ok((sandbox.id, user.id))
 }
 
-pub(crate) async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 pub(crate) async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
     Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
 }
@@ -304,7 +271,7 @@ fn runs_survive_a_server_restart_and_stop_cleanly() -> TestResult {
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Echo survives restart").await?;
-        let banner = wait_for("the fake agent banner", Duration::from_secs(30), || {
+        let banner = eventually("the fake agent banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await;
@@ -348,12 +315,12 @@ fn runs_survive_a_server_restart_and_stop_cleanly() -> TestResult {
         );
         let shim = std::fs::read_to_string(data.join("runtime/gh/gh"))?;
         assert!(shim.starts_with("#!/bin/sh\n# Yulius gh shim"), "{shim}");
-        wait_for("the secret env report", Duration::from_secs(10), || {
+        eventually("the secret env report", Duration::from_secs(10), || {
             screen_contains(&app, &id, "ENV YULIUS_TASK_TOKEN=set")
         })
         .await?;
         app.send_input(&id, b"hello yulius\r").await?;
-        wait_for("the echo", Duration::from_secs(10), || {
+        eventually("the echo", Duration::from_secs(10), || {
             screen_contains(&app, &id, "ECHO: hello yulius")
         })
         .await?;
@@ -387,19 +354,19 @@ fn runs_survive_a_server_restart_and_stop_cleanly() -> TestResult {
             "the snapshot restores the screen"
         );
         app.send_input(&task_id, b"again\r").await?;
-        wait_for("the echo after restart", Duration::from_secs(10), || {
+        eventually("the echo after restart", Duration::from_secs(10), || {
             screen_contains(&app, &task_id, "ECHO: again")
         })
         .await?;
 
         // A crashing agent ends the run with its exit code.
         let crash = new_task(&app, &sandbox, &user, "Crash exits").await?;
-        wait_for("the second banner", Duration::from_secs(30), || {
+        eventually("the second banner", Duration::from_secs(30), || {
             screen_contains(&app, &crash, "FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&crash, b"/crash\r").await?;
-        wait_for("the crash outcome", Duration::from_secs(15), || async {
+        eventually("the crash outcome", Duration::from_secs(15), || async {
             task(&app, &crash).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
@@ -410,7 +377,7 @@ fn runs_survive_a_server_restart_and_stop_cleanly() -> TestResult {
 
         // Stop ends the first run and releases its process.
         app.stop_task_now(&task_id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
+        eventually("the stop", Duration::from_secs(30), || async {
             task(&app, &task_id)
                 .await
                 .is_ok_and(|t| matches!(t.status, TaskStatus::Stopped(_)))
@@ -442,7 +409,7 @@ fn real_claude_tui_reaches_the_prompt_inside_ptyhost() -> TestResult {
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Live TUI").await?;
-        let ready = wait_for(
+        let ready = eventually(
             "the Claude Code prompt",
             Duration::from_secs(60),
             || async {
@@ -528,7 +495,7 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
         let budget = app.agent_budget();
         assert_eq!(budget.cpus, app.capacity().cpus.min(3));
         let id = new_task(&app, &sandbox, &user, "Budget").await?;
-        wait_for("the environment", Duration::from_secs(60), || {
+        eventually("the environment", Duration::from_secs(60), || {
             screen_contains(&app, &id, "ENV CARGO_BUILD_JOBS=")
         })
         .await?;
@@ -554,7 +521,7 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
             &["pull", "-q", "--ff-only"],
         )?;
         let id = new_task(&app, &sandbox, &user, "Default budget").await?;
-        wait_for("the environment", Duration::from_secs(60), || {
+        eventually("the environment", Duration::from_secs(60), || {
             screen_contains(&app, &id, "ENV CARGO_BUILD_JOBS=")
         })
         .await?;
@@ -606,7 +573,7 @@ fn goal_mode_launches_the_session_with_its_goal() -> TestResult {
             })
             .await?;
         let id = record.id;
-        wait_for("the goal command", Duration::from_secs(60), || {
+        eventually("the goal command", Duration::from_secs(60), || {
             screen_contains(&app, &id, "ECHO: /goal Ship the widget")
         })
         .await?;
@@ -646,13 +613,13 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
         add_account(&app, "a-claude-2").await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Rotation").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
         // The switch may replace the screen before a poll sees the limit message.
-        wait_for(
+        eventually(
             "the limit or the switch",
             Duration::from_secs(30),
             || async {
@@ -666,7 +633,7 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
             },
         )
         .await?;
-        wait_for(
+        eventually(
             "the switch to another account",
             Duration::from_secs(90),
             || async {
@@ -691,7 +658,7 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
             !app.deps.store.switches(&id).await?.is_empty(),
             "decision recorded"
         );
-        wait_for("the resumed run", Duration::from_secs(30), || async {
+        eventually("the resumed run", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -714,7 +681,7 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
         assert!(window.resets_at.is_some(), "the reset time of the limit");
         // Routing skips the account until its reset: a new task starts on the other one.
         let next = new_task(&app, &sandbox, &user, "After the limit").await?;
-        wait_for("the next task's run", Duration::from_secs(30), || async {
+        eventually("the next task's run", Duration::from_secs(30), || async {
             !app.deps
                 .store
                 .attempts(&next)
@@ -773,12 +740,12 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
             })
             .await?
             .id;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&id, b"/exit\r").await?;
-        wait_for("the closed task", Duration::from_secs(20), || async {
+        eventually("the closed task", Duration::from_secs(20), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Closed)
@@ -804,7 +771,7 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
         // Continue: the same provider session resumes (TSK-007).
         app.start_run(&id, RunStart::Resume { prompt: None }, None)
             .await?;
-        wait_for("the continued run", Duration::from_secs(30), running(2)).await?;
+        eventually("the continued run", Duration::from_secs(30), running(2)).await?;
         let attempts = app.deps.store.attempts(&id).await?;
         assert_eq!(attempts[1].launch_kind, LaunchKind::Resume);
         assert!(attempts[0].provider_session_id.is_some());
@@ -826,7 +793,7 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
             Some("Continue the task exactly where you left off.".into()),
         )
         .await?;
-        wait_for("the switched run", Duration::from_secs(90), running(3)).await?;
+        eventually("the switched run", Duration::from_secs(90), running(3)).await?;
         let attempts = app.deps.store.attempts(&id).await?;
         assert_eq!(
             attempts[2].account_id.as_ref().map(AccountId::as_str),
@@ -911,7 +878,7 @@ fn a_session_that_ends_at_the_sandboxs_process_limit_says_so() -> TestResult {
             ("Out of memory", 0, 2, Some("memory")),
         ] {
             let id = new_task(&app, &sandbox, &user, title).await?;
-            wait_for("the banner", Duration::from_secs(30), || {
+            eventually("the banner", Duration::from_secs(30), || {
                 screen_contains(&app, &id, "FAKE-AGENT READY")
             })
             .await?;
@@ -924,7 +891,7 @@ fn a_session_that_ends_at_the_sandboxs_process_limit_says_so() -> TestResult {
             counting.set(before_hits + hits, before_kills + kills);
             // SIGABRT, as Bun aborts: the agent's shell signals the agent itself.
             app.send_input(&id, b"/sh kill -ABRT $PPID\r").await?;
-            wait_for("the abort", Duration::from_secs(15), || async {
+            eventually("the abort", Duration::from_secs(15), || async {
                 task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
             })
             .await?;
@@ -992,7 +959,7 @@ fn a_switch_that_cannot_start_leaves_the_running_session_alone() -> TestResult {
         add_account(&app, "a-claude-2").await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Over quota").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1048,7 +1015,7 @@ fn a_switch_that_cannot_start_leaves_the_running_session_alone() -> TestResult {
         refusing.0.store(false, std::sync::atomic::Ordering::SeqCst);
         app.switch_task_now(&id, Some(other), "manual", None)
             .await?;
-        wait_for("the switched run", Duration::from_secs(90), || async {
+        eventually("the switched run", Duration::from_secs(90), || async {
             app.deps
                 .store
                 .attempts(&id)
@@ -1078,7 +1045,7 @@ fn task_worktrees_guard_protected_branches_and_status_changes_reach_the_ui() -> 
         seed_repo(&data, &sandbox)?;
         let mut events = app.events.subscribe();
         let id = new_task(&app, &sandbox, &user, "Guarded").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1209,12 +1176,12 @@ fn live_runs_report_metrics_before_they_end() -> TestResult {
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Live metrics").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("live metrics", Duration::from_secs(30), || async {
+        eventually("live metrics", Duration::from_secs(30), || async {
             app.deps.store.task_metrics(&id).await.is_ok_and(|m| {
                 m.iter()
                     .any(|r| r.output_tokens.is_some_and(|t| t > 0) && r.turns == Some(1))
@@ -1258,12 +1225,12 @@ fn without_capacity_the_task_waits() -> TestResult {
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "No capacity").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("waiting for capacity", Duration::from_secs(60), || async {
+        eventually("waiting for capacity", Duration::from_secs(60), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
@@ -1292,14 +1259,14 @@ fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult 
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
-        wait_for("the first run", Duration::from_secs(30), || {
+        eventually("the first run", Duration::from_secs(30), || {
             screen_contains(&app, &first, "FAKE-AGENT READY")
         })
         .await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;
         assert_eq!(task(&app, &second).await?.status, TaskStatus::Queued);
         app.stop_task_now(&first).await?;
-        wait_for("the queued task to start", Duration::from_secs(60), || {
+        eventually("the queued task to start", Duration::from_secs(60), || {
             screen_contains(&app, &second, "FAKE-AGENT READY")
         })
         .await?;
@@ -1324,7 +1291,7 @@ fn a_done_task_frees_its_slot_for_a_queued_task() -> TestResult {
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
-        wait_for("the first run", Duration::from_secs(30), || {
+        eventually("the first run", Duration::from_secs(30), || {
             screen_contains(&app, &first, "FAKE-AGENT READY")
         })
         .await?;
@@ -1338,7 +1305,7 @@ fn a_done_task_frees_its_slot_for_a_queued_task() -> TestResult {
             .set_activity(&first, Some(Activity::Done), app.now())
             .await?;
         app.drain_queue().await;
-        wait_for("the queued task to start", Duration::from_secs(60), || {
+        eventually("the queued task to start", Duration::from_secs(60), || {
             screen_contains(&app, &second, "FAKE-AGENT READY")
         })
         .await?;
@@ -1375,7 +1342,7 @@ fn a_done_task_lets_its_subscription_go() -> TestResult {
             token: None,
         };
         let id = new_task(&app, &sandbox, &user, "Finished").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1442,7 +1409,7 @@ fn removing_a_subscription_closes_done_tasks_and_moves_working_ones() -> TestRes
         let first = new_task(&app, &sandbox, &user, "First").await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;
         for id in [&first, &second] {
-            wait_for("a run", Duration::from_secs(30), || {
+            eventually("a run", Duration::from_secs(30), || {
                 screen_contains(&app, id, "FAKE-AGENT READY")
             })
             .await?;
@@ -1468,7 +1435,7 @@ fn removing_a_subscription_closes_done_tasks_and_moves_working_ones() -> TestRes
         assert_eq!(task(&app, &first).await?.status, TaskStatus::Closed);
         assert!(app.deps.store.live_attempt(&first).await?.is_none());
         // The working one moves by itself after the answer: nothing is left, so it waits.
-        wait_for("the wait", Duration::from_secs(60), || async {
+        eventually("the wait", Duration::from_secs(60), || async {
             task(&app, &second)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
@@ -1502,14 +1469,14 @@ fn a_normal_exit_closes_the_task() -> TestResult {
         let sender = new_task(&app, &sandbox, &user, "Sender").await?;
         let recipient = new_task(&app, &sandbox, &user, "Recipient").await?;
         for id in [&sender, &recipient] {
-            wait_for("a banner", Duration::from_secs(30), || {
+            eventually("a banner", Duration::from_secs(30), || {
                 screen_contains(&app, id, "FAKE-AGENT READY")
             })
             .await?;
         }
         // A normal exit of the agent closes the task; no shell is spawned.
         app.send_input(&sender, b"/exit\r").await?;
-        wait_for("the closed sender", Duration::from_secs(20), || async {
+        eventually("the closed sender", Duration::from_secs(20), || async {
             task(&app, &sender)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Closed)
@@ -1561,7 +1528,7 @@ fn a_clean_exit_keeps_its_outcome_when_attempt_metadata_is_unreadable() -> TestR
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let sender = new_task(&app, &sandbox, &user, "Sender").await?;
-        wait_for("the sender's banner", Duration::from_secs(30), || {
+        eventually("the sender's banner", Duration::from_secs(30), || {
             screen_contains(&app, &sender, "FAKE-AGENT READY")
         })
         .await?;
@@ -1574,7 +1541,7 @@ fn a_clean_exit_keeps_its_outcome_when_attempt_metadata_is_unreadable() -> TestR
             1
         );
         app.send_input(&sender, b"/exit\r").await?;
-        wait_for("the task to finish", Duration::from_secs(20), || async {
+        eventually("the task to finish", Duration::from_secs(20), || async {
             task(&app, &sender)
                 .await
                 .is_ok_and(|t| t.status.is_resting())
@@ -1625,7 +1592,7 @@ fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
         add_account(&app, "a-claude-2").await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Proactive").await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1652,7 +1619,7 @@ fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
         );
         // The next turn ends: the session moves on.
         app.send_input(&id, b"next turn\r").await?;
-        wait_for("the proactive switch", Duration::from_secs(90), || async {
+        eventually("the proactive switch", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() >= 2 && attempts.last().is_some_and(|a| !a.state.is_terminal())
         })
@@ -1667,7 +1634,7 @@ fn usage_near_the_limit_rotates_at_the_turn_boundary() -> TestResult {
         assert_eq!(second.launch_kind, LaunchKind::Resume);
         assert_eq!(first.provider_session_id, second.provider_session_id);
         assert!(!app.deps.store.switches(&id).await?.is_empty());
-        wait_for("the resumed run", Duration::from_secs(30), || async {
+        eventually("the resumed run", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| t.status == TaskStatus::Running)
@@ -1731,7 +1698,7 @@ fn contained_tasks_cannot_read_other_sandboxes_or_the_data_directory() -> TestRe
         std::fs::create_dir_all(&other)?;
         std::fs::write(other.join("secret.txt"), "another sandbox's secret\n")?;
         let id = new_task(&app, &sandbox, &user, "Contained").await?;
-        wait_for("the contained banner", Duration::from_secs(30), || {
+        eventually("the contained banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1761,7 +1728,7 @@ fn contained_tasks_cannot_read_other_sandboxes_or_the_data_directory() -> TestRe
                 .await?;
             let screen = app.runtime(&id).hub.screen_text();
             let expected = expected.to_owned();
-            let ok = wait_for(&expected, Duration::from_secs(10), || {
+            let ok = eventually(&expected, Duration::from_secs(10), || {
                 screen_contains(&app, &id, &expected)
             })
             .await;
@@ -1828,7 +1795,7 @@ fn a_supertask_runs_alone_after_the_running_task() -> TestResult {
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let running = new_task(&app, &sandbox, &user, "Running").await?;
-        wait_for("the running task", Duration::from_secs(30), || {
+        eventually("the running task", Duration::from_secs(30), || {
             screen_contains(&app, &running, "FAKE-AGENT READY")
         })
         .await?;
@@ -1836,7 +1803,7 @@ fn a_supertask_runs_alone_after_the_running_task() -> TestResult {
         let after = new_task(&app, &sandbox, &user, "After").await?;
         app.drain_queue_now().await;
         for id in [&sup, &after] {
-            wait_for("the hold", Duration::from_secs(10), || async {
+            eventually("the hold", Duration::from_secs(10), || async {
                 task(&app, id)
                     .await
                     .is_ok_and(|t| t.status == TaskStatus::Queued)
@@ -1848,7 +1815,7 @@ fn a_supertask_runs_alone_after_the_running_task() -> TestResult {
             .await?;
         }
         stop_and_wait(&app, &running).await?;
-        wait_for("the supertask to run", Duration::from_secs(60), || {
+        eventually("the supertask to run", Duration::from_secs(60), || {
             screen_contains(&app, &sup, "FAKE-AGENT READY")
         })
         .await?;
@@ -1859,7 +1826,7 @@ fn a_supertask_runs_alone_after_the_running_task() -> TestResult {
             "the project waits for the supertask"
         );
         stop_and_wait(&app, &sup).await?;
-        wait_for("the waiting task to run", Duration::from_secs(60), || {
+        eventually("the waiting task to run", Duration::from_secs(60), || {
             screen_contains(&app, &after, "FAKE-AGENT READY")
         })
         .await?;
@@ -1884,7 +1851,7 @@ fn a_queued_supertask_takes_the_next_slot_first() -> TestResult {
         seed_repo(&data, &sandbox)?;
         let other = add_project(&app, &data).await?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
-        wait_for("the first run", Duration::from_secs(30), || {
+        eventually("the first run", Duration::from_secs(30), || {
             screen_contains(&app, &first, "FAKE-AGENT READY")
         })
         .await?;
@@ -1893,7 +1860,7 @@ fn a_queued_supertask_takes_the_next_slot_first() -> TestResult {
         assert_eq!(task(&app, &plain).await?.status, TaskStatus::Queued);
         assert_eq!(task(&app, &sup).await?.status, TaskStatus::Queued);
         stop_and_wait(&app, &first).await?;
-        wait_for(
+        eventually(
             "the supertask to take the slot",
             Duration::from_secs(60),
             || screen_contains(&app, &sup, "FAKE-AGENT READY"),
@@ -1906,7 +1873,7 @@ fn a_queued_supertask_takes_the_next_slot_first() -> TestResult {
             "queued first, but after the supertask"
         );
         stop_and_wait(&app, &sup).await?;
-        wait_for("the plain task to run", Duration::from_secs(60), || {
+        eventually("the plain task to run", Duration::from_secs(60), || {
             screen_contains(&app, &plain, "FAKE-AGENT READY")
         })
         .await?;
@@ -1932,7 +1899,7 @@ fn a_running_tasks_steps_follow_its_spec_without_a_turn_end() -> TestResult {
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_task(&app, &sandbox, &user, "Big scope").await?;
-        wait_for("the run", Duration::from_secs(30), || {
+        eventually("the run", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1970,7 +1937,7 @@ fn a_running_tasks_steps_follow_its_spec_without_a_turn_end() -> TestResult {
             worktree.join("docs/specs/big.md"),
             spec(&[("Part 1", true), ("Part 2", false)]),
         )?;
-        wait_for("the first plan", Duration::from_secs(30), || async {
+        eventually("the first plan", Duration::from_secs(30), || async {
             steps().await == [pair("Part 1", "done"), pair("Part 2", "pending")]
         })
         .await?;
@@ -1979,7 +1946,7 @@ fn a_running_tasks_steps_follow_its_spec_without_a_turn_end() -> TestResult {
             worktree.join("docs/specs/big.md"),
             spec(&[("Part 1", true), ("Part 2", false), ("Part 3", false)]),
         )?;
-        wait_for("the grown plan", Duration::from_secs(30), || async {
+        eventually("the grown plan", Duration::from_secs(30), || async {
             steps().await
                 == [
                     pair("Part 1", "done"),

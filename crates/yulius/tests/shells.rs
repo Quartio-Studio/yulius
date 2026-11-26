@@ -6,6 +6,8 @@
 //! AC-UI-7, AC-UI-8, HRN-002; F 2026-10-09).
 
 use crate::support;
+use crate::support::eventually;
+use std::future::ready;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -256,17 +258,6 @@ fn listed(resp: &support::Resp) -> Vec<(String, String)> {
 
 fn pid_alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
-}
-
-async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while tokio::time::Instant::now() < deadline {
-        if check() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
 }
 
 /// Host and child pids recorded by the ptyhost.
@@ -652,11 +643,11 @@ async fn scenario(f: &Fixture) -> TestResult {
             .iter()
             .any(|(id, _)| *id == closing)
     );
-    wait_for("the closed shell to exit", || {
-        !pid_alive(closing_child) && !pid_alive(closing_host)
+    eventually("the closed shell to exit", WAIT, || {
+        ready(!pid_alive(closing_child) && !pid_alive(closing_host))
     })
     .await?;
-    wait_for("its directory to go", || !closing_dir.exists()).await?;
+    eventually("its directory to go", WAIT, || ready(!closing_dir.exists())).await?;
     let again = call(
         &f.h.router,
         Method::DELETE,
@@ -693,9 +684,9 @@ async fn scenario(f: &Fixture) -> TestResult {
         tokio::time::timeout(WAIT, socket.next()).await?,
         Some(Ok(Message::Close(_))) | None
     ));
-    wait_for("the shell to end", || runtime.has_ended()).await?;
-    wait_for("the host and shell to exit", || {
-        !pid_alive(child_pid) && !pid_alive(host_pid)
+    eventually("the shell to end", WAIT, || ready(runtime.has_ended())).await?;
+    eventually("the host and shell to exit", WAIT, || {
+        ready(!pid_alive(child_pid) && !pid_alive(host_pid))
     })
     .await?;
     assert!(!run_dir.exists(), "run directory removed");
@@ -711,11 +702,13 @@ async fn scenario(f: &Fixture) -> TestResult {
     assert_eq!(f.h.app.sandbox_shells(&sid).len(), MAX_SHELLS_PER_SANDBOX);
 
     // Shells without viewers for a day are ended (injected clock).
-    wait_for("viewers to leave", || {
-        f.h.app
-            .sandbox_shells(&sid)
-            .iter()
-            .all(|shell| shell.viewer_count() == 0)
+    eventually("viewers to leave", WAIT, || {
+        ready(
+            f.h.app
+                .sandbox_shells(&sid)
+                .iter()
+                .all(|shell| shell.viewer_count() == 0),
+        )
     })
     .await?;
     f.h.clock
@@ -753,12 +746,12 @@ async fn a_terminal_start_whose_request_is_dropped_still_ends_live() -> TestResu
     }
     f.gate.release();
     let shells = f.data.join("shells");
-    wait_for("the dropped start's terminal to be saved", || {
-        std::fs::read_dir(&shells).is_ok_and(|entries| {
+    eventually("the dropped start's terminal to be saved", WAIT, || {
+        ready(std::fs::read_dir(&shells).is_ok_and(|entries| {
             entries
                 .filter_map(Result::ok)
                 .any(|entry| entry.path().join("shell.json").is_file())
-        })
+        }))
     })
     .await?;
     let listed = listed(&list(&f, &f.writer, "s1").await?);
@@ -845,7 +838,10 @@ async fn a_terminal_whose_host_cannot_be_ended_stays_live() -> TestResult {
             break;
         }
     }
-    wait_for("the run directory's removal", || !run_dir.exists()).await?;
+    eventually("the run directory's removal", WAIT, || {
+        ready(!run_dir.exists())
+    })
+    .await?;
     assert!(listed(&list(&f, &f.writer, "s1").await?).is_empty());
     Ok(())
 }
@@ -866,8 +862,11 @@ async fn a_terminal_whose_host_died_but_whose_process_survives_stays_live() -> T
     let (host, child) = run_pids(&run_dir)?;
     // The recorded child becomes a process that outlives its host: same pid, session and start.
     input(&mut socket, "trap '' HUP; exec sleep 600\r").await?;
-    wait_for("the child to be sleep", || {
-        std::fs::read_to_string(format!("/proc/{child}/comm")).is_ok_and(|c| c.trim() == "sleep")
+    eventually("the child to be sleep", WAIT, || {
+        ready(
+            std::fs::read_to_string(format!("/proc/{child}/comm"))
+                .is_ok_and(|c| c.trim() == "sleep"),
+        )
     })
     .await?;
 
@@ -907,8 +906,11 @@ async fn a_terminal_whose_host_died_but_whose_process_survives_stays_live() -> T
             break;
         }
     }
-    wait_for("the process to end", || !pid_alive(child)).await?;
-    wait_for("the run directory's removal", || !run_dir.exists()).await?;
+    eventually("the process to end", WAIT, || ready(!pid_alive(child))).await?;
+    eventually("the run directory's removal", WAIT, || {
+        ready(!run_dir.exists())
+    })
+    .await?;
     Ok(())
 }
 
@@ -957,8 +959,8 @@ async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestRe
     let (adopted, removed) = g.h.app.adopt_shells().await;
     assert_eq!((adopted, removed), (1, 2));
     assert!(!orphan.exists());
-    wait_for("the unadoptable shell to end", || {
-        !pid_alive(gone_child) && !pid_alive(gone_host)
+    eventually("the unadoptable shell to end", WAIT, || {
+        ready(!pid_alive(gone_child) && !pid_alive(gone_host))
     })
     .await?;
     assert!(!gone_dir.exists());
@@ -977,8 +979,8 @@ async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestRe
     assert!(pid_alive(child_pid), "the same process");
 
     g.h.app.end_all_shells().await;
-    wait_for("the shell processes to exit", || {
-        !pid_alive(child_pid) && !pid_alive(host_pid)
+    eventually("the shell processes to exit", WAIT, || {
+        ready(!pid_alive(child_pid) && !pid_alive(host_pid))
     })
     .await?;
     assert!(!run_dir.exists());
@@ -1195,8 +1197,8 @@ async fn a_live_shell_keeps_a_resting_task_s_build_artifacts() -> TestResult {
     .await?;
     assert!(closed.status.is_success(), "{:?}", closed.body);
     let s1 = SandboxId::parse("s1")?;
-    wait_for("the shell to end", || {
-        f.h.app.sandbox_shells(&s1).is_empty()
+    eventually("the shell to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&s1).is_empty())
     })
     .await?;
     f.h.app.sweep_build_caches(Level::Critical).await;

@@ -3,6 +3,7 @@
 //! fake agent in the real ptyhost whose terminal people watch.
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -256,21 +257,6 @@ async fn the_tool_hook_rewrites_results_that_hold_a_value() -> TestResult {
         answer["hookSpecificOutput"]["updatedToolOutput"]["file"]["content"],
         format!("STRIPE_KEY={LABEL}\n")
     );
-    Ok(())
-}
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
     Ok(())
 }
 

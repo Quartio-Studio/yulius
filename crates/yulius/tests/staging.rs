@@ -168,8 +168,8 @@ pub(crate) async fn red_gate_needs_people(
         .join("sandboxes")
         .join(project.as_str())
         .join("repo");
-    let sha = crate::cd::git(&repo, &["rev-parse", "HEAD"])?;
-    crate::cd::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
+    let sha = crate::support::git(&repo, &["rev-parse", "HEAD"])?;
+    crate::support::git(&repo, &["update-ref", "refs/remotes/origin/dev", &sha])?;
     recorded_gate(
         app,
         project,
@@ -388,7 +388,7 @@ async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging
         .execute_for_tests("UPDATE tasks SET activity='waiting' WHERE id='answered'")
         .await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     for view in [
         f.get("/api/sandboxes/s1/ci").await?,
         f.get("/api/status").await?,
@@ -403,7 +403,7 @@ async fn a_closed_merge_owners_failed_test_reaches_the_project_without_a_staging
     }
     let fix = f.push("dev", &[("fixed", Some("yes"))])?;
     gate(&f, &fix, RunState::Passed).await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let status = f.get("/api/status").await?;
     assert_eq!(status["sandboxes"][0]["gate_notices"], json!([]));
     Ok(())
@@ -419,7 +419,7 @@ async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResu
     let revision = land(&f, "closed", "closed").await?;
     named_gate(&f, &revision, &["flaky::result"]).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -456,7 +456,7 @@ async fn an_unrepaired_failure_is_one_keyed_notice_until_it_passes() -> TestResu
 
     let fix = f.push("dev", &[("fixed", Some("yes"))])?;
     gate(&f, &fix, RunState::Passed).await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     f.h.app.tell_gate_repairs(&sandbox).await?;
     assert!(gate_notices().await?.is_empty());
     Ok(())
@@ -474,7 +474,7 @@ async fn a_momentarily_busy_worker_raises_no_gate_notice() -> TestResult {
     let long = format!("suite::a  spaced {}", "x".repeat(300));
     named_gate(&f, &revision, &[long.as_str()]).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -520,7 +520,7 @@ async fn a_green_branch_starts_the_grace_period_again() -> TestResult {
     named_gate(&f, &revision, &["flaky::result"]).await?;
     agent(&f, "worker").await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -542,11 +542,11 @@ async fn a_green_branch_starts_the_grace_period_again() -> TestResult {
     }
     let fix = f.push("dev", &[("fixed", Some("yes"))])?;
     gate(&f, &fix, RunState::Passed).await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     f.h.app.tell_gate_repairs(&sandbox).await?;
     let broken = f.push("dev", &[("broken", Some("again"))])?;
     named_gate(&f, &broken, &["other::test"]).await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     f.h.app.tell_gate_repairs(&sandbox).await?;
     assert_eq!(gate_count().await?, 0, "a new grace period");
     // ...which, run to its end, tells the new failure: the 0 above was a grace period, not a
@@ -569,7 +569,7 @@ async fn a_worker_unavailable_past_the_grace_period_raises_the_gate_notice() -> 
     named_gate(&f, &revision, &["flaky::result"]).await?;
     agent(&f, "worker").await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -607,7 +607,7 @@ async fn many_unrepaired_failures_are_bounded_notices() -> TestResult {
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     named_gate(&f, &revision, &refs).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let alice =
         f.h.store
             .user(&yulius_domain::ids::UserId::parse("u-alice")?)
@@ -677,7 +677,7 @@ async fn a_passed_rerun_clears_a_missing_owners_notice_and_resets_test_ownership
     let descendant = f.push("dev", &[("later", Some("later"))])?;
     let run = named_gate(&f, &descendant, &["delivery::gate"]).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(notices[0]["revision"], orphan);
     assert_eq!(notices[0]["run_id"], run);
@@ -763,7 +763,7 @@ async fn a_partial_later_gate_keeps_the_unknown_job_and_offers_its_current_run()
     let run = named_gate(&f, &later, &["ui::fresh"]).await?;
     f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='cancelled',reason='stopped early: job quick failed',failures=NULL WHERE id='{run}-full';
         UPDATE ci_jobs SET state='failed',failures='---- ui::fresh stdout ----' WHERE id='{run}-quick'")).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -791,7 +791,7 @@ async fn unsuccessful_reruns_keep_unresolved_jobs_at_the_same_revision_after_ret
     let sha = f.push("dev", &[("broken", Some("broken"))])?;
     let first = gate(&f, &sha, RunState::Error).await?;
     let project = sandbox(&f).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -876,7 +876,7 @@ async fn rerunning_an_ancestor_keeps_the_archived_red_heads_notice_and_rerun_tar
     agent(&f, "owner").await?;
     let head = land(&f, "owner", "broken").await?;
     let failed = named_gate(&f, &head, &["suite::broken"]).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -1025,7 +1025,7 @@ async fn a_green_rerun_that_skips_an_unresolved_job_keeps_the_notice_and_staging
     let first = gate(&f, &sha, RunState::Error).await?;
     let project = sandbox(&f).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     for id in ["skip-one", "skip-two"] {
         let (mut run, quick) = crate::pr_watch::run(
             &project.id,
@@ -1081,7 +1081,7 @@ async fn a_green_rerun_that_skips_an_unresolved_job_keeps_the_notice_and_staging
         request(&f, &receipt.id).await?.state,
         StagingState::Included
     );
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     assert_eq!(
         f.get("/api/status").await?["sandboxes"][0]["gate_notices"],
         json!([])
@@ -1755,7 +1755,7 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     // A newer revision is checking. The page offers the verified revision for confirmation.
     let r2 = land(&f, "t2", "two.txt").await?;
     let checking = gate(&f, &r2, RunState::Running).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -1775,12 +1775,12 @@ async fn production_is_promoted_only_from_the_verified_staging_revision() -> Tes
     assert_eq!(prod["promotes_from"], r1);
     // An existing release ref pointing elsewhere is refused and never overwritten.
     let pin = format!("refs/heads/yulius/release/{r1}");
-    crate::cd::git(&f.origin, &["update-ref", &pin, &r2])?;
+    crate::support::git(&f.origin, &["update-ref", &pin, &r2])?;
     let moved = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(moved.status, axum::http::StatusCode::CONFLICT);
-    assert_eq!(crate::cd::git(&f.origin, &["rev-parse", &pin])?, r2);
+    assert_eq!(crate::support::git(&f.origin, &["rev-parse", &pin])?, r2);
     assert!(!git_contains(&f, "main", &r1)?);
-    crate::cd::git(&f.origin, &["update-ref", "-d", &pin, &r2])?;
+    crate::support::git(&f.origin, &["update-ref", "-d", &pin, &r2])?;
     // An open promotion PR for the moving dev head remains independent of A's release.
     use yulius_app::ports::github::{GitHubPort as _, NewPull};
     let current_head_pr =
@@ -1948,11 +1948,11 @@ async fn running_dev_ci_releases_only_the_preceding_green_revision() -> TestResu
     f.h.store.insert_ci_run(&rerun, &[]).await?;
     // Cross a complete batch of first-parent history without any intervening verdict.
     let mut d = f.push("dev", &[("d.txt", Some("checking"))])?;
-    let tree = crate::cd::git(&f.work, &["rev-parse", "HEAD^{tree}"])?;
+    let tree = crate::support::git(&f.work, &["rev-parse", "HEAD^{tree}"])?;
     for _ in 0..128 {
-        d = crate::cd::git(&f.work, &["commit-tree", &tree, "-p", &d, "-m", "pending"])?;
+        d = crate::support::git(&f.work, &["commit-tree", &tree, "-p", &d, "-m", "pending"])?;
     }
-    crate::cd::git(
+    crate::support::git(
         &f.work,
         &["push", "-q", "origin", &format!("{d}:refs/heads/dev")],
     )?;
@@ -2264,7 +2264,7 @@ async fn staging_and_the_running_drill_agree_on_the_release_revision() -> TestRe
     running.state = RunState::Running;
     running.ended_at = None;
     f.h.store.insert_cd_run(&running).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -2324,7 +2324,7 @@ async fn retiring_staging_keeps_its_last_verified_release_available() -> TestRes
     let config = "[[ci.jobs]]\nname = \"checks\"\ncommand = \"true\"\n[cd.prod]\npromote = true\n";
     let c = f.push("dev", &[("yulius.toml", Some(config))])?;
     gate(&f, &c, RunState::Running).await?;
-    crate::cd::git(
+    crate::support::git(
         &f.h.app.config.data_dir.join("sandboxes/s1/repo"),
         &["fetch", "-q", "origin"],
     )?;
@@ -2404,8 +2404,8 @@ async fn a_release_retry_verifies_the_merge_receipt_and_honors_optional_checks()
     let landed = f.head("main")?;
     assert_ne!(landed, a);
     assert_eq!(
-        crate::cd::git(&f.origin, &["rev-parse", "main^{tree}"])?,
-        crate::cd::git(&f.origin, &["rev-parse", &format!("{a}^{{tree}}")])?
+        crate::support::git(&f.origin, &["rev-parse", "main^{tree}"])?,
+        crate::support::git(&f.origin, &["rev-parse", &format!("{a}^{{tree}}")])?
     );
     let id = TaskId::parse("t1")?;
     assert_eq!(
@@ -2752,7 +2752,7 @@ async fn a_test_that_moves_cells_keeps_its_origin_until_the_new_cell_passes() ->
     f.h.store.execute_for_tests(&format!("UPDATE ci_jobs SET state='passed',failures=NULL WHERE id='{run}-full';
         UPDATE ci_jobs SET state='failed',failures='---- moved::test stdout ----' WHERE id='{run}-quick'")).await?;
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(notices[0]["revision"], first);
     let third = f.push("dev", &[("third", Some("third"))])?;
@@ -2763,7 +2763,7 @@ async fn a_test_that_moves_cells_keeps_its_origin_until_the_new_cell_passes() ->
             "UPDATE ci_jobs SET name='other' WHERE id='{run}-full'"
         ))
         .await?;
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let notices = f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone();
     assert_eq!(notices.as_array().ok_or("notices")?.len(), 1, "{notices}");
     assert_eq!(notices[0]["test"], "new::test");
@@ -2921,7 +2921,7 @@ async fn a_request_whose_revision_or_target_went_away_is_superseded() -> TestRes
 }
 
 fn git_origin(f: &Fixture, args: &[&str]) -> BoxResult<String> {
-    crate::cd::git(&f.origin, args)
+    crate::support::git(&f.origin, args)
 }
 
 /// A deploy script that runs an irreversible migration, says so, and fails.
@@ -3598,8 +3598,8 @@ async fn every_promotion_waits_for_the_revision_staging_verified() -> TestResult
     // What an agent can do in its own clone: rewrite the table's object without merge_first.
     // The mirror keeps the object it already holds, so the promotion is refused as unverified.
     let clone = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&clone, &["fetch", "-q", "origin"])?;
-    let blob = crate::cd::git(&clone, &["rev-parse", &format!("{r2}:yulius.toml")])?;
+    crate::support::git(&clone, &["fetch", "-q", "origin"])?;
+    let blob = crate::support::git(&clone, &["rev-parse", &format!("{r2}:yulius.toml")])?;
     let text = std::fs::read_to_string(f.work.join("yulius.toml"))?;
     let object = clone.join(".git/objects").join(&blob[..2]).join(&blob[2..]);
     let rewrite = "import sys, zlib, os\nc = open(sys.argv[2], 'rb').read()\np = sys.argv[1]\n\
@@ -5288,7 +5288,7 @@ async fn no_repair_owner_is_named_before_a_new_failure_is_narrowed() -> TestResu
     f.h.app.staging_advance(&sandbox, "staging").await?;
     assert_eq!(candidate(&f, &b).await?, None, "the lane is busy");
     let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
-    crate::cd::git(&repo, &["fetch", "-q", "origin"])?;
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
     let notices = || async {
         BoxResult::Ok(f.get("/api/status").await?["sandboxes"][0]["gate_notices"].clone())
     };
