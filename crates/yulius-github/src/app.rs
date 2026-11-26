@@ -42,14 +42,6 @@ impl GitHubClient {
         self.inner.signer.as_ref().ok_or(GitHubError::NotConfigured)
     }
 
-    fn app(&self) -> Result<&AppCredentials, GitHubError> {
-        self.inner
-            .config
-            .app
-            .as_ref()
-            .ok_or(GitHubError::NotConfigured)
-    }
-
     /// A fresh App JWT (RS256, `iat` = now − 60 s, `exp` = now + 9 min, `iss` = client id).
     ///
     /// # Errors
@@ -375,18 +367,5 @@ impl GitHubClient {
             slug: wire.slug,
             webhook_secret: wire.webhook_secret.map(Secret::new),
         })
-    }
-
-    /// The page where an owner installs the configured App
-    /// (`{web}/apps/{slug}/installations/new`).
-    ///
-    /// # Errors
-    /// [`GitHubError::NotConfigured`] without App credentials.
-    pub fn install_url(&self) -> Result<String, GitHubError> {
-        let slug = &self.app()?.slug;
-        validate::repo_name(slug)?;
-        Ok(self
-            .web_url(&["apps", slug, "installations", "new"])?
-            .into())
     }
 }

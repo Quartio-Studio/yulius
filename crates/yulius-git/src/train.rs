@@ -141,14 +141,7 @@ impl Git {
         if landing == TrainLanding::MergeCommit {
             invocation = invocation.arg("-p").arg(merged);
         }
-        let output = self.run_ok(
-            invocation
-                .arg(tree)
-                .env("GIT_AUTHOR_NAME", author.name.as_str())
-                .env("GIT_AUTHOR_EMAIL", author.email.as_str())
-                .env("GIT_COMMITTER_NAME", author.name.as_str())
-                .env("GIT_COMMITTER_EMAIL", author.email.as_str()),
-        )?;
+        let output = self.run_ok(invocation.arg(tree).author(author))?;
         let commit = output.stdout_trimmed();
         if crate::repo::is_object_id(&commit) {
             Ok(commit)
