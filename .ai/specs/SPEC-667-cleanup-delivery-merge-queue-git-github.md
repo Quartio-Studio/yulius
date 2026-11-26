@@ -49,11 +49,11 @@ PR 0.
 - [x] Merge: preview_merge vs adds_to agreement test
 - [x] Merge: conflict checks compared; F3 and F4 reported
 - [x] Merge: independent review answered
-- [ ] Queue leftovers: typed dissolve reason, is_merged, branch filter, typed queue
-- [ ] Leftovers/finish: TaskCache kind and background probe
-- [ ] F6/F9/F10: independent review answered
-- [ ] Adapters: branch check, test-only fns, hand-rolled code, Git builder repeats
-- [ ] Adapters: port types (F11) within paths
+- [x] Queue leftovers: typed dissolve reason, is_merged, branch filter, typed queue
+- [x] Leftovers/finish: TaskCache kind and background probe
+- [x] F6/F9/F10: independent review answered
+- [x] Adapters: branch check, test-only fns, hand-rolled code, Git builder repeats
+- [x] Adapters: port types (F11) within paths
 - [ ] Adapters: independent review answered
 - [ ] Queue state: armed merges, trains, notices into the store
 - [ ] Queue state: independent review answered
@@ -157,3 +157,48 @@ PR 3, the conflict checks compared (audit L2 F4's precondition; F3 and F4 not do
   `supervisor.rs` (task #650's), and `adds_to` stays for parking's other question.
 - Independent review (Fable 5.2): round 1 requested changes (the criss-cross difference); round 2
   approved `be5a14518`; its optional nit (the test runs a real `git merge`) is in `3d1b2120e`.
+
+Step 4 (audit L2 F6, F9, F10's low-risk items): assessed, nothing delivered, each reported here.
+- F6, typed dissolve reason: about 40 reason producers (`Step::Stop`/`OneByOne`, the member
+  step's `keep` closures, `member_left`, `own_run_failed`, `train_broken` and the direct calls)
+  would each name a kind; that adds more lines than deleting `dissolved_why` saves, and reasons
+  carrying Git or GitHub error text would move between analytics kinds: a behaviour change for
+  the owner. `Dissolved::of_detail` has to stay anyway to read the audit entries already written.
+  Moving the CI-minute metrics to `yulius_domain::ci` is task #652's path.
+- F9: `past_merge` as `DeliveryStage::is_merged()` needs `yulius-domain/src/delivery.rs` and the
+  typed merge queue needs `merges.rs`, both outside this task's paths. `dlv_observe`'s branch
+  filter changes behaviour: GitHub's `owner:branch` filter leaves out a fork's pull request of the
+  same branch name, which the listing adopts today (`wire.rs` keeps a fork's head as the bare
+  branch name). The singleton-decision idea is the audit's own guess.
+- F10: finish's three probes differ in their host call (`background_shells` against
+  `background_probe`, each implemented apart by the hosts and test fakes) and in what "no live
+  process" means; a shared bounded-look helper was written and measured at +31/-27 lines, so it
+  was dropped. The leftovers `TaskCache` kind and the sign-in backoff drop capabilities, the
+  `leftover_guard` rework is medium risk, the no-follow helpers' move touches `disk.rs`,
+  `sweep.rs` and other files outside the paths, and `record_numbers`' compatibility for spec paths
+  handed out before reservations would drop those paths: each is the owner's or another task's.
+
+PR 5, the Git and GitHub adapters (audit L2 F13, F14, F15; F11 and F12 not done):
+- F13: `Git::create_bundle` and `BundleSpec`, `Git::merge_conflicts` and
+  `GitHubClient::install_url` (with its `app()` accessor) had no product caller and are deleted;
+  `Git::merge_tree` only forwarded to `merge_tree_from`, whose one product call now passes `None`.
+  The bundle tests build bundles with `git bundle create`, the merge tests read `preview_merge`,
+  and `create_bundle`'s own validation test goes with it.
+- F14: the bounded stdout and capped stderr readers use `Read::take` and `io::copy`; three
+  char-boundary loops use `str::floor_char_boundary`; the GitHub fake's token expiry uses
+  `yulius_domain::time::format_rfc3339`, so `yulius-github/src/time.rs` goes.
+- F15: `Invocation::author` replaces four copies of the author/committer environment; seven call
+  sites stop passing `--no-ext-diff`/`--no-textconv`, which the runner drops and inserts itself
+  (same argv). Kept: the two `commit-tree` checks word their errors differently, the three
+  `diff --numstat -z` parsers have different error policies, and the GitHub crate's `Clock` is
+  what its tests drive.
+- Product lines +77 / -279; adapter test lines +39 / -34.
+- `scripts/cargo nextest run -p yulius-git -p yulius-github`: 136 passed (one fewer: `time.rs`'s
+  own test); `-p yulius --test main`: 2830 passed; clippy `--workspace --all-targets
+  --all-features -D warnings` and `RUSTDOCFLAGS=-D warnings cargo doc -p yulius-git -p
+  yulius-github`: clean.
+- Not done, outside the task's paths: F12 (one branch-name check) needs `yulius-domain` and
+  `ports/git.rs` (task #656's) for `GitPort::valid_branch`, and changes what a profile accepts
+  (a branch named `HEAD`), the owner's decision; F11 (port types defined once) changes
+  `crates/yulius-app/src/ports/**` (task #656's) and `crates/yulius/src/wiring/**` (task #655's);
+  `base64_encode` (F14) is in `wiring/git.rs` (task #655's).

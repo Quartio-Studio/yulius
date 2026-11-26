@@ -279,7 +279,7 @@ impl Git {
     /// Whether `head` is `reviewed` plus only clean merges of the integration branch (SPEC-083
     /// REV-001). Walking first parents from `head` back to `reviewed`, every commit must be a
     /// merge of exactly two parents whose second one `integration` (a remote-tracking ref)
-    /// already contains, recording exactly the tree [`Git::merge_tree`] gives for its parents:
+    /// already contains, recording exactly the tree [`Git::merge_tree_from`] gives for its parents:
     /// no conflict resolved by hand, no other change. At most `limit` such merges; `false` when
     /// `reviewed` is not reached.
     ///
