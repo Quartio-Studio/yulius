@@ -864,10 +864,8 @@ impl App {
             let Ok(Some(task)) = self.deps.store.task(&id).await else {
                 continue;
             };
-            // Not known while it is being decided: a merged member is skipped above.
             let marked = self
-                .armed_merge_view(&id)
-                .0
+                .armed_or_deciding(&id)
                 .is_some_and(|armed| armed.repair);
             if !stop.lets_through(task.number, marked) {
                 return Some(format!(

@@ -5835,7 +5835,7 @@ fn later(f: &Fixture) {
 /// SPEC-676 RGS-002, RGS-003, RGS-007: on a merge-first project, a red after-merge gate at the
 /// integration head holds a green, up-to-date armed pull request: it stays armed, told which
 /// failure holds it; a passing rerun of that revision lets it merge on the next pass by itself.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
@@ -5891,6 +5891,22 @@ async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
         json!([{"task": number, "pull_request": 1}]),
         "{stop}"
     );
+    // While a pass decides it, the held merge still waits (review of the page slice).
+    later(&f);
+    let (at, go) = support::hold_point(yulius_app::race::Point::FreeArmTaken, "t1");
+    let pass = {
+        let app = Arc::clone(&app);
+        let sandbox = f.sandbox.clone();
+        tokio::spawn(async move { app.merge_armed(&sandbox).await })
+    };
+    support::point_reached(at).await?;
+    assert_eq!(
+        overview().await?["waiting"],
+        json!([{"task": number, "pull_request": 1}]),
+        "under decision"
+    );
+    go.send(())?;
+    pass.await?;
     later(&f);
     app.merge_armed(&f.sandbox).await;
     assert!(f.merges().is_empty(), "still red");

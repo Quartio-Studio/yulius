@@ -118,7 +118,7 @@ impl App {
             if self.existing_runtime(&task.id).is_none() {
                 continue;
             }
-            let Some(armed) = self.armed_merge_view(&task.id).0 else {
+            let Some(armed) = self.armed_or_deciding(&task.id) else {
                 continue;
             };
             if stop.lets_through(task.number, armed.repair) {
@@ -130,12 +130,17 @@ impl App {
                 .delivery(&task.id)
                 .await?
                 .and_then(|record| record.pr_number);
-            waiting.push(MergeStopWaiting {
-                task: task.number,
-                pull_request,
-            });
+            waiting.push((
+                (armed.armed_at, task.number),
+                MergeStopWaiting {
+                    task: task.number,
+                    pull_request,
+                },
+            ));
         }
-        waiting.sort_by_key(|w| w.task);
+        // In the order they were armed, as the merge queue lists them.
+        waiting.sort_by_key(|(order, _)| *order);
+        let waiting = waiting.into_iter().map(|(_, w)| w).collect();
         Ok(Some(yulius_contracts::api::ci::MergeStop {
             failures: stop
                 .failures

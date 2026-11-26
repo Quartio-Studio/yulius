@@ -261,25 +261,33 @@ impl GateFailures {
     /// Keeps the failures of `verdict`, a settled red verdict the replay did not reach, for the
     /// merge queue's stop (SPEC-676 RGS-002).
     fn hold(&mut self, verdict: &GateVerdict) {
-        if verdict.state.is_active() {
+        if !matches!(verdict.state, RunState::Failed | RunState::Error) {
             return;
         }
-        if let Some(Gate::Failed(failures)) = verdict.gate() {
-            // Named as the notices name them: a job by its name, a run by its state.
-            for key in failures {
-                let test = key
-                    .strip_prefix("job ")
-                    .or_else(|| key.strip_prefix("run "))
-                    .unwrap_or(&key)
-                    .to_owned();
-                self.held.push(GateNotice {
-                    key: crate::notice_producers::gate_key(&test).to_string(),
-                    revision: verdict.sha.clone(),
-                    merge_task: None,
-                    run_id: verdict.run.clone(),
-                    test,
-                });
+        // Named as `observe` names them for the notices: a job without known tests by its name,
+        // its tests as they are, the run's state when no job failed.
+        let mut names = BTreeSet::new();
+        for job in verdict
+            .jobs
+            .iter()
+            .filter(|job| !job.passed && !job.skipped)
+        {
+            if job.unknown || job.tests.is_empty() {
+                names.insert(job.name.clone());
             }
+            names.extend(job.tests.iter().cloned());
+        }
+        if names.is_empty() {
+            names.insert(verdict.state.as_str().to_owned());
+        }
+        for test in names {
+            self.held.push(GateNotice {
+                key: crate::notice_producers::gate_key(&test).to_string(),
+                revision: verdict.sha.clone(),
+                merge_task: None,
+                run_id: verdict.run.clone(),
+                test,
+            });
         }
     }
 
@@ -798,6 +806,47 @@ mod tests {
         assert_eq!(
             red_tests(attributed),
             [("t".to_owned(), Some(4), "run-c".to_owned())]
+        );
+    }
+
+    /// SPEC-676 (review of the page slice): a held verdict's failures are named as the notices
+    /// name them, from its jobs: a job without known tests by its name, its tests as they are
+    /// (a test named `job …` too), the run's state when no job failed; one already open is
+    /// listed once.
+    #[test]
+    fn held_failures_are_named_as_the_notices_name_them() {
+        let mut unknown = job("e2e", false, &["t3"]);
+        unknown.unknown = true;
+        let held = verdict(
+            "h",
+            RunState::Failed,
+            vec![
+                job("full", false, &[]),
+                unknown.clone(),
+                job("lib", false, &["job tests::x"]),
+            ],
+        );
+        let names = |failures: GateFailures| {
+            let mut names: Vec<String> = failures.red().into_iter().map(|n| n.test).collect();
+            names.sort();
+            names
+        };
+        let unresolved = BTreeSet::from(["h".to_owned()]);
+        assert_eq!(
+            names(replay(vec![held], &unresolved, true)),
+            ["e2e", "full", "job tests::x", "t3"]
+        );
+        let errored = verdict("x", RunState::Error, Vec::new());
+        let unresolved = BTreeSet::from(["x".to_owned()]);
+        assert_eq!(names(replay(vec![errored], &unresolved, true)), ["error"]);
+        let older = owned(verdict("o", RunState::Failed, vec![unknown.clone()]), 3);
+        let newer = verdict("n", RunState::Failed, vec![unknown]);
+        let unresolved = BTreeSet::from(["n".to_owned()]);
+        let both = replay(vec![newer, older], &unresolved, true).red();
+        assert_eq!(
+            both.iter().filter(|n| n.test == "e2e").count(),
+            1,
+            "{both:?}"
         );
     }
 
