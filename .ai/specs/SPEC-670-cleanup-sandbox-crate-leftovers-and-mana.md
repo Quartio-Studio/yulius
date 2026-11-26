@@ -37,8 +37,8 @@ outside this task's paths, still reach `docker_bind`. F8 and F15 are excluded (t
 - [x] PR B: move the Docker front code verbatim into manager/docker.rs
 - [x] PR B: move the image build code verbatim into manager/build.rs
 - [x] PR B: move the system-layer code verbatim into system_layer.rs
-- [ ] PR B: tests, quick checks, review approved, merge armed
-- [ ] PR C: group the front fields of Live into FrontState
+- [x] PR B: tests, quick checks, review approved, merge armed
+- [x] PR C: group the front fields of Live into FrontState
 - [ ] PR C: tests, quick checks, review approved, merge armed
 - [ ] Closing summary with Not done list
 
