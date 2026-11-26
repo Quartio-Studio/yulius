@@ -539,7 +539,7 @@ as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-w
   lines, stays for two seconds after a prompt went on, whose record is written a moment
   later, and logs the fact that keeps a session that is due (`kept_by`)
   ([SPEC-471](../.ai/specs/SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)); an idle one that is restarted is idle again from its launch on, with what its goal left
-  (`IdleRest` in `supervisor.rs`), and the notification center remembers what a task read
+  (`IdleRest` in `supervisor/start.rs`), and the notification center remembers what a task read
   through a switch ([SPEC-468](../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).
   A restart whose session does not reach its SessionStart hook (the launch fails, the process
   ends by itself, or two minutes pass) stops further restarts on that version.
@@ -4132,7 +4132,7 @@ values ≤ 4 KiB, ≤ 200 per project), refuses a name that is an agent secret o
 it in one transaction and audits `variable.*` without values; the Secrets page's Variables tab,
 `/api/sandboxes/{sid}/variables` and the remote tools (`variables_list`, `variables_set`,
 `variable_delete`, behind `yulius vars`) all go through it. A task run's environment starts with
-them (`supervisor.rs`), so `base_env` and the agent secret placeholders win over a variable of the
+them (`supervisor/launch.rs`), so `base_env` and the agent secret placeholders win over a variable of the
 same name; `secrets_list` names them. A CD run gets them too, before its own variables and secrets:
 a dev-stage run all of them, a production-stage run only those its `[cd.<name>]` `variables`
 names (`ci/cd.rs`, [decision 0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).

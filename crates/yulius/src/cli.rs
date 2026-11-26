@@ -70,31 +70,46 @@ pub fn login(server: &str) -> ExitCode {
 }
 
 /// Command-line options of `yulius onboard`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, clap::Args)]
 pub struct OnboardArgs {
-    /// Repository path.
+    /// Repository path (default: current directory).
+    #[arg(default_value = ".")]
     pub path: PathBuf,
-    /// Server URL (`None`: the only signed-in server).
+    /// Yulius URL (default: the only server you signed in to).
+    #[arg(long, env = "YULIUS_SERVER")]
     pub server: Option<String>,
-    /// `all`, `recent`, `pick` or `none`.
+    /// Which sessions: all, recent, pick or none (asked when omitted; recent with --yes).
+    #[arg(long, value_name = "WHICH")]
     pub sessions: Option<String>,
-    /// Window of `recent`.
+    /// Window of recent sessions, e.g. 14d, 36h, 2w.
+    #[arg(long)]
     pub since: Option<String>,
-    /// Ask nothing.
-    pub yes: bool,
-    /// Sessions only (no unpublished branches or uncommitted changes).
+    /// Upload sessions only, not unpublished branches or uncommitted changes.
+    #[arg(long)]
     pub sessions_only: bool,
-    /// Show the plan, upload nothing.
+    /// Show what would be uploaded and upload nothing.
+    #[arg(long)]
     pub dry_run: bool,
-    /// Only show the onboarding state.
+    /// Only show the sandbox's onboarding state and what is pending.
+    #[arg(long)]
     pub status: bool,
-    /// List every redaction.
+    /// List every redacted secret's rule and key name.
+    #[arg(long)]
     pub show_redactions: bool,
-    /// Upload into a playground of the caller (SPEC-171).
+    /// Upload into a playground of yours (local Git on the server) instead of a GitHub
+    /// repository's sandbox: no GitHub remote needed; every branch, the uncommitted work and
+    /// the chosen sessions are sent, and nothing is pushed anywhere.
+    #[arg(long)]
     pub playground: bool,
-    /// The playground's name (`None`: the checkout directory's name).
+    /// The playground's name with --playground (default: the checkout directory's name); an
+    /// existing playground of yours with that name receives the upload.
+    #[arg(long = "name", value_name = "NAME", requires = "playground")]
     pub playground_name: Option<String>,
-    /// No colours.
+    /// Do not ask anything.
+    #[arg(long)]
+    pub yes: bool,
+    /// No colours (also NO_COLOR=1).
+    #[arg(long)]
     pub no_color: bool,
 }
 
@@ -153,37 +168,58 @@ pub enum VaultChoice {
     Agent,
 }
 
-/// Command-line options of `yulius secrets import` (SPEC-205). None takes a value.
-#[derive(Debug, Clone)]
+/// Command-line options of `yulius secrets import` (SPEC-205).
+#[derive(Debug, Clone, clap::Args)]
 pub struct SecretsImportArgs {
-    /// The vault.
+    /// Team secrets (for people) or agent secrets (for agents, who never see them).
+    #[arg(long, value_enum)]
     pub to: VaultChoice,
-    /// A dotenv file, `-` for stdin, `None` to type each secret.
+    /// A dotenv file (NAME=value lines; a comment above a key becomes its description), `-`
+    /// for stdin; without it, type each name and its hidden value.
     pub file: Option<PathBuf>,
-    /// The sandbox of the secrets (id, slug or `owner/name`).
+    /// The sandbox of the secrets: owner/name, slug or id (default: this checkout's GitHub
+    /// repository).
+    #[arg(long)]
     pub sandbox: Option<String>,
-    /// Team-wide team secrets (SPEC-216); global agent secrets, switched on for the sandbox
-    /// (SPEC-245).
+    /// Team-wide team secrets; global agent secrets (instance administrators), switched on for
+    /// the sandbox.
+    #[arg(long)]
     pub instance: bool,
-    /// Agent secrets a person allows each host and production deploys of, instead of agents
-    /// setting them up (SPEC-216).
+    /// Agent secrets: you allow each host and production deploys on the Secrets page,
+    /// instead of agents setting them up (the default).
+    #[arg(long)]
     pub confirm_hosts: bool,
-    /// Server URL (`None`: the only signed-in server).
-    pub server: Option<String>,
-    /// Send without the typed yes: only with the operate token of `yulius remote login`
-    /// (SPEC-256 LOB-002).
-    pub yes: bool,
-    /// `NAME=PATH`: the whole file at PATH is the secret NAME (SPEC-256 LOB-003).
+    /// A whole file as one secret, `NAME=PATH` (a key such as `DEPLOY_SSH_KEY=~/.ssh/id_deploy`;
+    /// repeatable): the file is read here and never shown.
+    #[arg(long = "from-file", value_name = "NAME=PATH")]
     pub from_files: Vec<String>,
-    /// `NAME=DIR`: a folder (or `.tar.gz`) of operator state as the agent state NAME (SPEC-271).
+    /// A folder of operator state (a deploy tool's inventory, rollouts, configs), or a .tar.gz
+    /// of one, as the agent state NAME of the project, `NAME=DIR` (repeatable, SPEC-271): a
+    /// task restores it into the sandbox home, and that copy is the one written to after.
+    #[arg(long = "state", value_name = "NAME=DIR")]
     pub states: Vec<String>,
-    /// Overwrite a state a task already restored (SPEC-271 OPS-003).
+    /// Overwrite a state a task already restored (its sandbox copy is then stale until
+    /// restored again); without it such a send is refused, so the two copies never fork.
+    #[arg(long)]
     pub replace_state: bool,
-    /// Agent secrets start allowed into `.env` files (SPEC-256 LOB-004).
+    /// Agent secrets: agents may copy them into the project's git-ignored `.env` files from
+    /// the start (ssh keys, deploy scripts), instead of you allowing it when a task asks.
+    #[arg(long)]
     pub env_files: bool,
-    /// Values that are not secrets stay out of the project's variables (SPEC-275 VAR-007).
+    /// Agent secrets of one project: keep values that are not secrets (too short, a plain
+    /// word, a URL or e-mail address without credentials) out of the project's variables,
+    /// where they go by default (SPEC-275); they are then checked as secrets.
+    #[arg(long)]
     pub no_vars: bool,
-    /// No colours.
+    /// Send without asking: only with the operate token `yulius remote login` stored, made for
+    /// your agent on Settings → Connect your local agent.
+    #[arg(long)]
+    pub yes: bool,
+    /// Yulius URL (default: the only server you signed in to).
+    #[arg(long, env = "YULIUS_SERVER")]
+    pub server: Option<String>,
+    /// No colours (also NO_COLOR=1).
+    #[arg(long)]
     pub no_color: bool,
 }
 
