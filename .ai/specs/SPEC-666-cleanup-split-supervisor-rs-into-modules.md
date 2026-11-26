@@ -55,8 +55,8 @@ lives in files named by what they do. Behaviour unchanged.
 
 ## Acceptance criteria
 
-- `supervisor.rs` keeps the shared types and state (`TaskRuntime`, `SupervisorState`, run-start
-  types, `runtime()`) and the module declarations. The moved code lives in the new files.
+- `supervisor.rs` keeps the shared types and state (`TaskRuntime`, `SupervisorState`,
+  `runtime()`) and the module declarations; the run-start types went to `start.rs`. The moved code lives in the new files.
 - In every pull request, a line-multiset comparison of removed and added lines leaves only the
   edits SPL-001 allows, and `git diff --color-moved` shows the same.
 - `cargo check`, `cargo clippy -D warnings` and the whole `yulius-app` lib test binary pass,
@@ -109,7 +109,7 @@ lines after (d), the rest in twelve child modules. For every part:
 `RUSTDOCFLAGS="-D warnings" scripts/cargo doc -p yulius-app --no-deps` clean (from part c on),
 `scripts/cargo nextest run -p yulius-app --lib` 740 passed (the same count before and after each
 move), `scripts/dev quick` passed, and an independent review of the exact head. The `yulius`
-integration binary, e2e and the test shards ran in Yulius CI on each merged revision
+integration binary, e2e and the test job ran in Yulius CI on each merged revision
 (merge-first). Vidoc is switched off for this project: the moved `[[ignore]]` entries could not
 be exercised by a scan.
 
