@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-26
+
+- Yulius CI's own job commands are `scripts/dev <gate>`: under Yulius CI `scripts/dev` bootstraps the toolchain and the gate prints its stage line, so `yulius.toml` no longer repeats `python3 scripts/bootstrap.py --install-rustup && echo "::yulius-stage …"` in every job (audit L3 F7, F11). The fallbacks for pull requests older than 2026-11-21 are gone, including the `file-contracts` one that failed on such heads; an older pull request merges `dev` first. The pull request's `quality` job is the new `scripts/dev quality` (doctor, quick, the checker's tests): it no longer compiles the workspace, which `lint`'s Clippy already does.
+
 ## 2026-11-25
 
 - An agent whose write to its harness's memory or user instructions is refused is told why in one sentence: Yulius keeps them read-only, and lasting knowledge goes into the repository through a pull request (#636). Claude Code's edit tools are denied with it, a failed shell command and a Codex tool result get it as added context, Claude Code's memory instructions carry it, and an Antigravity session hears it at its start. The update's host check clears the immutable flags the stopgap of 2026-11-25 set on the memory folders (its line "memory stopgap"), so a removed sandbox's purge works again. [ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md), [SPEC-652](../.ai/specs/SPEC-652-agents-cannot-write-harness-memory-every.md)

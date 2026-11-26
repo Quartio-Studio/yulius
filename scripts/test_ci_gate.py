@@ -13,7 +13,7 @@ class Gate(unittest.TestCase):
         jobs = {job["name"]: job for job in tomllib.loads(
             (ROOT / "yulius.toml").read_text())["ci"]["jobs"]}
         for name, commands in {
-            "quality": ["scripts/dev doctor", "scripts/dev check"],
+            "quality": ["scripts/dev quality"],
             "lint": ["scripts/dev lint"],
             "macos": ["scripts/dev macos"],
             "docs": ["scripts/dev docs"],

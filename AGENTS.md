@@ -45,7 +45,7 @@ which a person's production deploy gets by deploying dev first
 Yulius's own CD deploys nothing (promotion only), so it rolls back through its update
 ([ADR-0264](docs/decisions/0264-yulius-own-production-rolls-back-through-its-update-not-a-cd-command.md)). Every stage of tasks, CI and CD
 is measured as a span (the Dashboard's Pipeline tab; [ADR-0112](docs/decisions/0112-stages-are-spans-written-with-the-state-they-measure.md)):
-a CI job or CD script names its stages with `::yulius-stage <name>` lines, as `scripts/dev ci` does.
+a CI job or CD script names its stages with `::yulius-stage <name>` lines, as each `scripts/dev` gate does.
 
 ## Start here
 
@@ -80,7 +80,7 @@ Create a typed branch and worktree together from `origin/dev` with `git worktree
 never switch an existing worktree to another branch. Never work directly on
 `dev` or `main`. Follow the task briefing for the reviewer and model of the active harness. While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests the head while the reviewer reads. Do not run the whole gate locally before a review or between rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an outage). Yulius is merge-first
 ([ADR-0436](docs/decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)):
-a pull request merges on `quality` (check), `lint`, `macos`, `docs`, `deps`, `security`,
+a pull request merges on `quality` (doctor, quick, the checker's tests), `lint`, `macos`, `docs`, `deps`, `security`,
 the affected `file-contracts` tests and any job it adds or changes. The two partitions of `test` share a build, and `e2e` also runs on the merged revision. Before review, run the whole test binary you touched, including its other tests,
 and the e2e specs your change touches. After the merge, ask once for staging with `cd_deploy` when
 `delivery_status` says it is due: it deploys your merged revision once its full suite passed. The task ends after asking. Yulius assigns a red integration branch to one task still at work, tells the others who owns the repair, and carries inherited failures to a verified fix. A finished task answers any typed outcome in one line and changes nothing; Yulius types one only while a background command of its own still runs, which it then stops ([ADR-0466](docs/decisions/0466-a-finished-task-whose-background-work-waits-hears-its-staging-outcome.md)). Only a person resumes it. A deployment or verification failure needs a fix forward. A task explicitly assigned to verify the staging verdict leaves that step in progress. Yulius shows the current wait and tells its running agent the result. Only a revision that passed the full suite and that staging verified is

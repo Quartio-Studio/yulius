@@ -8,6 +8,11 @@ import sys
 import tomllib
 
 root = Path(__file__).resolve().parent.parent
+if os.environ.get("YULIUS_CI"):
+    # A Yulius CI job starts on a clean machine: rustup, the pinned toolchain and tools come first.
+    code = subprocess.call([sys.executable, str(root / "scripts/bootstrap.py"), "--install-rustup"])
+    if code:
+        sys.exit(code)
 channel = tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
 rustup = shutil.which("rustup") or shutil.which("rustup", path=str(Path.home() / ".cargo/bin"))
 if rustup is None:

@@ -306,6 +306,62 @@ fn the_checkers_tests_run_beside_the_build() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The pull request's `quality` job compiles nothing (`lint` does): the tool check, the checks of
+/// seconds and the checker's tests, each in its stage; a failure stops it there.
+#[cfg(unix)]
+#[test]
+fn quality_runs_the_repository_checks_without_a_compile() -> std::io::Result<()> {
+    let stubs = Stubs::new("quality")?;
+    let (code, text, calls) = stubs.run("quality", "")?;
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(
+        calls,
+        [
+            "python scripts/check_repository.py --doctor",
+            "python scripts/check_repository.py",
+            "cargo fmt --all",
+            "python -m unittest",
+        ]
+    );
+    let stages: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("::yulius-stage"))
+        .collect();
+    assert_eq!(
+        stages,
+        [
+            "::yulius-stage doctor",
+            "::yulius-stage quick",
+            "::yulius-stage checker-tests",
+        ]
+    );
+    let (code, text, calls) = stubs.run("quality", "fmt --all -- --check")?;
+    assert_eq!(code, Some(1), "{text}");
+    assert!(
+        !calls.iter().any(|c| c == "python -m unittest"),
+        "{calls:?}"
+    );
+    Ok(())
+}
+
+/// A CI job runs one gate (`scripts/dev lint`): the gate names its stage first.
+#[cfg(unix)]
+#[test]
+fn a_single_gate_names_its_stage() -> std::io::Result<()> {
+    let stubs = Stubs::new("stage")?;
+    for gate in ["lint", "macos", "docs", "deps", "doctor"] {
+        let (code, text, _) = stubs.run(gate, "")?;
+        assert_eq!(code, Some(0), "{gate}: {text}");
+        assert_eq!(
+            text.lines().next(),
+            Some(format!("::yulius-stage {gate}").as_str()),
+            "{text}"
+        );
+        assert_eq!(text.matches("::yulius-stage").count(), 1, "{text}");
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn both_shards_list_quarantine_and_run_using_the_archive() -> std::io::Result<()> {
@@ -461,6 +517,8 @@ fi
             .env("YULIUS_CI_SKIP_CODE", "78")
             .env("YULIUS_CI_SHA", "sha")
             .env("CARGO_INCREMENTAL", "1")
+            // Under Yulius CI scripts/dev would bootstrap this fake home for real.
+            .env_remove("YULIUS_CI")
             .env_remove("CARGO")
             .env_remove("PYTHON")
             .env_remove("YULIUS_CI_QUARANTINE")
