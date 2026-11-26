@@ -225,6 +225,7 @@ class RepositoryContracts(unittest.TestCase):
         errors = new_decision_errors(added, web)
         self.assertEqual(len(errors), 1)
         self.assertIn("web UI", errors[0])
+        self.assertEqual(len(new_decision_errors(added, [*web, "e2e/tests/menus.e2e.ts"])), 1)
         self.assertEqual(new_decision_errors(added, [*web, "crates/yulius-app/src/lib.rs"]), [])
         self.assertEqual(new_decision_errors(added, ["docs/product.md", *added]), [])
 
@@ -236,6 +237,7 @@ class RepositoryContracts(unittest.TestCase):
             git("init", "-q", "-b", "dev")
             (root / "docs/decisions").mkdir(parents=True)
             (root / "docs/decisions/0001-old.md").write_text("# 0001. Old\n")
+            (root / "old.rs").write_text("fn moved() {}\n" * 20)
             git("add", ".")
             git("commit", "-qm", "base")
             self.assertIsNone(branch_decision_changes(root, "dev"))
@@ -244,11 +246,24 @@ class RepositoryContracts(unittest.TestCase):
             (root / "docs/decisions/0002-new.md").write_text("# 0002. New\n")
             (root / "app.js").write_text("1\n")
             git("add", "app.js")
+            git("mv", "old.rs", "new.rs")
             git("commit", "-qm", "branch")
             (root / "docs/decisions/0001-old.md").write_text("# 0001. Old, refined\n")
             added, changed = branch_decision_changes(root, "dev")
             self.assertEqual(added, {"docs/decisions/0002-new.md": "# 0002. New\n"})
-            self.assertEqual(sorted(changed), ["app.js", "docs/decisions/0001-old.md", "docs/decisions/0002-new.md"])
+            self.assertEqual(sorted(changed), ["app.js", "docs/decisions/0001-old.md", "docs/decisions/0002-new.md",
+                                               "new.rs", "old.rs"])
+            # A merge candidate stacks several members on origin/dev: each was checked on its own.
+            git("add", "-A")
+            git("commit", "-qm", "member one")
+            git("update-ref", "refs/remotes/origin/dev", "HEAD")
+            for n in ("0003", "0004"):
+                (root / f"docs/decisions/{n}-member.md").write_text(f"# {n}. Member\n")
+                git("add", ".")
+                git("commit", "-qm", f"member {n}")
+            self.assertEqual(len(branch_decision_changes(root, "dev")[0]), 2)
+            self.assertIsNone(branch_decision_changes(root, "dev", "train/abc"))
+            self.assertIsNotNone(branch_decision_changes(root, "dev", "pr/1770"))
 
 
 

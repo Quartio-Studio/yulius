@@ -25,7 +25,10 @@ delivery task fixes it), renaming or moving existing specs and ADRs.
 
 Paths: AGENTS.md, README.md, `docs/**`, `.apm/**` and its generated copies, `catalog/**`,
 `briefing.rs`, `spec_format/mod.rs`, `scripts/check_repository.py`, the slot scripts,
-`.gitattributes`, and the catalog text tests in `crates/yulius-app/src/skills.rs` (unclaimed).
+`.gitattributes`, and three unclaimed paths: `spec_format/templates.rs` (the new-project
+AGENTS.md and first ADR), `.ai/templates/spec.md` and the catalog text tests in
+`crates/yulius-app/src/skills.rs`. AGENTS.md states no ADR rule besides the slot sentence, which
+the third pull request removes.
 The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to other tasks.
 
 ## Requirements
@@ -48,9 +51,9 @@ The gates (`hooks.rs`, `discipline.rs`) and `crates/yulius/tests` belong to othe
 
 ## Plan
 
-- [ ] ADR threshold in the briefing (rule 5), budget kept
-- [ ] ADR check for new ADRs in check_repository.py
-- [ ] ADR threshold in AGENTS.md, engineering docs and catalog skills
+- [x] ADR threshold in the briefing (rule 5), budget kept
+- [x] ADR check for new ADRs in check_repository.py
+- [x] ADR threshold in AGENTS.md, engineering docs and catalog skills
 - [ ] PR1 review approved
 - [ ] AGENTS.md: duplicated rules removed
 - [ ] docs/engineering: duplicated rules removed
@@ -96,5 +99,11 @@ and the link checker). The rest of the gate is Yulius CI's.
 - The spec threshold (F1) is not changed in `requires_spec`: any path-based relaxation of
   `SpecPolicy::ByChange` fails gate tests in `crates/yulius/tests` (another task's paths), and the
   300-line part needs the gates to pass line counts. Listed under "Not done" in the pull request.
-- The new ADR check reads the branch's additions against the merge base with `origin/dev`, the
-  base the link checker's CI job already fetches; with no base it checks nothing.
+- The new ADR check reads the branch's additions against the merge base with
+  `origin/$YULIUS_INTEGRATION_BRANCH` (CI checkouts share the sandbox clone's refs); with no
+  such ref, and for a merge candidate (`YULIUS_CI_REF` `train/...`, several members already
+  checked one by one), it checks nothing and says so.
+- Briefing rule 5 stays within the budget in both decision layouts: the directory arm drops its
+  section list (the project docs check still names missing sections; "Alternatives" is implied
+  by "two rejected alternatives"), the file arm drops its parts list, and "with at least one
+  Mermaid diagram" becomes "with a Mermaid diagram".

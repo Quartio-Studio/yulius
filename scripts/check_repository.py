@@ -203,9 +203,8 @@ def decision_errors(directory):
     return errors
 
 
-
 DECISIONS = "docs/decisions/"
-WEB_UI = "crates/yulius-server/web/"
+WEB_UI = ("crates/yulius-server/web/", "e2e/")
 
 
 def new_decision_errors(added, changed):
@@ -224,14 +223,17 @@ def new_decision_errors(added, changed):
             errors.append(f"{path}: name at least two rejected alternatives, one list item each, under ## Alternatives")
     code = [p for p in changed if not p.startswith(DECISIONS) and not p.endswith(".md")]
     if added and code and all(p.startswith(WEB_UI) for p in code):
-        errors.append(f"{', '.join(sorted(added))}: a web UI change records no ADR; "
+        errors.append(f"{', '.join(sorted(added))}: a web UI change (with its e2e tests) records no ADR; "
                       "keep the convention next to the UI")
     return errors
 
 
-def branch_decision_changes(root, integration):
+def branch_decision_changes(root, integration, ci_ref=""):
     """The decision records the branch adds and every path it changes, committed or not, against
-    its merge base with `origin/<integration>`; None when that ref is not fetched."""
+    its merge base with `origin/<integration>`; None when that ref is not fetched, and for a merge
+    candidate (`YULIUS_CI_REF` `train/...`), whose members were each checked on their own."""
+    if ci_ref.startswith("train/"):
+        return None
     def git(*args):
         result = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
         return result.stdout if result.returncode == 0 else None
@@ -239,7 +241,7 @@ def branch_decision_changes(root, integration):
     if base is None:
         return None
     base = base.strip()
-    changed = set(filter(None, (git("diff", "--name-only", "-z", base) or "").split("\0")))
+    changed = set(filter(None, (git("diff", "--name-only", "--no-renames", "-z", base) or "").split("\0")))
     changed |= set(filter(None, (git("ls-files", "--others", "--exclude-standard", "-z") or "").split("\0")))
     before = set(filter(None, (git("ls-tree", "--name-only", "-z", base, DECISIONS) or "").split("\0")))
     added = {path: (Path(root) / path).read_text() for path in sorted(changed)
@@ -840,7 +842,7 @@ def check():
     errors.extend(skill_deployment_errors(ROOT / ".apm/skills", [ROOT / ".agents/skills", ROOT / ".claude/skills"]))
     errors.extend(decision_errors(ROOT / "docs/decisions"))
     integration = os.environ.get("YULIUS_INTEGRATION_BRANCH") or "dev"
-    branch = branch_decision_changes(ROOT, integration)
+    branch = branch_decision_changes(ROOT, integration, os.environ.get("YULIUS_CI_REF", ""))
     if branch is not None:
         errors.extend(new_decision_errors(*branch))
     errors.extend(instruction_errors())
@@ -856,7 +858,7 @@ def check():
     errors.extend(integration_test_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
-    against = f"origin/{integration}" if branch is not None else f"nothing (origin/{integration} not fetched)"
+    against = f"origin/{integration}" if branch is not None else "nothing (a merge candidate, or no integration ref)"
     print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, no conflict markers, unique decision numbers, new ADRs against {against}, delivery instructions, UI design tokens, one product test binary")
 
 

@@ -20,7 +20,7 @@ order: 60
 Follow `infra-bootstrap`, including by-hand checks and disk scratch, and `delivery-pipeline`.
 
 - Respect what exists: map existing scripts, tests and docs instead of replacing them, and pick
-  what is state of the art for this stack. A choice to reverse gets an ADR.
+  what is state of the art for this stack. Only a choice someone may want to reverse gets an ADR.
 - One gate runs everything a merge depends on, the same way everywhere: `[commands] gate` or
   `[[ci.jobs]]` in `yulius.toml`. Translate every `.github/workflows/*` job into it (`ci_setup`
   lists them), run it, then delete the workflows in the same pull request. Never add GitHub
@@ -35,4 +35,4 @@ Follow `infra-bootstrap`, including by-hand checks and disk scratch, and `delive
   (`yulius security-scan --ci`): add only the rule to scan before delivery; else note: no Vidoc
   key on this instance.
 - Keep each step a small pull request (chain the next task). Then keep the foundations stable:
-  change them only with a new ADR.
+  change them only by updating their ADR, or a new one that reverses it.

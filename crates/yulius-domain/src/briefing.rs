@@ -628,10 +628,7 @@ fn decisions_rule(layout: &DocsLayout) -> String {
             "ADR in {}",
             code(&format!("{directory}/NNNN-<slug>.md"), 220)
         ),
-        DecisionsLocation::File(file) => format!(
-            "ADR as a new `## <decision>` entry (context, decision, alternatives, consequences) in {}",
-            code(file, 200)
-        ),
+        DecisionsLocation::File(file) => format!("`## <decision>` ADR in {}", code(file, 200)),
     }
 }
 
@@ -678,7 +675,7 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          5. Decide like a senior engineer: compare options, choose and justify yourself (do not \
          ask the user to choose). Write an {decisions} only for a build or run choice someone \
          may want to reverse, with two rejected alternatives. Keep the \
-         architecture document {architecture} (with at least one Mermaid diagram), the product \
+         architecture document {architecture} (with a Mermaid diagram), the product \
          summary and AGENTS.md true in the same change. No secrets in the repository: keys go \
          in the ignored `.env` (names in `.env.example`), agent secrets via \
          `secret_copy_to_env`.\n\
@@ -1841,6 +1838,16 @@ mod tests {
         Ok(())
     }
 
+    fn decision_layouts() -> [DocsLayout; 2] {
+        [
+            DocsLayout::default(),
+            DocsLayout {
+                decisions: DecisionsLocation::File("docs/decisions.md".to_owned()),
+                ..DocsLayout::default()
+            },
+        ]
+    }
+
     fn assert_mandatory(text: &str) {
         assert!(!text.contains("lasting decision"), "{text}");
         let mut last = 0;
@@ -2130,30 +2137,32 @@ mod tests {
     #[test]
     fn short_parts_donate_budget_to_long_ones() -> TestResult {
         let profile = DeliveryProfile::standard();
-        let layout = DocsLayout::default();
-        let mut input = base(&profile, &layout)?;
-        // 100 listed titles of ~150 bytes exceed the budget: the list is cut by bytes.
-        let topic = "about a topic ".repeat(10);
-        input.decision_titles = (0..400)
-            .map(|n| format!("Decision number {n} {topic}"))
-            .collect();
-        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
-        assert!(text.len() <= DEFAULT_BUDGET_BYTES);
-        // Small sections stay complete while the long decision list is cut.
-        assert!(text.contains("- #13 Search (claude, running)"));
-        assert!(text.contains("- 2026-10-07 Catalog: Product list and detail pages."));
-        let decisions = text.find("## Decisions").ok_or("decisions")?;
-        let recent = text.find("## Recent changes").ok_or("recent")?;
-        let section = &text[decisions..recent];
-        assert!(section.contains("Decision number 0 about a topic"));
-        assert!(!section.contains("Decision number 99 "));
-        assert!(
-            section.ends_with(&format!("{TRUNCATION_MARKER}\n")),
-            "{section:?}"
-        );
-        // The long section received far more than its weighted share (2/14) of the remainder
-        // (about 250 bytes of the 9,500-byte budget): whole lines of about 160 bytes.
-        assert!(section.len() > 1_400, "{} bytes", section.len());
+        // Both decision layouts: the file one names more parts of an entry.
+        for layout in decision_layouts() {
+            let mut input = base(&profile, &layout)?;
+            // 100 listed titles of ~150 bytes exceed the budget: the list is cut by bytes.
+            let topic = "about a topic ".repeat(10);
+            input.decision_titles = (0..400)
+                .map(|n| format!("Decision number {n} {topic}"))
+                .collect();
+            let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+            assert!(text.len() <= DEFAULT_BUDGET_BYTES);
+            // Small sections stay complete while the long decision list is cut.
+            assert!(text.contains("- #13 Search (claude, running)"));
+            assert!(text.contains("- 2026-10-07 Catalog: Product list and detail pages."));
+            let decisions = text.find("## Decisions").ok_or("decisions")?;
+            let recent = text.find("## Recent changes").ok_or("recent")?;
+            let section = &text[decisions..recent];
+            assert!(section.contains("Decision number 0 about a topic"));
+            assert!(!section.contains("Decision number 99 "));
+            assert!(
+                section.ends_with(&format!("{TRUNCATION_MARKER}\n")),
+                "{section:?}"
+            );
+            // The long section received far more than its weighted share (2/14) of the remainder
+            // (about 250 bytes of the 9,500-byte budget): whole lines of about 160 bytes.
+            assert!(section.len() > 1_400, "{} bytes", section.len());
+        }
         Ok(())
     }
 
@@ -2235,7 +2244,7 @@ mod tests {
             "Never commit or push to `quartio` or `main`",
             "promotion to `main` (fast-forward, automatic after merge)",
             "no required checks",
-            "new `## <decision>` entry (context, decision, alternatives, consequences) in `knowledge/decisions.md`",
+            "Write an `## <decision>` ADR in `knowledge/decisions.md` only for a build or run choice",
             "`docs/product.md` is missing or empty",
             "`docs/architecture.md` is missing: create it",
             "No decisions recorded yet.",
@@ -2731,59 +2740,61 @@ mod tests {
     #[test]
     fn a_long_goal_shrinks_before_a_mandatory_part_is_cut() -> TestResult {
         let profile = DeliveryProfile::standard();
-        let layout = DocsLayout::default();
-        let budget = DEFAULT_BUDGET_BYTES - 1_650;
-        for (isolated, docker) in [(false, false), (true, false), (true, true)] {
-            let mut input = base(&profile, &layout)?;
-            input.isolated = isolated;
-            input.docker = docker;
-            input.project_name = "Quartio-Studio/yulius".to_owned();
-            input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
-            input.task.title = "i got this from a different projectfix".to_owned();
-            input.task.goal = "deployer ".repeat(80);
-            input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
-            input.task.spec_path =
-                ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
-            let text = build_briefing(&input, budget);
-            assert!(text.len() <= budget, "{} bytes", text.len());
-            for heading in MANDATORY_HEADINGS {
-                assert!(
-                    text.contains(heading),
-                    "isolated {isolated}: {heading} cut\n{text}"
+        // Both decision layouts: the file one names more parts of an entry.
+        for layout in decision_layouts() {
+            let budget = DEFAULT_BUDGET_BYTES - 1_650;
+            for (isolated, docker) in [(false, false), (true, false), (true, true)] {
+                let mut input = base(&profile, &layout)?;
+                input.isolated = isolated;
+                input.docker = docker;
+                input.project_name = "Quartio-Studio/yulius".to_owned();
+                input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
+                input.task.title = "i got this from a different projectfix".to_owned();
+                input.task.goal = "deployer ".repeat(80);
+                input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
+                input.task.spec_path =
+                    ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
+                let text = build_briefing(&input, budget);
+                assert!(text.len() <= budget, "{} bytes", text.len());
+                for heading in MANDATORY_HEADINGS {
+                    assert!(
+                        text.contains(heading),
+                        "isolated {isolated}: {heading} cut\n{text}"
+                    );
+                }
+                for needle in [
+                    "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
+                    "Spec: `.ai/specs/SPEC-173-",
+                    "Goal:\n> deployer deployer",
+                ] {
+                    assert!(
+                        text.contains(needle),
+                        "isolated {isolated}: {needle} cut\n{text}"
+                    );
+                }
+                // Without the Containers section there is room for every optional heading too.
+                for heading in [
+                    "## Project summary",
+                    "## Decisions",
+                    "## Recent changes",
+                    "## Parallel tasks",
+                ] {
+                    assert!(
+                        isolated || text.contains(heading),
+                        "{heading} dropped\n{text}"
+                    );
+                }
+                assert_eq!(
+                    text.contains("start them yourself."),
+                    isolated && !docker,
+                    "the no-engine section is whole exactly when isolated without one\n{text}"
+                );
+                assert_eq!(
+                    text.contains(DOCKER_SECTION_END),
+                    docker,
+                    "the engine's section is whole exactly with one\n{text}"
                 );
             }
-            for needle in [
-                "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
-                "Spec: `.ai/specs/SPEC-173-",
-                "Goal:\n> deployer deployer",
-            ] {
-                assert!(
-                    text.contains(needle),
-                    "isolated {isolated}: {needle} cut\n{text}"
-                );
-            }
-            // Without the Containers section there is room for every optional heading too.
-            for heading in [
-                "## Project summary",
-                "## Decisions",
-                "## Recent changes",
-                "## Parallel tasks",
-            ] {
-                assert!(
-                    isolated || text.contains(heading),
-                    "{heading} dropped\n{text}"
-                );
-            }
-            assert_eq!(
-                text.contains("start them yourself."),
-                isolated && !docker,
-                "the no-engine section is whole exactly when isolated without one\n{text}"
-            );
-            assert_eq!(
-                text.contains(DOCKER_SECTION_END),
-                docker,
-                "the engine's section is whole exactly with one\n{text}"
-            );
         }
         Ok(())
     }
@@ -2830,50 +2841,52 @@ mod tests {
     #[test]
     fn the_containers_section_never_displaces_the_task_or_the_architecture() -> TestResult {
         let profile = DeliveryProfile::standard();
-        let layout = DocsLayout::default();
-        let budget = DEFAULT_BUDGET_BYTES - 1_650;
-        for goal_len in [80, 200, 400, 600] {
-            let mut input = base(&profile, &layout)?;
-            input.project_name = "Quartio-Studio/yulius".to_owned();
-            input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
-            input.task.title = "i got this from a different projectfix".to_owned();
-            input.task.goal = "deployer ".repeat(goal_len / 9);
-            input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
-            input.task.spec_path =
-                ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
-            let plain = build_briefing(&input, budget);
-            for (docker, end) in [(false, "start them yourself."), (true, DOCKER_SECTION_END)] {
-                let isolated = build_briefing(
-                    &BriefingInput {
-                        isolated: true,
-                        docker,
-                        ..input.clone()
-                    },
-                    budget,
-                );
-                assert!(isolated.len() <= budget, "{} bytes", isolated.len());
-                for needle in [
-                    "## Your task",
-                    "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
-                    "Spec: `.ai/specs/SPEC-173-",
-                    "## Architecture",
-                ] {
-                    // With a short goal the plain briefing keeps them all, so the check is not
-                    // empty.
-                    assert!(
-                        goal_len != 80 || plain.contains(needle),
-                        "goal {goal_len}: {needle} not in the plain {plain}"
+        // Both decision layouts: the file one names more parts of an entry.
+        for layout in decision_layouts() {
+            let budget = DEFAULT_BUDGET_BYTES - 1_650;
+            for goal_len in [80, 200, 400, 600] {
+                let mut input = base(&profile, &layout)?;
+                input.project_name = "Quartio-Studio/yulius".to_owned();
+                input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
+                input.task.title = "i got this from a different projectfix".to_owned();
+                input.task.goal = "deployer ".repeat(goal_len / 9);
+                input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
+                input.task.spec_path =
+                    ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
+                let plain = build_briefing(&input, budget);
+                for (docker, end) in [(false, "start them yourself."), (true, DOCKER_SECTION_END)] {
+                    let isolated = build_briefing(
+                        &BriefingInput {
+                            isolated: true,
+                            docker,
+                            ..input.clone()
+                        },
+                        budget,
                     );
-                    assert!(
-                        !plain.contains(needle) || isolated.contains(needle),
-                        "goal {goal_len}, docker {docker}: {needle} lost in {isolated}"
-                    );
-                }
-                if goal_len == 80 {
-                    assert!(
-                        isolated.contains(end),
-                        "goal {goal_len}, docker {docker}: section cut in {isolated}"
-                    );
+                    assert!(isolated.len() <= budget, "{} bytes", isolated.len());
+                    for needle in [
+                        "## Your task",
+                        "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
+                        "Spec: `.ai/specs/SPEC-173-",
+                        "## Architecture",
+                    ] {
+                        // With a short goal the plain briefing keeps them all, so the check is not
+                        // empty.
+                        assert!(
+                            goal_len != 80 || plain.contains(needle),
+                            "goal {goal_len}: {needle} not in the plain {plain}"
+                        );
+                        assert!(
+                            !plain.contains(needle) || isolated.contains(needle),
+                            "goal {goal_len}, docker {docker}: {needle} lost in {isolated}"
+                        );
+                    }
+                    if goal_len == 80 {
+                        assert!(
+                            isolated.contains(end),
+                            "goal {goal_len}, docker {docker}: section cut in {isolated}"
+                        );
+                    }
                 }
             }
         }
