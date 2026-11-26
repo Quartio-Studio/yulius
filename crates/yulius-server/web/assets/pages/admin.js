@@ -76,7 +76,7 @@ export function mountUsersPage(ctx) {
       if (!(await patch(u, { is_instance_admin: checked }, checked ? `@${u.github_login} is now an instance admin.` : `@${u.github_login} is no longer an instance admin.`))) input.checked = !checked;
     } }) : (u.is_instance_admin ? 'Yes' : 'No')) },
     { label: 'Access', render: (u) => (superadmin ? toggle({ checked: !u.disabled, label: `Access for ${u.github_login}`, onChange: async (checked, input) => {
-      if (!checked && !(await confirmDialog({ title: `Disable @${u.github_login}?`, message: 'They are signed out everywhere and their live terminal connections close.', confirmLabel: 'Disable', danger: true }))) { input.checked = true; return; }
+      if (!checked && !(await confirmDialog({ title: `Disable @${u.github_login}?`, message: 'They are signed out everywhere, their live terminal connections close, and every task they own stops. Anyone who may work in a project can take control of their tasks and continue them.', confirmLabel: 'Disable', danger: true }))) { input.checked = true; return; }
       if (!(await patch(u, { disabled: !checked }, checked ? `@${u.github_login} enabled.` : `@${u.github_login} disabled.`))) input.checked = !checked;
       else u.disabled = !checked;
     } }) : (u.disabled ? badge('Disabled', 'danger') : 'Allowed')) },

@@ -499,6 +499,9 @@ pub struct TaskRuntime {
     /// The terminal already said that this task acts on GitHub as the App, not its owner
     /// (F 2026-10-11), so it is said once.
     pub(crate) acting_as_app_said: AtomicBool,
+    /// The terminal already said that the agent gets no GitHub credential because of its owner's
+    /// standing (ADR-0481), so it is said once per owner.
+    pub(crate) credential_refused_said: AtomicBool,
     /// When a switch of this task was last refused before it started (ms, 0 = never): an
     /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
     pub(crate) switch_refused_ms: AtomicI64,
@@ -919,6 +922,7 @@ impl TaskRuntime {
             person_held_ms: AtomicI64::new(0),
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
+            credential_refused_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
             claude_move_refused_ms: AtomicI64::new(0),
             context: Mutex::new(crate::context_full::ContextEpisode::default()),

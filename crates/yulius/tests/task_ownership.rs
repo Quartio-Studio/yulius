@@ -2160,9 +2160,18 @@ async fn an_owner_down_to_read_access_has_their_run_refused_a_git_credential() -
             f.h.app.now(),
         )
         .await?;
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
     let refused = agent_credential(&f.h, "tt").await?;
     assert_eq!(refused.status, 403, "{}", refused.body);
     assert!(refused.body.get("token").is_none(), "{}", refused.body);
+    // The terminal says why the agent's git fails, once however often it asks.
+    assert_eq!(agent_credential(&f.h, "tt").await?.status, 403);
+    let said: Vec<String> = notices(&mut watch)
+        .into_iter()
+        .filter(|n| n.contains("no GitHub credential"))
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("@alice"), "{said:?}");
     let bob = agent_credential(&f.h, "tt2").await?;
     assert_eq!(bob.status, 200, "{}", bob.body);
     assert_eq!(bob.body["token"], "agent-inst");
@@ -2273,18 +2282,22 @@ async fn a_stop_that_fails_on_disable_leaves_the_rest_stopped_and_the_credential
 -> TestResult {
     let f = fixture_with_app().await?;
     seed_task(&f.h, "t-q", "s1", "u-a", TaskStatus::Queued, None).await?;
-    // Every round of the stop of `t1` loses: between its read and its change the task moves.
-    for _ in 0..8 {
+    // A task id of its own: a hook left after this test's runtime ends would fire anywhere.
+    seed_task(&f.h, "t-stuck", "s1", "u-a", TaskStatus::Running, None).await?;
+    seed_live_attempt(&f.h, "t-stuck", "tt-stuck").await?;
+    // Every round of its stop (4, the stop's bound) loses: between its read and its change the
+    // task moves between Running and Switching, from both of which a stop goes on.
+    for _ in 0..4 {
         let store = f.h.store.clone();
         let handle = tokio::runtime::Handle::current();
         let now = f.h.app.now();
         yulius_app::race::on(
             yulius_app::race::Point::StopDecided,
-            std::path::Path::new("t1"),
+            std::path::Path::new("t-stuck"),
             move || {
                 tokio::task::block_in_place(|| {
                     handle.block_on(async {
-                        let id = TaskId::parse("t1").ok()?;
+                        let id = TaskId::parse("t-stuck").ok()?;
                         let status = store.task(&id).await.ok()??.status;
                         let next = if status == TaskStatus::Running {
                             TaskStatus::Switching
@@ -2307,13 +2320,20 @@ async fn a_stop_that_fails_on_disable_leaves_the_rest_stopped_and_the_credential
     let queued = f.h.store.task(&TaskId::parse("t-q")?).await?.ok_or("t-q")?;
     assert_eq!(queued.status, RESTING);
     assert_eq!(audits_of(&f.h, "t-q", "task.stopped").await?.len(), 1);
-    let live = f.h.store.task(&f.task.id).await?.ok_or("t1")?.status;
+    let stuck = TaskId::parse("t-stuck")?;
+    let live = f.h.store.task(&stuck).await?.ok_or("t-stuck")?.status;
     assert!(
         matches!(live, TaskStatus::Running | TaskStatus::Switching),
         "{live:?}"
     );
-    assert!(audits_of(&f.h, "t1", "task.stopped").await?.is_empty());
-    let refused = agent_credential(&f.h, "tt").await?;
+    assert!(audits_of(&f.h, "t-stuck", "task.stopped").await?.is_empty());
+    // Her other live task stops all the same.
+    let other = f.h.store.task(&f.task.id).await?.ok_or("t1")?.status;
+    assert!(
+        other.is_resting() || other == TaskStatus::Stopping,
+        "{other:?}"
+    );
+    let refused = agent_credential(&f.h, "tt-stuck").await?;
     assert_eq!(refused.status, 401, "{}", refused.body);
     Ok(())
 }

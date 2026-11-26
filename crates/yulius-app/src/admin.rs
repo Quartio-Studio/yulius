@@ -123,7 +123,6 @@ impl App {
         if req.disabled == Some(true) {
             store.revoke_user_credentials(&id, now).await?;
             store.clear_access(&id).await?;
-            self.stop_tasks_of_disabled(&user).await?;
         }
         store
             .audit(
@@ -134,22 +133,46 @@ impl App {
                 Some(&format!("{req:?}")),
             )
             .await?;
+        if req.disabled == Some(true) {
+            // On a task of its own: a page that goes away does not leave the stops half done.
+            let app = Arc::clone(self);
+            let owner = user.id.clone();
+            let stops = tokio::spawn(async move { app.stop_tasks_of_disabled(&owner).await });
+            if let Err(err) = stops.await {
+                tracing::warn!(error = %err, "stopping a disabled person's tasks failed");
+            }
+        }
         let updated = store.user(&id).await?.ok_or(AppError::NotFound)?;
         Ok(view(&updated, self.two_factor_of(&id).await?))
     }
 
-    /// Stops every task `user` owns that is not resting, live or about to start by itself
+    /// Stops every task `owner` owns that is not resting, live or about to start by itself
     /// (SPEC-675 L4Q3-002, ADR-0481): nothing started on a disabled person's authority runs on.
-    /// Each stop is audited and said in the task's terminal; one that fails is logged and the
-    /// rest go on (its run is refused a git credential all the same).
-    ///
-    /// # Errors
-    /// Store failures listing the tasks.
-    async fn stop_tasks_of_disabled(self: &Arc<Self>, user: &UserRecord) -> AppResult<()> {
+    /// Waiting tasks stop first, so a slot a stopped run frees starts none of them. A task is read
+    /// again before its stop and left when someone took control meanwhile. Each stop is audited
+    /// and said in the task's terminal; one that fails, or a failed listing, is logged and the
+    /// rest go on (such a run is refused a git credential all the same).
+    async fn stop_tasks_of_disabled(self: &Arc<Self>, owner: &UserId) {
         let store = &self.deps.store;
-        let tasks = store.tasks_with_status(&NOT_RESTING).await?;
-        let login = user.github_login.as_deref().unwrap_or(user.id.as_str());
-        for task in tasks.iter().filter(|t| t.owner == user.id) {
+        let mut tasks = match store.tasks_with_status(&NOT_RESTING).await {
+            Ok(tasks) => tasks,
+            Err(err) => {
+                tracing::warn!(error = %err, "a disabled person's tasks could not be listed");
+                return;
+            }
+        };
+        tasks.retain(|t| t.owner == *owner);
+        tasks.sort_by_key(|t| t.status.is_live());
+        let login = self.login_of(owner).await;
+        for task in &tasks {
+            match store.task(&task.id).await {
+                Ok(Some(now)) if now.owner == *owner => {}
+                Ok(_) => continue,
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "a disabled owner's task unreadable");
+                    continue;
+                }
+            }
             if let Err(err) = self.stop_task_now(&task.id).await {
                 tracing::warn!(task = %task.id, error = %err, "a disabled owner's task did not stop");
                 continue;
@@ -177,7 +200,6 @@ impl App {
                     .notice(format!("Stopped: its owner @{login} was disabled."));
             }
         }
-        Ok(())
     }
 }
 

@@ -2254,10 +2254,28 @@ impl App {
             ));
         }
         // Only while the task's owner is enabled and may still work in the project, as for a
-        // person's own git (SPEC-675 L4Q3-001, ADR-0481).
-        let (_, sandbox) = self
+        // person's own git (SPEC-675 L4Q3-001, ADR-0481). The terminal says why, once.
+        let (_, sandbox) = match self
             .git_credential_holder(&ctx.task.owner, &ctx.task.sandbox_id)
-            .await?;
+            .await
+        {
+            Ok(holder) => holder,
+            Err(err) => {
+                let runtime = self.runtime(&ctx.task.id);
+                if !runtime
+                    .credential_refused_said
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let owner = self.login_of(&ctx.task.owner).await;
+                    runtime.hub.notice(format!(
+                        "This task's agent gets no GitHub credential: its owner @{owner} is \
+                         disabled, lost write access to the project, or their access cannot be \
+                         checked now. Someone who may work here can take control of the task."
+                    ));
+                }
+                return Err(err);
+            }
+        };
         // A playground has no GitHub repository: nothing is issued (SPEC-099 PLY-002).
         if sandbox.is_playground() {
             return Err(AppError::Forbidden(

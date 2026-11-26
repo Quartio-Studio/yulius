@@ -454,6 +454,9 @@ impl App {
         let runtime = self.runtime(&task.id);
         // The App-fallback notice is the new owner's to see again.
         runtime.acting_as_app_said.store(false, Ordering::SeqCst);
+        runtime
+            .credential_refused_said
+            .store(false, Ordering::SeqCst);
         // What each side is told (SPEC-490 OWN-010): a hand-over on request can be taken back.
         let (notice, action) = match how {
             Handover::TakenBack => (
