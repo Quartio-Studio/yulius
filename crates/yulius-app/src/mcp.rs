@@ -33,11 +33,12 @@ pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; PROJECT_TOOLS.len() + PERSON_TOOLS.len() + SUPERAGENT_TOOLS.len()] =
-    cockpit_tools();
+pub const COCKPIT_TOOLS: [&str;
+    PROJECT_TOOLS.len() + PERSON_TOOLS.len() + COCKPIT_OTHER_TOOLS.len()] = cockpit_tools();
 
-/// The tools only a Cockpit is served, beside [`PROJECT_TOOLS`] and the person's project tools.
-const SUPERAGENT_TOOLS: &[&str] = &[
+/// The tools a Cockpit is served that neither [`PROJECT_TOOLS`] nor the person's project tools
+/// name; a task's agent has some of them too.
+const COCKPIT_OTHER_TOOLS: &[&str] = &[
     "task_message",
     "commands_list",
     "secret_verify",
@@ -78,7 +79,7 @@ const SUPERAGENT_TOOLS: &[&str] = &[
     "ability_report",
 ];
 
-/// [`COCKPIT_TOOLS`]: [`PROJECT_TOOLS`], the person's project tools and [`SUPERAGENT_TOOLS`].
+/// [`COCKPIT_TOOLS`]: [`PROJECT_TOOLS`], the person's project tools and [`COCKPIT_OTHER_TOOLS`].
 const fn cockpit_tools<const N: usize>() -> [&'static str; N] {
     let mut tools = [""; N];
     let mut i = 0;
@@ -92,10 +93,11 @@ const fn cockpit_tools<const N: usize>() -> [&'static str; N] {
         j += 1;
     }
     let mut k = 0;
-    while k < SUPERAGENT_TOOLS.len() {
-        tools[i + j + k] = SUPERAGENT_TOOLS[k];
+    while k < COCKPIT_OTHER_TOOLS.len() {
+        tools[i + j + k] = COCKPIT_OTHER_TOOLS[k];
         k += 1;
     }
+    assert!(i + j + k == N, "COCKPIT_TOOLS has a length of its own");
     tools
 }
 
