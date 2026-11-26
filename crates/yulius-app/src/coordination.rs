@@ -9,6 +9,7 @@ use crate::auth::rfc3339;
 use crate::context::App;
 use crate::discipline::{step_by_title, step_states};
 use crate::error::{AppError, AppResult};
+use crate::mcp_args::text_arg;
 use crate::model::{AttemptRecord, StepRecord, TaskRecord};
 use yulius_domain::steps::{self as rules, By, PlannedStep, StepStatus};
 
@@ -78,12 +79,6 @@ pub struct ProjectCaller {
     pub actor: String,
     /// Audit detail naming the caller.
     pub detail: Value,
-}
-
-fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| AppError::Invalid(format!("missing string argument `{key}`")))
 }
 
 impl App {
@@ -540,7 +535,7 @@ impl App {
     /// # Errors
     /// `Invalid` (with the rule that was broken) or `NotFound`.
     pub async fn tool_step_update(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
-        let status = str_arg(args, "status")?;
+        let status = text_arg(args, "status")?;
         let parsed = StepStatus::parse(status)
             .ok_or_else(|| AppError::Invalid(format!("status must be one of {STEP_STATUSES:?}")))?;
         let runtime = self.runtime(&ctx.task.id);
@@ -551,7 +546,7 @@ impl App {
         } else if let Some(n) = args.get("ordinal").and_then(Value::as_u64) {
             steps.iter().find(|s| u64::from(s.ordinal) == n)
         } else {
-            step_by_title(&steps, str_arg(args, "title")?)
+            step_by_title(&steps, text_arg(args, "title")?)
         }
         .ok_or(AppError::NotFound)?;
         let index = steps

@@ -11,21 +11,19 @@ use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
 
 use crate::users::insert_user_tx;
-use crate::{SqliteStore, bad_column};
+use crate::{SqliteStore, opt_ts, text_parsed};
 
 const COLS: &str = "id, sandbox_id, code_hash, created_by, created_at, expires_at, revoked_at";
 
 fn invite_from_row(row: &Row<'_>) -> rusqlite::Result<PlaygroundInviteRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
-    let by: String = row.get("created_by")?;
     Ok(PlaygroundInviteRecord {
         id: row.get("id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         code_hash: row.get("code_hash")?,
-        created_by: UserId::parse(&by).map_err(|_| bad_column("user id", &by))?,
+        created_by: text_parsed(row, "created_by", "user id", UserId::parse)?,
         created_at: Timestamp(row.get("created_at")?),
         expires_at: Timestamp(row.get("expires_at")?),
-        revoked_at: row.get::<_, Option<i64>>("revoked_at")?.map(Timestamp),
+        revoked_at: opt_ts(row, "revoked_at")?,
     })
 }
 
@@ -119,9 +117,8 @@ impl PlaygroundGuestStore for SqliteStore {
                      WHERE i.sandbox_id = ?1 ORDER BY g.joined_at, g.rowid",
             )?;
             let rows = stmt.query_map([sandbox], |row| {
-                let user: String = row.get(0)?;
                 Ok(PlaygroundGuestRecord {
-                    user_id: UserId::parse(&user).map_err(|_| bad_column("user id", &user))?,
+                    user_id: text_parsed(row, 0, "user id", UserId::parse)?,
                     display_name: row.get(1)?,
                     invite_id: row.get(2)?,
                     joined_at: Timestamp(row.get(3)?),
@@ -230,8 +227,7 @@ impl PlaygroundGuestStore for SqliteStore {
                 "SELECT user_id FROM playground_guests WHERE invite_id = ?1 ORDER BY rowid",
             )?;
             let rows = stmt.query_map([invite], |row| {
-                let user: String = row.get(0)?;
-                UserId::parse(&user).map_err(|_| bad_column("user id", &user))
+                text_parsed(row, 0, "user id", UserId::parse)
             })?;
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })

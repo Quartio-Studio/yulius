@@ -8,13 +8,12 @@ use yulius_app::workflows::WorkflowRecord;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column};
+use crate::{DbResult, SqliteStore, bad_column, text_parsed};
 
 const COLS: &str = "id, sandbox_id, name, description, steps, instructions, gates, created_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<WorkflowRecord> {
     let sandbox: Option<String> = row.get("sandbox_id")?;
-    let steps: String = row.get("steps")?;
     let gates: String = row.get("gates")?;
     let gates: serde_json::Value =
         serde_json::from_str(&gates).map_err(|_| bad_column("gates", &gates))?;
@@ -26,7 +25,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<WorkflowRecord> {
             .transpose()?,
         name: row.get("name")?,
         description: row.get("description")?,
-        steps: serde_json::from_str(&steps).map_err(|_| bad_column("steps", &steps))?,
+        steps: text_parsed(row, "steps", "steps", |text| serde_json::from_str(text))?,
         instructions: row.get("instructions")?,
         require_spec: gates["require_spec"].as_bool().unwrap_or(false),
         require_tests: gates["require_tests"].as_bool().unwrap_or(false),

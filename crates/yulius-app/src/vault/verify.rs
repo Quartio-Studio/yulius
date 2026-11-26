@@ -157,8 +157,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: VerifyArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: VerifyArgs = super::parse_args(args)?;
         let candidate = parse_sha256(&args.sha256).ok_or_else(|| {
             AppError::Invalid(
                 "sha256 must be the candidate's SHA-256 as 64 hexadecimal digits (sha256sum prints it)"
@@ -168,16 +167,12 @@ impl App {
         // Read before the record: a rotation landing meanwhile audits the next check again.
         let generation = self.vault_generation();
         let record = self
-            .resolved_agent_secrets(&caller.sandbox, super::runtime::caller_holder(caller))
-            .await?
-            .into_iter()
-            .find(|r| r.name == args.secret.trim())
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "no agent secret named {:?} applies to this project (see secrets_list)",
-                    args.secret
-                ))
-            })?;
+            .named_agent_secret(
+                &caller.sandbox,
+                super::runtime::caller_holder(caller),
+                &args.secret,
+            )
+            .await?;
         if record.cd_prod {
             return Err(AppError::Forbidden(super::PRODUCTION_SECRET.into()));
         }

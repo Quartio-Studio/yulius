@@ -8,7 +8,7 @@ use yulius_app::ports::store_ext::{HandoffRecord, HandoffStore};
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column};
+use crate::{SqliteStore, bad_column, text_parsed};
 
 const COLUMNS: &str = "id, source_task, source_sandbox, target_sandbox, owner, args, chain, depth, \
                        state, reason, target_task, created_at";
@@ -25,7 +25,6 @@ fn handoff_row(row: &Row<'_>) -> rusqlite::Result<HandoffRecord> {
     let source_sandbox = parse(2, "source sandbox")?;
     let target_sandbox = parse(3, "target sandbox")?;
     let owner = parse(4, "owner")?;
-    let chain: String = row.get(6)?;
     let target: Option<String> = row.get(10)?;
     Ok(HandoffRecord {
         id: row.get(0)?,
@@ -37,7 +36,7 @@ fn handoff_row(row: &Row<'_>) -> rusqlite::Result<HandoffRecord> {
             .map_err(|_| bad_column("sandbox id", &target_sandbox))?,
         owner: UserId::parse(&owner).map_err(|_| bad_column("user id", &owner))?,
         args: row.get(5)?,
-        chain: serde_json::from_str(&chain).map_err(|_| bad_column("chain", &chain))?,
+        chain: text_parsed(row, 6, "chain", |text| serde_json::from_str(text))?,
         depth: row.get(7)?,
         state: row.get(8)?,
         reason: row.get(9)?,

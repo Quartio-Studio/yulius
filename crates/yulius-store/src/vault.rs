@@ -14,7 +14,7 @@ use yulius_domain::time::Timestamp;
 use yulius_domain::vault::SecretRule;
 use yulius_domain::vault::rules::parse_rules;
 
-use crate::{DbResult, SqliteStore, bad_column, to_i64, to_u32};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_as, text_parsed, to_i64, to_u32};
 
 const COLS: &str = "id, section, sandbox_id, name, description, hosts, injection, header_name, \
      fields, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
@@ -55,12 +55,11 @@ fn rules_column(row: &Row<'_>) -> rusqlite::Result<Vec<SecretRule>> {
 }
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
-    let section: String = row.get("section")?;
     let sandbox: Option<String> = row.get("sandbox_id")?;
     let owner: Option<String> = row.get("owner_id")?;
     Ok(VaultSecretRecord {
         id: row.get("id")?,
-        section: VaultSection::parse(&section).ok_or_else(|| bad_column("section", &section))?,
+        section: text_as(row, "section", "section", VaultSection::parse)?,
         sandbox_id: sandbox
             .as_deref()
             .map(|s| SandboxId::parse(s).map_err(|_| bad_column("sandbox id", s)))
@@ -86,13 +85,10 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
         updated_by: row.get("updated_by")?,
         updated_at: Timestamp(row.get("updated_at")?),
         value_updated_at: Timestamp(row.get("value_updated_at")?),
-        last_used_at: row.get::<_, Option<i64>>("last_used_at")?.map(Timestamp),
+        last_used_at: opt_ts(row, "last_used_at")?,
         requested_hosts: json_list(row, "requested_hosts")?,
         requested_by: row.get("requested_by")?,
-        env_files: {
-            let text: String = row.get("env_files")?;
-            EnvFiles::parse(&text).ok_or_else(|| bad_column("env_files", &text))?
-        },
+        env_files: text_as(row, "env_files", "env_files", EnvFiles::parse)?,
         env_requested_by: row.get("env_requested_by")?,
         cd_prod: row.get::<_, i64>("cd_prod")? != 0,
         auto_allow: row.get::<_, i64>("auto_allow")? != 0,
@@ -100,10 +96,9 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
 }
 
 fn copy_request(row: &Row<'_>) -> rusqlite::Result<VaultCopyRequest> {
-    let sandbox: String = row.get("sandbox_id")?;
     Ok(VaultCopyRequest {
         secret_id: row.get("secret_id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         name: row.get("name")?,
         hosts: json_list(row, "hosts")?,
         requested_by: row.get("requested_by")?,
@@ -757,12 +752,12 @@ impl VaultStore for SqliteStore {
                             ciphertext: r.get(3)?,
                         },
                         created_at: Timestamp(r.get(4)?),
-                        confirmed_at: r.get::<_, Option<i64>>(5)?.map(Timestamp),
+                        confirmed_at: opt_ts(r, 5)?,
                         last_counter: r
                             .get::<_, Option<i64>>(6)?
                             .map(|n| u64::try_from(n).unwrap_or(0)),
                         failed_attempts: to_u32(r.get(7)?),
-                        failed_at: r.get::<_, Option<i64>>(8)?.map(Timestamp),
+                        failed_at: opt_ts(r, 8)?,
                     })
                 },
             )
