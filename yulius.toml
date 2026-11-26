@@ -67,18 +67,18 @@ name = "file-contracts"
 paths = ["crates/**", "tools/**", "catalog/**", "docs/**", ".apm/**", ".agents/skills/**", ".claude/skills/**", ".ai/**", ".config/**", "deploy/**", "scripts/**", "AGENTS.md", "README.md", "LICENSE", "yulius.toml"]
 command = "python3 scripts/repository_tests.py"
 
-# The full suite (SPEC-591, ADR-0436): both test shards and e2e run on the merged revision, once,
+# The full suite (SPEC-591, ADR-0436): test and e2e run on the merged revision, once,
 # not on pull requests; `[cd.dev]`, the merge-first staging target, changes only to a revision
 # whose full suite passed, and production is promoted only from what staging verified. A pull
 # request runs the quality jobs, security, affected file contracts and changed job definitions.
 [[ci.jobs]]
 name = "test"
-# The old five-job gate gave each shard 22 CPUs on the 112-CPU CI host. With
-# four default compiler shares plus deps, e2e and security, two shares of 21 fit.
-cpus = 21
-matrix = "1/2 2/2"
+# One job builds and runs the whole suite with the 42 CPUs its two former shards had: they shared
+# one nextest archive and unpacked it twice each (ENOSPC on a 1 GiB /tmp), for no shorter run
+# while e2e is the full suite's longest job.
+cpus = 42
 after_merge = true
-command = "scripts/dev test-shard"
+command = "scripts/dev test"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and

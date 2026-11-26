@@ -3860,8 +3860,8 @@ Yulius's own `[cd.dev]` deploys to a staging VM, a Yulius instance no person rel
 [Yulius's own staging VM](operations.md#yuliuss-own-staging-vm)). The scripts are `scripts/cd/`,
 the build `deploy/build/Dockerfile`, and the tests `scripts/test_cd.py`, which run against a fake
 root. Production is still a promotion of `dev` to `main` that each instance installs through
-its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: the two test jobs share one run-scoped nextest archive,
-and both shards and e2e are `after_merge`, and a promotion comes only from the revision staging verified
+its update helper (decision 0264). `[cd.dev]` is Yulius's merge-first target: `test` and e2e are `after_merge`, and a promotion
+comes only from the revision staging verified
 ([decision 0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
 
 ```mermaid
@@ -4804,7 +4804,7 @@ flowchart TD
   R -->|"merge-first target at the integration head"| Q["after_merge jobs skipped: they run on the merged revision"]
 ```
 
-Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust shards cover those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
+Yulius’s own `file-contracts` job looks up Rust tests that read paths in the candidate’s diff. Its path filters cover the UI, catalog, documentation and other repository inputs. The full Rust `test` job covers those tests on dev. [Decision 0448](decisions/0448-repository-file-readers-run-before-merge.md)
 
 ## CI job output
 
