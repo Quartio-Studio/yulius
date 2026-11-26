@@ -192,26 +192,14 @@ impl Git {
 
     /// The tree Git's own merge of `ours` and `theirs` gives, run in `worktree` so the
     /// repository's merge drivers apply (its checked-out `.gitattributes` and `info/attributes`);
-    /// `None` when the merge conflicts. Nothing in the worktree changes.
+    /// `None` when the merge conflicts. Nothing in the worktree changes. With a `base`, that is
+    /// the merge base instead of the one Git finds: what `theirs` changed since `base`, applied
+    /// to `ours` (a follow-up after a squash merge, whose own merge base is the branch's old fork
+    /// point).
     ///
     /// # Errors
-    /// Invalid or unknown revisions, or Git failures (a Git without `merge-tree --write-tree`,
-    /// before 2.38, fails here).
-    pub fn merge_tree(
-        &self,
-        worktree: &Path,
-        ours: &str,
-        theirs: &str,
-    ) -> Result<Option<String>, GitError> {
-        self.merge_tree_from(worktree, None, ours, theirs)
-    }
-
-    /// [`Git::merge_tree`] with `base` as the merge base instead of the one Git finds: what
-    /// `theirs` changed since `base`, applied to `ours` (SPEC-425: a follow-up after a squash
-    /// merge, whose own merge base is the branch's old fork point).
-    ///
-    /// # Errors
-    /// As [`Git::merge_tree`]; a Git before 2.40 (no `--merge-base`) fails here.
+    /// Invalid or unknown revisions, or Git failures (a Git before 2.40, without `merge-tree
+    /// --write-tree --merge-base`, fails here).
     pub fn merge_tree_from(
         &self,
         worktree: &Path,
@@ -230,23 +218,6 @@ impl Git {
                 MergeTree::Conflict(_) => None,
             },
         )
-    }
-
-    /// The paths where Git's merge of `base` and `head` conflicts, or `None` for a clean
-    /// merge. The checkout, index and refs stay as they are.
-    ///
-    /// # Errors
-    /// Invalid or unknown revisions, or Git failures.
-    pub fn merge_conflicts(
-        &self,
-        worktree: &Path,
-        base: &str,
-        head: &str,
-    ) -> Result<Option<Vec<String>>, GitError> {
-        Ok(match self.preview_merge(worktree, base, head)? {
-            crate::TrainStep::Clean { .. } => None,
-            crate::TrainStep::Conflict(files) => Some(files),
-        })
     }
 
     /// The tree or conflict paths produced by merging `theirs` into `ours`, using the
@@ -362,7 +333,7 @@ impl Git {
                     if !self.is_ancestor(worktree, second, integration)? {
                         return Ok(None);
                     }
-                    let Some(merged) = self.merge_tree(worktree, first, second)? else {
+                    let Some(merged) = self.merge_tree_from(worktree, None, first, second)? else {
                         return Ok(None);
                     };
                     if self.tree_of(worktree, &current)?.as_deref() != Some(merged.as_str()) {
