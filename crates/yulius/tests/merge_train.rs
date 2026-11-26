@@ -5829,7 +5829,14 @@ async fn deliver(f: &Fixture, n: u32, worktree: &Path, extra: Value) -> BoxResul
 
 /// The merge queue's stop as the CI/CD page reads it (`null` while merges go on).
 async fn stop_view(f: &Fixture) -> BoxResult<Value> {
-    let r = call(&f.h.router, Method::GET, "/api/sandboxes/s1/ci", None, &f.alice).await?;
+    let r = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/ci",
+        None,
+        &f.alice,
+    )
+    .await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     Ok(r.body["merge_stop"].clone())
 }
@@ -5838,7 +5845,12 @@ async fn stop_view(f: &Fixture) -> BoxResult<Value> {
 async fn waiting_tasks(f: &Fixture, numbers: &[&str]) -> BoxResult<(Value, Value)> {
     let mut expected = Vec::new();
     for id in numbers {
-        let number = f.h.store.task(&TaskId::parse(id)?).await?.ok_or("task")?.number;
+        let number =
+            f.h.store
+                .task(&TaskId::parse(id)?)
+                .await?
+                .ok_or("task")?
+                .number;
         expected.push(json!(number));
     }
     let listed = stop_view(f).await?["waiting"]

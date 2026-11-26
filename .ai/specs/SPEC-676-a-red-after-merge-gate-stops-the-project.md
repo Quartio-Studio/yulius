@@ -175,8 +175,9 @@ no test. Round 2 approved 8637c42f0 with nits only, which this page slice fixes.
     `the_repair_goes_to_the_breaker_but_stays_with_its_owner`.
   - `parking`: `the_breaker_owns_the_repair_and_every_worker_hears_that_merges_wait`.
   - Unit tests in `merge_queue`, `spec_format::config` and `ci::gate_history`.
-  - e2e (`ci.e2e.ts`): `a red after-merge gate shows the stopped merge queue, what holds it and
-    what waits`, and `no stopped-queue banner while merges go on`.
+  - e2e (`ci.e2e.ts`): the stopped queue with two held merges, with one held merge without a pull
+    request and a failure no task is named for, with nothing held, for a reader, focus when its
+    run moves and when the stop clears, and `no stopped-queue banner while merges go on`.
 - Mutation checks, each restored with `git checkout` after a commit:
   - the stop forced off: the hold, repair and dissolve tests fail;
   - quarantine ignored and the setting forced on: the quarantine and off tests fail;
@@ -184,15 +185,25 @@ no test. Round 2 approved 8637c42f0 with nits only, which this page slice fixes.
   - `armed.repair` ignored in `form_train`: the marked-repair test fails;
   - the repair owner's `ORDER BY` terms swapped: the owner-order test fails;
   - before the fix, `the_breaker_owns_the_repair_and_every_worker_hears_that_merges_wait` failed
-    (timed out waiting for the assignment).
-- Commands at 5d506217e (the page slice, after merging `dev` at 7e49115e9):
+    (timed out waiting for the assignment);
+  - page slice: `held_failures_are_named_as_the_notices_name_them` failed before held failures
+    were named from their jobs (`tests::x` instead of `job tests::x`);
+  - page slice: reading only the slot's merge drops a merge under decision from `waiting`, and
+    the hold test fails ("under decision");
+  - page slice: the mock sending a stop on every page fails `no stopped-queue banner while merges
+    go on` (and the gate notice spec beside it).
+- The page slice's independent review: round 1 asked for changes, and they are answered in the
+  commits after 1aefd5dac. One e2e spec could not fail; held failures were named by a string
+  prefix; a merge under decision dropped out of `waiting`; the copy, the uncovered cases and the
+  READMEs needed work.
+- Commands after the page review's fixes:
   - `scripts/dev quick`: passed.
   - `scripts/cargo clippy --workspace --all-targets -- -D warnings`: passed.
   - `scripts/cargo nextest run -p yulius-domain -p yulius-app -p yulius-store -p yulius-contracts
-    -p yulius-server`: 1688 passed.
+    -p yulius-server`: 1689 passed.
   - `scripts/cargo nextest run -p yulius -E 'binary_id(yulius::main) &
     test(/^(merge_train|staging|delivery|parking|local_ci|analytics|ci_api|web)::/)'`: 631 passed.
-  - `cd e2e && npx e2e run tests/ci.e2e.ts`: 35 passed.
+  - `cd e2e && npx e2e run tests/ci.e2e.ts`: 39 passed.
 - The security scan (Vidoc) is turned off for this project: not run, and not counted as passed.
 - What cannot be tested here: the instance's behavior on quartio-v2 itself. It needs the instance
   updated from `main` (a person's promotion). The setting is on there by default, because its
