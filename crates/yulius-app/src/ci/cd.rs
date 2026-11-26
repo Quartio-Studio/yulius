@@ -1461,6 +1461,75 @@ impl App {
         // One deploy at a time reads and writes a sandbox's mirror (round 2, L-b).
         let mirror_lock = mirror_lock(&sandbox.id);
         let _mirror = mirror_lock.lock().await;
+        let (profile, token, stage, branch, sha, target, observed_integration) = self
+            .cd_resolve_target(
+                sandbox,
+                env,
+                requester,
+                expected,
+                (resolved, prove),
+                revision,
+            )
+            .await?;
+        let asker = match actor {
+            CdActor::Agent(ctx) => Some(*ctx),
+            CdActor::Person(..) | CdActor::ForTask(..) => None,
+        };
+        let why = format!("CD {} deploy", env_label(env));
+        self.cd_names_present(sandbox, &target).await?;
+        // Secrets first: a refusal never comes after a promotion.
+        let secrets = self
+            .cd_secret_values(sandbox, env, stage, &target.secrets, asker, &why)
+            .await?;
+        if !(stage == CdStage::Prod && target.promote) {
+            return Ok(Prepared {
+                stage,
+                branch,
+                sha,
+                target,
+                secrets,
+                note: None,
+                promoted: None,
+                kind: CdRunKind::Deploy,
+                source: None,
+                steps: Vec::new(),
+            });
+        }
+        self.cd_promote_for(
+            sandbox,
+            env,
+            (requester, actor),
+            profile,
+            token,
+            stage,
+            branch,
+            sha,
+            observed_integration,
+            why,
+        )
+        .await
+    }
+
+    /// A deploy's verified target, up to its secrets: the stage (into `resolved`), the branch and
+    /// commit, its table, every refusal before a secret read, the profile, the token and the
+    /// integration head it observed.
+    async fn cd_resolve_target(
+        &self,
+        sandbox: &SandboxRecord,
+        env: &str,
+        requester: Requester<'_>,
+        expected: Option<&str>,
+        (resolved, prove): (&mut Option<CdStage>, Option<&mut Option<ProveOnDev>>),
+        revision: Option<&str>,
+    ) -> AppResult<(
+        DeliveryProfile,
+        Secret,
+        CdStage,
+        String,
+        String,
+        CdTarget,
+        String,
+    )> {
         let profile = delivery_profile(sandbox);
         self.dlv_refresh_clone(sandbox).await?;
         let token = self.dlv_installation_token(sandbox).await?;
@@ -1619,30 +1688,34 @@ impl App {
         {
             return Err(running_refusal(env));
         }
-        let asker = match actor {
-            CdActor::Agent(ctx) => Some(*ctx),
-            CdActor::Person(..) | CdActor::ForTask(..) => None,
-        };
-        let why = format!("CD {} deploy", env_label(env));
-        self.cd_names_present(sandbox, &target).await?;
-        // Secrets first: a refusal never comes after a promotion.
-        let secrets = self
-            .cd_secret_values(sandbox, env, stage, &target.secrets, asker, &why)
-            .await?;
-        if !(stage == CdStage::Prod && target.promote) {
-            return Ok(Prepared {
-                stage,
-                branch,
-                sha,
-                target,
-                secrets,
-                note: None,
-                promoted: None,
-                kind: CdRunKind::Deploy,
-                source: None,
-                steps: Vec::new(),
-            });
-        }
+        Ok((
+            profile,
+            token,
+            stage,
+            branch,
+            sha,
+            target,
+            observed_integration,
+        ))
+    }
+
+    /// A person's production deploy with `promote`: the promotion of the verified `sha` (its
+    /// pinned tree, a fast-forward or a merge), then production's new head and its own table,
+    /// authorized again, and its secrets.
+    #[allow(clippy::too_many_arguments)] // One deploy's whole context.
+    async fn cd_promote_for(
+        &self,
+        sandbox: &SandboxRecord,
+        env: &str,
+        (requester, actor): (Requester<'_>, &CdActor<'_>),
+        profile: DeliveryProfile,
+        token: Secret,
+        stage: CdStage,
+        branch: String,
+        sha: String,
+        observed_integration: String,
+        why: String,
+    ) -> AppResult<Prepared> {
         let CdActor::Person(user) = actor else {
             return Err(refusal(&CdRefusal::ProductionIsAPersons));
         };

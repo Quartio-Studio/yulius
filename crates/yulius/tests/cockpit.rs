@@ -4,8 +4,15 @@
 //! starts again, adopted after a server restart, reaped when unwatched for a day (SPEC-021).
 
 use crate::support;
+use crate::support::cockpit::{
+    Fixture, ORIGIN, TOKEN, WAIT, answer_record, attach, cockpit_id, cockpit_tool, conversation,
+    fixture, fixture_ending, fixture_with, insert_account, limit_record, limited_conversation, mcp,
+    open_cockpit, predate_launch_digest, printed, project_of, prompt_record, read_message,
+    read_until, task_rests, transcript_record,
+};
+use crate::support::{eventually, git};
+use std::future::ready;
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -15,7 +22,6 @@ use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
-use support::gated::GatedHost;
 use support::{
     Creds, Harness, HarnessOptions, TestResult, call, harness_with, perms, seed_github_user,
     seed_sandbox, send, serve, ws_connect, ws_refusal_status,
@@ -29,7 +35,7 @@ use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
     WatchFrom,
 };
-use yulius_app::ports::session::{LaunchPlan, SessionHost};
+use yulius_app::ports::session::LaunchPlan;
 use yulius_app::ports::store::AccountStore;
 use yulius_app::shells::{MAX_SHELLS_PER_SANDBOX, SHELL_IDLE_MS};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
@@ -38,266 +44,6 @@ use yulius_domain::ids::{AccountId, SandboxId};
 use yulius_domain::time::Timestamp;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-pub(crate) const ORIGIN: &str = "https://yulius.test";
-const WAIT: Duration = Duration::from_secs(20);
-const TOKEN: &str = "synthetic-oauth-token";
-
-/// Prints its arguments (the MCP config, allowed tools and settings, too long for a line, go to
-/// files in its config dir, as does its shell prefix) and environment, then stays as an
-/// interactive shell.
-const FAKE_CLAUDE: &str = "#!/bin/sh\n\
-if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/fail-resume\" ]; then exit 3; fi\n\
-if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/kill-resume\" ]; then kill -KILL $$; fi\n\
-args=; prev=\n\
-for a in \"$@\"; do\n\
-  case \"$prev\" in\n\
-    --mcp-config) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-mcp-config\" ;;\n\
-    --allowedTools) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-allowed-tools\" ;;\n\
-    --settings) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-settings\" ;;\n\
-    *) case \"$a\" in --mcp-config|--allowedTools|--settings) ;; *) args=\"$args $a\" ;; esac ;;\n\
-  esac\n\
-  prev=$a\n\
-done\n\
-echo \"cockpit-args:[${args# }]\"\n\
-echo \"bearer:${YULIUS_COCKPIT_TOKEN:-none}\"\n\
-echo \"workspace:${YULIUS_TASK_TOKEN:-none}\"\n\
-printf %s \"${CLAUDE_CODE_SHELL_PREFIX:-none}\" > \"$CLAUDE_CONFIG_DIR/launch-shell-prefix\"\n\
-echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
-echo \"interrupted:${CLAUDE_CODE_RESUME_INTERRUPTED_TURN:-none}\"\n\
-echo \"proxy:${HTTPS_PROXY:-none}\"\n\
-echo \"no-proxy:${NO_PROXY:-none}\"\n\
-echo \"ca:${SSL_CERT_FILE:-none}\"\n\
-echo \"placeholder:${APIFY_KEY:-none}\"\n\
-echo \"interpreter:${JDK_JAVA_OPTIONS:-none}\"\n\
-echo \"config:$CLAUDE_CONFIG_DIR\"\n\
-echo \"cwd:$(pwd)\"\n\
-echo \"ready\"\n\
-if [ -f \"$CLAUDE_CONFIG_DIR/exit-3-on-signal\" ]; then\n\
-  trap 'exit 3' HUP INT TERM\n\
-  while read -r line; do eval \"$line\"; done\n\
-  exit 3\n\
-fi\n\
-exec /bin/sh\n";
-
-pub(crate) struct Fixture {
-    pub(crate) h: Harness,
-    /// The session host: holds the next start between its spawn and its attach when armed.
-    pub(crate) gate: Arc<GatedHost>,
-    pub(crate) alice: Creds,
-    pub(crate) bob: Creds,
-    pub(crate) carol: Creds,
-    pub(crate) data: PathBuf,
-}
-
-/// alice and carol (write) and bob (read) on `s1`; one pool subscription unless `account` is
-/// false; optionally on the data directory of an earlier fixture (a server restart).
-pub(crate) async fn fixture_with(
-    account: bool,
-    data_dir: Option<PathBuf>,
-) -> Result<Fixture, Box<dyn std::error::Error>> {
-    fixture_ending(account, data_dir, None).await
-}
-
-/// [`fixture`] with the sandboxes' browsers from `browser` (SPEC-437).
-pub(crate) async fn fixture_with_browser(
-    browser: Arc<dyn yulius_app::ports::browser::BrowserPort>,
-) -> Result<Fixture, Box<dyn std::error::Error>> {
-    fixture_full(true, None, None, Some(browser)).await
-}
-
-/// [`fixture_with`], optionally with another wait for a shell's exit before its host is
-/// terminated (`shell_exit_ms`).
-async fn fixture_ending(
-    account: bool,
-    data_dir: Option<PathBuf>,
-    exit_ms: Option<u64>,
-) -> Result<Fixture, Box<dyn std::error::Error>> {
-    fixture_full(account, data_dir, exit_ms, None).await
-}
-
-async fn fixture_full(
-    account: bool,
-    data_dir: Option<PathBuf>,
-    exit_ms: Option<u64>,
-    browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
-) -> Result<Fixture, Box<dyn std::error::Error>> {
-    // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
-    let dir = tempfile::Builder::new().prefix("yck").tempdir_in("/tmp")?;
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let gate = Arc::new(GatedHost::new(exe.clone()));
-    // The real `yulius` runs the Superagent's redaction wrapper and hook (SPEC-147).
-    let harness = Arc::new(yulius::wiring::harness::HarnessAdapter::new(
-        exe.clone(),
-        "http://127.0.0.1:1",
-    ));
-    let h = harness_with(HarnessOptions {
-        // Real Git: the Superagent's `.env` copies ask whether Git ignores the file (SPEC-186).
-        git: Some(Arc::new(crate::support::confined_git())),
-        session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
-        harness: Some(harness),
-        browser,
-        dir: Some(dir),
-        configure: Some(Box::new(move |config| {
-            config.contained = false;
-            config.yulius_exe = exe;
-            if let Some(data) = data_dir {
-                config.data_dir = data;
-            }
-            if let Some(ms) = exit_ms {
-                config.shell_exit_ms = ms;
-            }
-        })),
-        ..HarnessOptions::default()
-    })?;
-    let data = h.app.config.data_dir.clone();
-    assert!(h.app.set_shell_program(PathBuf::from("/bin/sh")));
-    let fake = data.join("fake-claude");
-    std::fs::write(&fake, FAKE_CLAUDE)?;
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))?;
-    assert!(h.app.set_cockpit_program(fake));
-    let alice = seed_github_user(&h, "u-alice", "alice").await?;
-    let bob = seed_github_user(&h, "u-bob", "bob").await?;
-    let carol = seed_github_user(&h, "u-carol", "carol").await?;
-    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
-    h.github.set_perm("alice", "acme/fixture", perms("write"));
-    h.github.set_perm("carol", "acme/fixture", perms("write"));
-    h.github.set_perm("bob", "acme/fixture", perms("read"));
-    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
-    if account {
-        h.store
-            .insert_account(&AccountRecord {
-                id: AccountId::parse("acc-1")?,
-                provider: Provider::Anthropic,
-                label: "acc-1".into(),
-                credential: Some(h.app.deps.crypto.seal(TOKEN.as_bytes())?),
-                status: AccountStatus::Ok,
-                usage_json: None,
-                last_error: None,
-                created_at: Timestamp(1),
-                updated_at: Timestamp(1),
-                email: None,
-                email_checked_at: None,
-                email_typed: false,
-            })
-            .await?;
-    }
-    Ok(Fixture {
-        h,
-        gate,
-        alice,
-        bob,
-        carol,
-        data,
-    })
-}
-
-pub(crate) async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
-    fixture_with(true, None).await
-}
-
-async fn open_cockpit(
-    f: &Fixture,
-    creds: &Creds,
-) -> Result<support::Resp, Box<dyn std::error::Error>> {
-    call(
-        &f.h.router,
-        Method::POST,
-        "/api/sandboxes/s1/cockpit",
-        None,
-        creds,
-    )
-    .await
-}
-
-pub(crate) async fn cockpit_id(
-    f: &Fixture,
-    creds: &Creds,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let resp = open_cockpit(f, creds).await?;
-    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
-    Ok(resp.body["id"].as_str().ok_or("id")?.to_owned())
-}
-
-pub(crate) async fn attach(
-    addr: std::net::SocketAddr,
-    id: &str,
-    creds: &Creds,
-) -> Result<Socket, Box<dyn std::error::Error>> {
-    let mut socket = ws_connect(
-        addr,
-        &format!("/api/shells/{id}/terminal?cols=100&rows=30"),
-        creds,
-        ORIGIN,
-    )
-    .await?;
-    socket
-        .send(Message::text(
-            json!({"type": "hello", "last_seq": null, "cols": 100, "rows": 30}).to_string(),
-        ))
-        .await?;
-    Ok(socket)
-}
-
-/// Reads frames until the accumulated terminal text contains `needle`.
-pub(crate) async fn read_until(
-    socket: &mut Socket,
-    text: &mut String,
-    needle: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while !text.contains(needle) {
-        let message = tokio::time::timeout_at(deadline, socket.next())
-            .await
-            .map_err(|_| format!("timed out waiting for {needle:?}; screen so far: {text:?}"))?
-            .ok_or("socket closed")??;
-        if let Message::Binary(bytes) = message
-            && let Some((kind, _, payload)) = decode_binary(&bytes)
-            && (kind == KIND_OUTPUT || kind == KIND_SNAPSHOT)
-        {
-            text.push_str(&String::from_utf8_lossy(payload));
-        }
-    }
-    Ok(())
-}
-
-/// The value printed after `key:` on the fake's screen.
-pub(crate) fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let start = screen
-        .find(&format!("{key}:"))
-        .ok_or_else(|| format!("{key} not printed"))?
-        + key.len()
-        + 1;
-    let rest = screen.get(start..).unwrap_or_default();
-    // The value ends at the line's end or at the terminal's own control output that can follow
-    // it on the same line (`\x1b>`, cursor moves: CI on the VM read them as part of the value).
-    let line = rest.lines().next().unwrap_or_default();
-    Ok(line
-        .split('\u{1b}')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_owned())
-}
-
-pub(crate) async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while tokio::time::Instant::now() < deadline {
-        if check() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
-/// A conversation file of Claude Code, last written `secs` after the epoch.
-pub(crate) fn conversation(project: &Path, id: &str, secs: u64) -> TestResult {
-    std::fs::create_dir_all(project)?;
-    let file = std::fs::File::create(project.join(format!("{id}.jsonl")))?;
-    file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + secs))?;
-    Ok(())
-}
 
 fn sid() -> SandboxId {
     SandboxId::parse("s1").unwrap_or_else(|_| unreachable!())
@@ -510,8 +256,8 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
             json!({"type": "input", "data": "exit\r"}).to_string(),
         ))
         .await?;
-    wait_for("the Cockpit to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the Cockpit to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
 
@@ -527,11 +273,13 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
 
     // Unwatched for a day it ends like a terminal, and comes back with its conversation.
     drop(socket);
-    wait_for("viewers to leave", || {
-        f.h.app
-            .sandbox_shells(&sid())
-            .iter()
-            .all(|shell| shell.viewer_count() == 0)
+    eventually("viewers to leave", WAIT, || {
+        ready(
+            f.h.app
+                .sandbox_shells(&sid())
+                .iter()
+                .all(|shell| shell.viewer_count() == 0),
+        )
     })
     .await?;
     f.h.clock
@@ -583,8 +331,8 @@ async fn removing_the_sandbox_ends_its_superagent_and_terminals() -> TestResult 
     .await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
 
-    wait_for("the removed sandbox's shells to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the removed sandbox's shells to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
     // The watcher's terminal is told and closed: nothing of the sandbox goes on behind it.
@@ -638,8 +386,8 @@ async fn a_superagent_starting_while_the_sandbox_is_removed_ends() -> TestResult
     f.gate.release();
     let _ = open.await?;
 
-    wait_for("the late Superagent to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty() && run_dirs(&f) == 0
+    eventually("the late Superagent to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty() && run_dirs(&f) == 0)
     })
     .await?;
     Ok(())
@@ -732,8 +480,8 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
             json!({"type": "input", "data": "exit\r"}).to_string(),
         ))
         .await?;
-    wait_for("the Cockpit to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the Cockpit to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
 
@@ -741,8 +489,8 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
     // be deleted, must not stay stuck on it.
     std::fs::write(config.join("fail-resume"), "")?;
     cockpit_id(&f, &f.alice).await?;
-    wait_for("the failed resume to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the failed resume to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
     let fresh = cockpit_id(&f, &f.alice).await?;
@@ -1069,8 +817,8 @@ async fn a_cockpit_start_whose_request_is_dropped_still_ends_as_the_one_cockpit(
         }
     }
     f.gate.release();
-    wait_for("the dropped start to register its Cockpit", || {
-        f.h.app.sandbox_shells(&sid()).len() == 1
+    eventually("the dropped start to register its Cockpit", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).len() == 1)
     })
     .await?;
     let started =
@@ -1110,16 +858,16 @@ async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() ->
             json!({"type": "input", "data": "exit\r"}).to_string(),
         ))
         .await?;
-    wait_for("the Cockpit to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the Cockpit to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
 
     // The resumed process is killed by a signal right after it started.
     std::fs::write(config.join("kill-resume"), "")?;
     cockpit_id(&f, &f.alice).await?;
-    wait_for("the killed resume to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the killed resume to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
     std::fs::remove_file(config.join("kill-resume"))?;
@@ -1617,72 +1365,6 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
     assert!(!plain.env.iter().any(|(k, _)| k == "IS_SANDBOX"));
     assert!(settled("plain")?["bypassPermissionsModeAccepted"].is_null());
     Ok(())
-}
-
-/// A JSON-RPC call to the internal `/mcp` with `token`.
-pub(crate) async fn mcp(
-    f: &Fixture,
-    token: &str,
-    method: &str,
-    params: Value,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let resp = call(
-        &f.h.internal,
-        Method::POST,
-        "/mcp",
-        Some(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})),
-        &Creds {
-            bearer: Some(token.into()),
-            ..Creds::default()
-        },
-    )
-    .await?;
-    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
-    Ok(resp.body)
-}
-
-/// A tool's record (or an error's text), and whether it is an error.
-pub(crate) async fn cockpit_tool(
-    f: &Fixture,
-    token: &str,
-    name: &str,
-    args: Value,
-) -> Result<(Value, bool), Box<dyn std::error::Error>> {
-    let body = mcp(
-        f,
-        token,
-        "tools/call",
-        json!({"name": name, "arguments": args, "_meta": {"yulius/structured": true}}),
-    )
-    .await?;
-    let text = body["result"]["content"][0]["text"]
-        .as_str()
-        .ok_or_else(|| format!("no result: {body}"))?;
-    // The tool's record (asked for with `_meta`), or the text of an error.
-    let record = body["result"]
-        .get("structuredContent")
-        .cloned()
-        .unwrap_or_else(|| Value::String(text.to_owned()));
-    Ok((record, body["result"]["isError"].as_bool().unwrap_or(true)))
-}
-
-/// Waits until `task`'s start has ended (it rests: failed, stopped or closed).
-pub(crate) async fn task_rests(
-    f: &Fixture,
-    task: &yulius_domain::ids::TaskId,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use yulius_app::ports::store::TaskStore;
-    let deadline = tokio::time::Instant::now() + WAIT;
-    loop {
-        let status = f.h.store.task(task).await?.ok_or("task")?.status;
-        if status.is_resting() {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() > deadline {
-            return Err(format!("the task did not come to rest: {status:?}").into());
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 }
 
 /// AC-MGT-2, MGT-005..007: a Cockpit's own token reaches the management tools, which act for
@@ -2548,7 +2230,7 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     drop(socket);
     f.h.app.stop_workspace_services().await;
 
-    // The restarted server's vault (the test store is in memory) holds the same secret.
+    // The restarted server's vault (each harness has a store of its own) holds the same secret.
     let g = fixture_with(true, Some(f.data.clone())).await?;
     add_apify_key(&g).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
@@ -2612,7 +2294,7 @@ async fn a_superagent_screen_shows_no_output_while_a_secret_cannot_be_opened() -
         )))
         .await?;
     read_until(&mut socket, &mut screen, "the screen is withheld").await?;
-    wait_for("the command ran", || marker.exists()).await?;
+    eventually("the command ran", WAIT, || ready(marker.exists())).await?;
 
     // The secret that does not open is deleted: the next output is shown.
     let deleted = call(
@@ -2812,95 +2494,6 @@ async fn a_disabled_persons_workspace_token_reads_no_fingerprints() -> TestResul
 
 // SPEC-074: a usage limit in the Cockpit moves it to a subscription with capacity, as a task's.
 
-/// The test clock's start (2026-10-07T00:00:00Z) plus `secs`, as Claude Code writes `timestamp`.
-fn at(secs: i64) -> String {
-    let base = 1_791_331_200_i64;
-    let time = base + secs;
-    let (days, rest) = (time.div_euclid(86_400), time.rem_euclid(86_400));
-    // 2026-10-07 is day 20_733 after the epoch; the records stay within a few days of it.
-    let day = 7 + (days - 20_733);
-    format!(
-        "2026-10-{day:02}T{:02}:{:02}:{:02}.000Z",
-        rest / 3_600,
-        rest % 3_600 / 60,
-        rest % 60
-    )
-}
-
-fn transcript_record(
-    kind: &str,
-    uuid: &str,
-    parent: Option<&str>,
-    secs: i64,
-    extra: &Value,
-) -> String {
-    let mut record = json!({"type": kind, "uuid": uuid, "parentUuid": parent, "isSidechain": false,
-        "sessionId": "conv-1", "timestamp": at(secs)});
-    if let (Some(map), Some(more)) = (record.as_object_mut(), extra.as_object()) {
-        map.extend(more.clone());
-    }
-    format!("{record}\n")
-}
-
-pub(crate) fn prompt_record(uuid: &str, parent: Option<&str>, secs: i64) -> String {
-    transcript_record(
-        "user",
-        uuid,
-        parent,
-        secs,
-        &json!({"message": {"role": "user", "content": "why?"}, "origin": {"kind": "human"}}),
-    )
-}
-
-pub(crate) fn answer_record(uuid: &str, parent: &str, secs: i64) -> String {
-    transcript_record(
-        "assistant",
-        uuid,
-        Some(parent),
-        secs,
-        &json!({"message": {"id": format!("msg_{uuid}"), "role": "assistant", "model": "claude-opus-5-5",
-            "stop_reason": "end_turn", "content": [{"type": "text", "text": "because"}]}}),
-    )
-}
-
-/// Claude Code 2.1.292's usage-limit error record, resetting at `resets` (epoch seconds).
-fn limit_record(uuid: &str, parent: &str, secs: i64, resets: i64) -> String {
-    transcript_record(
-        "assistant",
-        uuid,
-        Some(parent),
-        secs,
-        &json!({"isApiErrorMessage": true, "error": "rate_limit", "apiError": "usage_limit_reached",
-            "apiErrorStatus": 429, "apiErrorParams": {"rate_limit_info": {"status": "rejected",
-                "resetsAt": resets, "rateLimitType": "seven_day"}},
-            "message": {"id": format!("msg_{uuid}"), "role": "assistant", "model": "<synthetic>",
-                "content": [{"type": "text", "text": "You've hit your weekly limit · resets 4am"}]}}),
-    )
-}
-
-pub(crate) async fn insert_account(h: &Harness, id: &str, token: &str, used: f64) -> TestResult {
-    let now = h.clock.0.load(Ordering::SeqCst);
-    let window =
-        json!({"used_percent": used, "window_minutes": 10080, "resets_at": now + 80 * 3_600_000});
-    h.store
-        .insert_account(&AccountRecord {
-            id: AccountId::parse(id)?,
-            provider: Provider::Anthropic,
-            label: id.into(),
-            credential: Some(h.app.deps.crypto.seal(token.as_bytes())?),
-            status: AccountStatus::Ok,
-            usage_json: Some(json!({"secondary": window}).to_string()),
-            last_error: None,
-            created_at: Timestamp(1),
-            updated_at: Timestamp(1),
-            email: None,
-            email_checked_at: None,
-            email_typed: false,
-        })
-        .await?;
-    Ok(())
-}
-
 /// The stored usage of `account`.
 async fn usage_of(h: &Harness, account: &str) -> Result<Value, Box<dyn std::error::Error>> {
     let record = h
@@ -2913,37 +2506,19 @@ async fn usage_of(h: &Harness, account: &str) -> Result<Value, Box<dyn std::erro
     )?)
 }
 
-/// Reads the socket until a JSON message of `kind` arrives.
-pub(crate) async fn read_message(
-    socket: &mut Socket,
-    kind: &str,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    loop {
-        let message = tokio::time::timeout_at(deadline, socket.next())
-            .await
-            .map_err(|_| format!("timed out waiting for a {kind} message"))?
-            .ok_or("socket closed")??;
-        if let Message::Text(text) = message {
-            let value: Value = serde_json::from_str(&text)?;
-            if value["type"] == kind {
-                return Ok(value);
-            }
-        }
-    }
-}
-
 /// The live Cockpit other than `old`, once there is one.
 async fn other_cockpit(f: &Fixture, old: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut found = None;
-    wait_for("the Cockpit on another subscription", || {
-        found =
-            f.h.app
-                .sandbox_shells(&sid())
-                .into_iter()
-                .find(|s| s.id() != old)
-                .map(|s| s.id().to_owned());
-        found.is_some()
+    eventually("the Cockpit on another subscription", WAIT, || {
+        ready({
+            found =
+                f.h.app
+                    .sandbox_shells(&sid())
+                    .into_iter()
+                    .find(|s| s.id() != old)
+                    .map(|s| s.id().to_owned());
+            found.is_some()
+        })
     })
     .await?;
     found.ok_or_else(|| "no other Cockpit".into())
@@ -2952,29 +2527,6 @@ async fn other_cockpit(f: &Fixture, old: &str) -> Result<String, Box<dyn std::er
 /// The Claude config dir of the Cockpit whose screen is `screen`.
 fn project_config(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(printed(screen, "config")?))
-}
-
-/// The conversation of the Cockpit whose screen is `screen`: its project directory.
-pub(crate) fn project_of(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let config = PathBuf::from(printed(screen, "config")?);
-    let cwd = printed(screen, "cwd")?;
-    Ok(yulius_harness::paths::claude_project_dir(
-        &config,
-        Path::new(&cwd),
-    ))
-}
-
-/// A conversation that hit the weekly limit a day before the Cockpit started and went on, then
-/// hits it again now (resetting at `resets`).
-pub(crate) fn limited_conversation(resets: i64) -> String {
-    [
-        prompt_record("u0", None, -86_400),
-        limit_record("old-limit", "u0", -86_399, 1_791_000_000),
-        answer_record("a0", "old-limit", -86_000),
-        prompt_record("u1", Some("a0"), 5),
-        limit_record("new-limit", "u1", 6, resets),
-    ]
-    .concat()
 }
 
 #[tokio::test]
@@ -3463,8 +3015,8 @@ async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestR
     std::fs::write(&transcript, limited_conversation(1_791_400_000))?;
     let exit = read_message(&mut socket, "exit").await?;
     assert_eq!(exit["status"], "switched", "{exit}");
-    wait_for("the old Cockpit to be gone", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the old Cockpit to be gone", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
 
@@ -3537,8 +3089,8 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
             json!({"type": "input", "data": "exit\r"}).to_string(),
         ))
         .await?;
-    wait_for("the Cockpit to end", || {
-        f.h.app.sandbox_shells(&sid()).is_empty()
+    eventually("the Cockpit to end", WAIT, || {
+        ready(f.h.app.sandbox_shells(&sid()).is_empty())
     })
     .await?;
     let fourth = cockpit_id(&f, &f.alice).await?;
@@ -3981,22 +3533,6 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
     Ok(())
 }
 
-/// Runs `git` in `dir` with a synthetic identity.
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
-}
-
 /// The sandbox repository of the fixture as a Git repository that ignores `.env` and `.env.*`
 /// but keeps `.env.example`.
 fn ignoring_repo(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -4058,7 +3594,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
 
     let f = fixture().await?;
     let repo = ignoring_repo(&f)?;
-    let key = crate::secrets_env::openssh_key(1);
+    let key = crate::support::secrets_env::openssh_key(1);
     let id = add_secret(&f, "DEPLOY_SSH", &key.trim_end().replace('\n', "\\n")).await?;
     let prod = add_secret(&f, "PROD_KEY", "prod-synthetic-value-12345").await?;
     assert!(f.h.store.vault_set_cd_prod(&prod, false, true).await?);
@@ -4120,7 +3656,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
         Some(
             json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
         ),
-        &crate::secrets::unlocked(&f.h, "u-alice").await?,
+        &crate::support::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
@@ -4129,7 +3665,10 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     assert_eq!(copied["copied"], json!(["DEPLOY_SSH"]), "{copied}");
     assert_eq!(copied["file"], ".env", "{copied}");
     assert!(!copied.to_string().contains("LXZ1-bGluZS0w"), "{copied}");
-    assert_eq!(crate::secrets_env::sourced(&repo, "DEPLOY_SSH")?, key);
+    assert_eq!(
+        crate::support::secrets_env::sourced(&repo, "DEPLOY_SSH")?,
+        key
+    );
     assert_eq!(
         std::fs::read_to_string(repo.join(".env.example"))?,
         "DEPLOY_SSH=\n"
@@ -4236,7 +3775,7 @@ async fn the_superagent_never_copies_into_a_repo_swapped_for_a_link() -> TestRes
         Some(
             json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
         ),
-        &crate::secrets::unlocked(&f.h, "u-alice").await?,
+        &crate::support::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
@@ -4318,7 +3857,7 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
     f.h.app
         .enable_egress(Some("synthetic-egress-ca-bundle\n".into()));
     add_apify_key(&f).await?;
-    let pem = crate::secrets_env::pem_key().replace('\n', "\\n");
+    let pem = crate::support::secrets_env::pem_key().replace('\n', "\\n");
     let deploy = call(
         &f.h.router,
         Method::POST,
@@ -4528,17 +4067,6 @@ fn alice_project(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(yulius_harness::paths::claude_project_dir(&config, &repo))
 }
 
-/// Makes the record of shell `id` look written by a Yulius from before SPEC-186 (no launch
-/// digest).
-pub(crate) fn predate_launch_digest(f: &Fixture, id: &str) -> TestResult {
-    let path = f.data.join("shells").join(id).join("shell.json");
-    let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
-    assert!(record.get("launch").is_some(), "{record}");
-    record.as_object_mut().ok_or("record")?.remove("launch");
-    std::fs::write(&path, serde_json::to_vec(&record)?)?;
-    Ok(())
-}
-
 /// SPEC-186 SAV-006 (ADR-0150): a Superagent started by a Yulius before an update that changed
 /// what it is served is adopted, then started again resuming its conversation once it is idle,
 /// and the new one has the new tools and the proxy; its old bearer ends with it.
@@ -4623,8 +4151,8 @@ async fn a_superagent_mid_turn_restarts_only_once_its_turn_ends() -> TestResult 
     let g = fixture_with(true, Some(f.data.clone())).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
     assert_eq!(g.h.app.cockpit_refresh_state(&id), "due");
-    wait_for("the Superagent to wait for its turn", || {
-        g.h.app.cockpit_refresh_state(&id) == "waiting"
+    eventually("the Superagent to wait for its turn", WAIT, || {
+        ready(g.h.app.cockpit_refresh_state(&id) == "waiting")
     })
     .await?;
     let live: Vec<String> =
@@ -4665,8 +4193,8 @@ async fn an_updates_restart_waits_for_text_left_in_the_prompt_box() -> TestResul
     let g = fixture_with(true, Some(f.data.clone())).await?;
     let served = serve(g.h.router.clone()).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
-    wait_for("the Superagent to wait for its turn", || {
-        g.h.app.cockpit_refresh_state(&id) == "waiting"
+    eventually("the Superagent to wait for its turn", WAIT, || {
+        ready(g.h.app.cockpit_refresh_state(&id) == "waiting")
     })
     .await?;
     let mut socket = attach(served.addr, &id, &g.alice).await?;
@@ -4675,13 +4203,16 @@ async fn an_updates_restart_waits_for_text_left_in_the_prompt_box() -> TestResul
             json!({"type": "input", "data": "deploy it when the"}).to_string(),
         ))
         .await?;
-    wait_for("the draft to be seen", || g.h.app.cockpit_has_draft(&id)).await?;
+    eventually("the draft to be seen", WAIT, || {
+        ready(g.h.app.cockpit_has_draft(&id))
+    })
+    .await?;
 
     // The turn ends: the Superagent is idle, but the person's text holds it.
     text.push_str(&answer_record("a1", "u1", -5));
     std::fs::write(&transcript, &text)?;
-    wait_for("the restart to be held by the draft", || {
-        g.h.app.cockpit_refresh_state(&id) == "held"
+    eventually("the restart to be held by the draft", WAIT, || {
+        ready(g.h.app.cockpit_refresh_state(&id) == "held")
     })
     .await?;
     let live = |app: &yulius_app::context::App| -> Vec<String> {
@@ -4730,7 +4261,10 @@ async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> Tes
             json!({"type": "input", "data": "deploy it when the"}).to_string(),
         ))
         .await?;
-    wait_for("the draft to be seen", || f.h.app.cockpit_has_draft(&id)).await?;
+    eventually("the draft to be seen", WAIT, || {
+        ready(f.h.app.cockpit_has_draft(&id))
+    })
+    .await?;
     drop(socket);
     predate_launch_digest(&f, &id)?;
     f.h.app.stop_workspace_services().await;
@@ -4742,8 +4276,8 @@ async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> Tes
         g.h.app.cockpit_has_draft(&id),
         "the draft came back with its record"
     );
-    wait_for("the restart to be held by the draft", || {
-        g.h.app.cockpit_refresh_state(&id) == "held"
+    eventually("the restart to be held by the draft", WAIT, || {
+        ready(g.h.app.cockpit_refresh_state(&id) == "held")
     })
     .await?;
     let mut socket = attach(served.addr, &id, &g.alice).await?;
@@ -5540,7 +5074,7 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
             .ok_or("token")?;
     let home = f.data.join("users/u-alice/home");
     std::fs::create_dir_all(home.join(".ssh"))?;
-    let key = crate::secrets_env::openssh_key(4);
+    let key = crate::support::secrets_env::openssh_key(4);
     std::fs::write(home.join(".ssh/operator"), &key)?;
 
     let (created, is_error) = cockpit_tool(
@@ -5700,7 +5234,10 @@ async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
     f.h.clock
         .0
         .fetch_add(f.h.app.config.stray_reap_after_ms, Ordering::SeqCst);
-    wait_for("the strays to be reaped", || !f.gate.reaped().is_empty()).await?;
+    eventually("the strays to be reaped", WAIT, || {
+        ready(!f.gate.reaped().is_empty())
+    })
+    .await?;
     assert_eq!(f.gate.reaped(), vec![leaked_job(500, 77)]);
     f.h.app.end_all_shells().await;
     Ok(())
@@ -5720,7 +5257,10 @@ async fn an_idle_superagents_strays_are_seen_when_their_probe_was_asked() -> Tes
         clock.0.fetch_add(bound, Ordering::SeqCst);
     }));
     open_with_stray_sighting(&f, &transcript).await?;
-    wait_for("the strays to be reaped", || !f.gate.reaped().is_empty()).await?;
+    eventually("the strays to be reaped", WAIT, || {
+        ready(!f.gate.reaped().is_empty())
+    })
+    .await?;
     assert_eq!(
         f.gate.reaped_after(),
         vec![(2, leaked_job(500, 77))],
@@ -5748,7 +5288,10 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
     f.h.clock
         .0
         .fetch_add(f.h.app.config.stray_reap_after_ms, Ordering::SeqCst);
-    wait_for("the probe that finds them due", || f.gate.probes() > 1).await?;
+    eventually("the probe that finds them due", WAIT, || {
+        ready(f.gate.probes() > 1)
+    })
+    .await?;
     // The turn ends; the next idle probe reaps them, once: none was reaped during the turn.
     {
         use std::io::Write as _;
@@ -5756,8 +5299,8 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
         file.write_all(answer_record("a1", "u1", 5).as_bytes())?;
     }
     f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
-    wait_for("the strays to be reaped after the turn", || {
-        !f.gate.reaped().is_empty()
+    eventually("the strays to be reaped after the turn", WAIT, || {
+        ready(!f.gate.reaped().is_empty())
     })
     .await?;
     assert_eq!(
@@ -5857,7 +5400,7 @@ async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestRe
     link.set(Some(false));
     let before = link.tests();
     f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
-    wait_for("the next link test", || link.tests() > before).await?;
+    eventually("the next link test", WAIT, || ready(link.tests() > before)).await?;
     assert_eq!(link_state(&f, &f.alice).await?["state"], "ok");
     f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
     let lost = link_reads(&f, "lost").await?;
@@ -8439,7 +7982,7 @@ async fn interpreter_value_requests_only_rotate_existing_secrets_of_the_requeste
     let list = call(&f.h.router, Method::GET, &path, None, &f.alice).await?;
     assert_eq!(list.body[0]["replaces"], true);
     let id = list.body[0]["id"].as_str().ok_or("request")?;
-    let browser = crate::secrets::browser_session(&f.h, "u-alice").await?;
+    let browser = crate::support::secrets::browser_session(&f.h, "u-alice").await?;
     let answer = call(
         &f.h.router,
         Method::POST,

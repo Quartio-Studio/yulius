@@ -3,7 +3,7 @@
 //! `SubagentStart` and `SubagentStop` link and end it, and a merge closes a pull request's
 //! rounds.
 
-use crate::subscription_pool::{add_account, hook, running_task, seed};
+use crate::support::subscription_pool::{add_account, hook, running_task, seed};
 use crate::support::{TestResult, harness};
 
 use serde_json::{Value, json};
@@ -300,8 +300,8 @@ async fn a_resumed_reviewer_and_other_subagents_change_no_round() -> TestResult 
 /// delivery can neither reopen the completed round nor close the one now running.
 #[tokio::test]
 async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
-    use crate::support::{confined_git, harness_with_git, repos::git};
+    use crate::support::subscription_pool::hook_sent_at;
+    use crate::support::{confined_git, git_stdout, harness_with_git};
     use std::sync::{Arc, atomic::Ordering};
     use yulius_app::ports::store::TaskFieldUpdate;
     let h = harness_with_git(Arc::new(confined_git()))?;
@@ -310,9 +310,9 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
     let task = running_task(&h, TaskMode::Prompt, &account).await?;
     let repo = h._dir.path().join("sandboxes/s1/worktrees/review");
     std::fs::create_dir_all(&repo)?;
-    git(&repo, &["init"])?;
-    git(&repo, &["commit", "--allow-empty", "-m", "first head"])?;
-    let first_head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["init"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "first head"])?;
+    let first_head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     let start_at = h.clock.0.load(Ordering::SeqCst);
     h.store
         .update_task(
@@ -351,8 +351,8 @@ async fn continued_review_keeps_history_across_repeated_hook_delivery() -> TestR
         std::slice::from_ref(&first)
     );
 
-    git(&repo, &["commit", "--allow-empty", "-m", "review fixes"])?;
-    let fixed_head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "review fixes"])?;
+    let fixed_head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     hook(&h.internal, "SubagentStart", start.clone()).await?;
     hook(&h.internal, "SubagentStart", start).await?;
     hook_sent_at(
@@ -477,7 +477,7 @@ async fn continued_review_counts_each_report_in_merged_analytics() -> TestResult
 /// of a continued reviewer. Its own resume and report must clear them.
 #[tokio::test]
 async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     use std::sync::atomic::Ordering;
     let h = harness()?;
     seed(&h).await?;
@@ -521,7 +521,7 @@ async fn a_cut_off_continuation_keeps_its_recovery_on_older_hooks() -> TestResul
 /// Replaying the current round's own start before its cutoff was observed is still a replay.
 #[tokio::test]
 async fn a_replayed_continuation_start_cannot_clear_a_later_cut_off() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     use std::sync::atomic::Ordering;
     let h = harness()?;
     seed(&h).await?;
@@ -653,7 +653,7 @@ async fn a_reviewer_resuming_during_the_limit_write_cancels_the_move() -> TestRe
 /// The detached start handler can still be reading Git when the reviewer reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult {
-    use crate::support::{confined_git, harness_with_git, repos::git};
+    use crate::support::{confined_git, git_stdout, harness_with_git};
     use std::sync::{Arc, atomic::Ordering, mpsc};
     use std::time::Duration;
     use yulius_app::ports::store::TaskFieldUpdate;
@@ -664,9 +664,9 @@ async fn a_continued_report_survives_its_start_time_head_lookup() -> TestResult 
     a_round(&h, "rev", Some("Verdict: request changes")).await?;
     let repo = h._dir.path().join("sandboxes/s1/worktrees/slow-review");
     std::fs::create_dir_all(&repo)?;
-    git(&repo, &["init"])?;
-    git(&repo, &["commit", "--allow-empty", "-m", "fixes"])?;
-    let head = git(&repo, &["rev-parse", "HEAD"])?;
+    git_stdout(&repo, &["init"])?;
+    git_stdout(&repo, &["commit", "--allow-empty", "-m", "fixes"])?;
+    let head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
     h.store
         .update_task(
             &task,
@@ -1410,13 +1410,14 @@ mod real {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::first_message::{hooked, new_task, start_with};
-    use crate::pool_supervision::{
-        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage, wait_for,
-    };
-    use crate::subscription_moves::{live_run, ready, run_accounts};
     use crate::support::TestResult;
     use crate::support::agents::FakeAgentOptions;
+    use crate::support::eventually;
+    use crate::support::live::first_message::{hooked, new_task, start_with};
+    use crate::support::live::pool::{
+        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage,
+    };
+    use crate::support::subscription_moves::{live_run, ready, run_accounts};
     use yulius_app::model::TaskMode;
     use yulius_domain::usage::UsageWindow;
     use yulius_ptyhost::test_support::locate_fake_agent;
@@ -1471,14 +1472,14 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+            let asked = eventually("the prompt", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("run Fable 5.2 for the review round you asked for")
             })
             .await;
             assert!(asked.is_ok(), "{}", screen(&app, &id));
             // The switch records its outcome once the new run started, which may be after the
             // run printed its prompt.
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })
@@ -1571,12 +1572,12 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+            let asked = eventually("the prompt", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("with room for Fable 5.2 for the review round you asked")
             })
             .await;
             assert!(asked.is_ok(), "{}", screen(&app, &id));
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })
@@ -1626,7 +1627,7 @@ mod real {
                 ready(&app, &id).await?;
                 // A first turn, read live: the transcript is followed from here on.
                 app.send_input(&id, b"hello\r").await?;
-                wait_for("the session waiting", Duration::from_secs(30), || async {
+                eventually("the session waiting", Duration::from_secs(30), || async {
                     app.deps.store.task(&id).await.is_ok_and(|task| {
                         task.is_some_and(|task| {
                             task.activity == Some(yulius_domain::task::Activity::Waiting)
@@ -1635,14 +1636,14 @@ mod real {
                 })
                 .await?;
                 app.send_input(&id, cut_off).await?;
-                let cut = wait_for("the cut-off", Duration::from_secs(30), || async {
+                let cut = eventually("the cut-off", Duration::from_secs(30), || async {
                     screen(&app, &id).contains("CUT OFF")
                 })
                 .await;
                 assert!(cut.is_ok(), "{}", screen(&app, &id));
                 if superseded {
                     // The cut-off is read: the first subscription is out of Fable.
-                    wait_for("Fable recorded", Duration::from_secs(30), || async {
+                    eventually("Fable recorded", Duration::from_secs(30), || async {
                         app.deps
                             .store
                             .account(
@@ -1663,7 +1664,7 @@ mod real {
                     .await?;
                     app.send_input(&id, b"/agent yulius-reviewer\r").await?;
                     live_run(&app, &id, 2).await?;
-                    let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                    let asked = eventually("the prompt", Duration::from_secs(30), || async {
                         screen(&app, &id).contains("for the review round you asked for")
                     })
                     .await;
@@ -1674,7 +1675,7 @@ mod real {
                     assert_eq!(switches[0].reason, "review_fable", "{switches:?}");
                 } else {
                     app.send_input(&id, b"carry on\r").await?;
-                    let moved = wait_for("no move", Duration::from_secs(10), || async {
+                    let moved = eventually("no move", Duration::from_secs(10), || async {
                         app.deps
                             .store
                             .attempts(&id)
@@ -1748,7 +1749,7 @@ mod real {
             // A first turn, after which the session waits for its person (idle), as a session
             // does while its background reviewer reads.
             app.send_input(&id, b"hello\r").await?;
-            wait_for("the session waiting", Duration::from_secs(30), || async {
+            eventually("the session waiting", Duration::from_secs(30), || async {
                 app.deps.store.task(&id).await.is_ok_and(|task| {
                     task.is_some_and(|task| {
                         task.activity == Some(yulius_domain::task::Activity::Waiting)
@@ -1758,7 +1759,7 @@ mod real {
             .await?;
             // Sent as the agent works, not typed by a person (whose typing holds Yulius back).
             app.send_input(&id, command).await?;
-            let cut = wait_for("the cut-off reviewer", Duration::from_secs(30), || async {
+            let cut = eventually("the cut-off reviewer", Duration::from_secs(30), || async {
                 screen(&app, &id).contains("CUT OFF")
             })
             .await;
@@ -1766,7 +1767,7 @@ mod real {
             // While the session waits, nothing moves: only a turn's end does (review round 2 of
             // fix 7). Longer than a watcher poll and the background check.
             if command == b"/reviewer-limit yulius-reviewer\r" && second_runs_fable {
-                let early = wait_for(
+                let early = eventually(
                     "a move outside a turn's end",
                     Duration::from_secs(6),
                     || second_run_started(&app, &id),
@@ -1782,7 +1783,7 @@ mod real {
             }
             if !second_runs_fable {
                 // Nowhere to move: the session stays and is told the round runs on Opus.
-                let told = wait_for("the Opus note", Duration::from_secs(30), || async {
+                let told = eventually("the Opus note", Duration::from_secs(30), || async {
                     let seen = screen(&app, &id);
                     seen.contains("no Claude subscription can run Fable 5.2 now")
                         && seen.contains("this round then runs on Opus 5.5")
@@ -1799,14 +1800,14 @@ mod real {
                 run_accounts(&app, &id).await,
                 [Some("a-first".to_owned()), Some("b-second".to_owned())]
             );
-            let told = wait_for("the resume prompt", Duration::from_secs(30), || async {
+            let told = eventually("the resume prompt", Duration::from_secs(30), || async {
                 let seen = screen(&app, &id);
                 seen.contains("Resume that reviewer now: SendMessage to `arev")
                     && seen.contains("Do not start a new reviewer for this round")
             })
             .await;
             assert!(told.is_ok(), "{}", screen(&app, &id));
-            wait_for("the completed switch", Duration::from_secs(30), || async {
+            eventually("the completed switch", Duration::from_secs(30), || async {
                 app.deps.store.switches(&id).await.is_ok_and(|switches| {
                     switches.iter().any(|switch| switch.outcome == "completed")
                 })
@@ -1866,7 +1867,7 @@ fn reviewer_stop(id: &str, agent: &str, report: &str) -> Value {
 /// stop of another agent type, or one sent before the round started, ends nothing.
 #[tokio::test]
 async fn a_stop_ends_the_round_its_start_came_before() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     let h = harness()?;
     seed(&h).await?;
     let account = add_account(&h, "acc-1", None).await?;
@@ -1956,7 +1957,7 @@ async fn a_stop_of_an_unknown_reviewer_leaves_a_linked_round_alone() -> TestResu
 /// leaves the continuation open, and its second report ends it.
 #[tokio::test]
 async fn a_reviewers_notification_ends_the_round_its_lost_stop_left_open() -> TestResult {
-    use crate::subscription_pool::hook_sent_at;
+    use crate::support::subscription_pool::hook_sent_at;
     let h = harness()?;
     seed(&h).await?;
     let account = add_account(&h, "acc-1", None).await?;

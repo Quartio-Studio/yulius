@@ -3,6 +3,9 @@
 //! bare repository, and a test-local `GitPort` over the real `git` command line.
 
 use crate::support;
+use crate::support::BareRemote;
+use crate::support::delivery::HeldBrowserLookup;
+use crate::support::git;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -14,7 +17,7 @@ use async_trait::async_trait;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
-use support::{Creds, FakeRemote, Resp, TestResult, call};
+use support::{Creds, Resp, TestResult, call};
 use yulius_app::agent_wait::WaitState;
 use yulius_app::delivery::profile_to_contract;
 use yulius_app::error::{AppError, AppResult};
@@ -24,9 +27,7 @@ use yulius_app::model::{
 };
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, MergeIntegration};
 use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState, GhPull};
-use yulius_app::ports::session::{
-    AttachedRun, Containment, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
-};
+use yulius_app::ports::session::{Containment, SessionHost};
 use yulius_app::ports::store::{
     AuditStore, CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
 };
@@ -58,28 +59,6 @@ const IDENTITY: [&str; 8] = [
     "-c",
     "core.fsync=none",
 ];
-
-fn git_sync(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(IDENTITY)
-        .args(args)
-        .current_dir(dir)
-        .envs(GIT_ENV)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    } else {
-        Err(format!(
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    }
-}
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    Ok(git_sync(dir, args)?)
-}
 
 /// Test-local Git port over the real `git` command line (no network: "origin" is a local bare
 /// repository; URLs are ignored, and pushes record the token they carried).
@@ -608,97 +587,6 @@ impl GitPort for RealGit {
     }
 }
 
-/// The fake GitHub's repository: merges and fast-forwards happen directly in the bare origin
-/// (`merge-tree` + `commit-tree` + `update-ref`, no working tree).
-pub(crate) struct BareRemote {
-    pub(crate) origin: PathBuf,
-}
-
-impl FakeRemote for BareRemote {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        // Pushed refs are loose files in the bare repository; fall back to git for packed ones.
-        if let Ok(text) = std::fs::read_to_string(self.origin.join("refs/heads").join(branch)) {
-            return Some(text.trim().to_owned());
-        }
-        git_sync(
-            &self.origin,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-    }
-    fn merge(
-        &self,
-        base: &str,
-        head_sha: &str,
-        method: &str,
-        message: &str,
-    ) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = git_sync(
-            &self.origin,
-            &["merge-tree", "--write-tree", &base_sha, head_sha],
-        )?;
-        let commit = match method {
-            "merge" => git_sync(
-                &self.origin,
-                &[
-                    "commit-tree",
-                    &tree,
-                    "-p",
-                    &base_sha,
-                    "-p",
-                    head_sha,
-                    "-m",
-                    message,
-                ],
-            )?,
-            "squash" => git_sync(
-                &self.origin,
-                &["commit-tree", &tree, "-p", &base_sha, "-m", message],
-            )?,
-            other => return Err(format!("unsupported merge method {other}")),
-        };
-        git_sync(
-            &self.origin,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )?;
-        Ok(commit)
-    }
-    fn fast_forward(&self, branch: &str, sha: &str) -> Result<(), String> {
-        let reference = format!("refs/heads/{branch}");
-        let current = self.branch_sha(branch);
-        if let Some(current) = &current {
-            git_sync(&self.origin, &["merge-base", "--is-ancestor", current, sha])
-                .map_err(|_| "not a fast-forward".to_owned())?;
-        }
-        let mut args = vec!["update-ref", reference.as_str(), sha];
-        if let Some(current) = &current {
-            args.push(current);
-        }
-        git_sync(&self.origin, &args).map(drop)
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git_sync(
-            &self.origin,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )?;
-        Ok(true)
-    }
-}
-
 /// #745 (SPEC-409 VTW-001): the spec's folder swapped for a link to a host folder after its path
 /// was found inside the worktree: the read goes through a handle whose real path is outside it,
 /// so the host's file is refused, not read as the spec.
@@ -896,9 +784,7 @@ async fn fixture_with(
         configure: Some(configure),
         ..support::HarnessOptions::default()
     })?;
-    h.github.set_remote(Arc::new(BareRemote {
-        origin: origin.clone(),
-    }));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     h.store.init_instance("https://yulius.test", "x").await?;
     let app_cfg = json!({"app_id": 1, "slug": "yulius-test", "client_id": "c", "client_secret": "s", "private_key_pem": "k", "webhook_secret": null});
     let sealed = h.app.deps.crypto.seal(app_cfg.to_string().as_bytes())?;
@@ -1216,6 +1102,159 @@ async fn set_steps(f: &Fixture, task: &str, statuses: &[&str]) -> BoxResult<()> 
 }
 
 // ---------------------------------------------------------------- tests
+
+/// Whether a pull request conflicts with its base is asked two ways: `merge_base` + `adds_to`
+/// (the watch's and delivery's check) and `preview_merge` (the armed-merge pass's). On the real
+/// Git, with the repository's merge drivers, they agree in every shape with one merge base.
+#[tokio::test]
+async fn preview_merge_and_adds_to_agree_on_conflicts() -> TestResult {
+    use yulius_app::ports::git::TrainStep;
+    let real = support::confined_git();
+    let dir = tempfile::tempdir()?;
+    let repo = dir.path();
+    git(repo, &["init", "-q", "-b", "dev"])?;
+    commit_file(
+        repo,
+        ".gitattributes",
+        "changes.md merge=union\n",
+        "attributes",
+    )?;
+    commit_file(repo, "a.txt", "one\n", "a")?;
+    commit_file(repo, "changes.md", "# Changes\n", "changes")?;
+    // (shape, the head's commits, then the base's commits, whether it conflicts)
+    type Files<'a> = &'a [(&'a str, &'a str)];
+    let shapes: [(&str, Files, Files, bool); 6] = [
+        (
+            "apart",
+            &[("b.txt", "head\n")],
+            &[("c.txt", "base\n")],
+            false,
+        ),
+        (
+            "conflict",
+            &[("a.txt", "head\n")],
+            &[("a.txt", "base\n")],
+            true,
+        ),
+        (
+            "union",
+            &[("changes.md", "# Changes\nhead\n")],
+            &[("changes.md", "# Changes\nbase\n")],
+            false,
+        ),
+        ("up-to-date", &[("d.txt", "head\n")], &[], false),
+        ("behind", &[], &[("e.txt", "base\n")], false),
+        (
+            "same-change",
+            &[("f.txt", "same\n")],
+            &[("f.txt", "same\n")],
+            false,
+        ),
+    ];
+    for (shape, head_files, base_files, conflicts) in shapes {
+        let branch = format!("head-{shape}");
+        git(repo, &["checkout", "-q", "-b", &branch, "dev"])?;
+        for (path, text) in head_files {
+            commit_file(repo, path, text, shape)?;
+        }
+        git(repo, &["checkout", "-q", "dev"])?;
+        for (path, text) in base_files {
+            commit_file(repo, path, text, shape)?;
+        }
+        let base = git(repo, &["rev-parse", "dev"])?;
+        let head = git(repo, &["rev-parse", &branch])?;
+        let since = real
+            .merge_base(repo, &base, &head)
+            .await?
+            .ok_or("merge base")?;
+        let by_adds_to = real.adds_to(repo, &base, &since, &head).await?.is_none();
+        let by_preview = matches!(
+            real.preview_merge(repo, &base, &head).await?,
+            TrainStep::Conflict(_)
+        );
+        assert_eq!(by_adds_to, conflicts, "{shape}: adds_to");
+        assert_eq!(by_preview, conflicts, "{shape}: preview_merge");
+    }
+    // A head with no history in common has no merge base: neither check can tell, so the
+    // callers ask GitHub instead.
+    git(repo, &["checkout", "-q", "--orphan", "head-unrelated"])?;
+    commit_file(repo, "g.txt", "alone\n", "unrelated")?;
+    let head = git(repo, &["rev-parse", "head-unrelated"])?;
+    let base = git(repo, &["rev-parse", "dev"])?;
+    assert_eq!(real.merge_base(repo, &base, &head).await?, None);
+    Ok(())
+}
+
+/// With several merge bases (a criss-cross history, reachable when merge commits land both ways)
+/// the two checks disagree: `adds_to` merges from the one base `merge_base` names, `preview_merge`
+/// lets Git build its recursive base, as `git merge` does. Recorded here, unchanged: making
+/// `local_conflict` follow `preview_merge` changes its answer for such pull requests.
+#[tokio::test]
+async fn adds_to_and_preview_merge_differ_with_several_merge_bases() -> TestResult {
+    use yulius_app::ports::git::TrainStep;
+    let real = support::confined_git();
+    // (shape, whether `git merge` conflicts)
+    for (shape, merge_conflicts) in [("keep-own", true), ("apart-after", false)] {
+        let dir = tempfile::tempdir()?;
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "dev"])?;
+        commit_file(repo, "f.txt", "o\n", "root")?;
+        commit_file(repo, "g.txt", "g\n", "root")?;
+        git(repo, &["checkout", "-q", "-b", "head"])?;
+        commit_file(repo, "f.txt", "head\n", "head 1")?;
+        git(repo, &["checkout", "-q", "dev"])?;
+        let base_file = if shape == "keep-own" {
+            "f.txt"
+        } else {
+            "g.txt"
+        };
+        commit_file(repo, base_file, "base\n", "base 1")?;
+        // Each side merges the other's first commit: two merge bases.
+        let strategy: &[&str] = if shape == "keep-own" {
+            &["-s", "ours"]
+        } else {
+            &[]
+        };
+        git(repo, &["checkout", "-q", "head"])?;
+        git(
+            repo,
+            &[&["merge", "-q", "--no-edit"][..], strategy, &["dev"]].concat(),
+        )?;
+        git(repo, &["checkout", "-q", "dev"])?;
+        git(
+            repo,
+            &[&["merge", "-q", "--no-edit"][..], strategy, &["head~1"]].concat(),
+        )?;
+        if shape == "apart-after" {
+            git(repo, &["checkout", "-q", "head"])?;
+            commit_file(repo, "f.txt", "head 2\n", "head 2")?;
+            git(repo, &["checkout", "-q", "dev"])?;
+            commit_file(repo, "g.txt", "base 2\n", "base 2")?;
+        }
+        let base = git(repo, &["rev-parse", "dev"])?;
+        let head = git(repo, &["rev-parse", "head"])?;
+        let bases = git(repo, &["merge-base", "--all", &base, &head])?;
+        assert_eq!(bases.lines().count(), 2, "{shape}: two merge bases");
+        let since = real
+            .merge_base(repo, &base, &head)
+            .await?
+            .ok_or("merge base")?;
+        let by_adds_to = real.adds_to(repo, &base, &since, &head).await?.is_none();
+        let by_preview = matches!(
+            real.preview_merge(repo, &base, &head).await?,
+            TrainStep::Conflict(_)
+        );
+        git(repo, &["checkout", "-q", "-b", "probe", &base])?;
+        let by_git_merge = git(repo, &["merge", "-q", "--no-commit", "--no-ff", &head]).is_err();
+        assert_eq!(by_git_merge, merge_conflicts, "{shape}: git merge");
+        assert_eq!(
+            by_preview, by_git_merge,
+            "{shape}: preview_merge as git merge"
+        );
+        assert_eq!(by_adds_to, !by_git_merge, "{shape}: adds_to differs");
+    }
+    Ok(())
+}
 
 /// AC-DSC-2, AC-GIT-1: the PR is refused until the task has a valid committed spec, which is
 /// discovered and registered; the Git page shows the branch facts, the PR and its checks.
@@ -4727,116 +4766,6 @@ async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
     Ok((before, child))
 }
 
-/// Chromium startup can hold the final lookup for outstanding browser decisions.
-#[derive(Default)]
-pub(super) struct HeldBrowserLookup {
-    session: Option<Arc<dyn BrowserSession>>,
-    publication_reader: Option<Arc<std::sync::Mutex<Option<tokio::task::Id>>>>,
-    calls: std::sync::atomic::AtomicUsize,
-    entered: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
-}
-
-impl HeldBrowserLookup {
-    pub(super) fn with_session(session: Arc<dyn BrowserSession>) -> Self {
-        Self {
-            session: Some(session),
-            ..Self::default()
-        }
-    }
-
-    pub(super) fn for_publication() -> Self {
-        Self {
-            publication_reader: Some(Arc::default()),
-            ..Self::default()
-        }
-    }
-
-    pub(super) fn hold_lookup_for(
-        &self,
-        reader: tokio::task::Id,
-    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        if let Some(target) = &self.publication_reader {
-            *target
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reader);
-        }
-        (self.entered.clone(), self.release.clone())
-    }
-
-    pub(super) fn hold_publication_lookup(
-        &self,
-        task: &TaskId,
-    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
-        if let Some(reader) = self.publication_reader.clone() {
-            yulius_app::race::on(
-                yulius_app::race::Point::ArmedNoticePublicationRead,
-                Path::new(task.as_str()),
-                move || {
-                    *reader
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some(tokio::task::id());
-                },
-            );
-        }
-        (self.entered.clone(), self.release.clone())
-    }
-}
-
-use yulius_app::ports::browser::{BrowserFailure, BrowserPort, BrowserSession};
-
-#[async_trait]
-impl BrowserPort for HeldBrowserLookup {
-    async fn ensure(
-        &self,
-        sandbox: &SandboxId,
-        profile_dir: &Path,
-    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
-        yulius::wiring::browser::UnavailableBrowser
-            .ensure(sandbox, profile_dir)
-            .await
-    }
-
-    async fn restart(
-        &self,
-        sandbox: &SandboxId,
-        profile_dir: &Path,
-    ) -> Result<Arc<dyn BrowserSession>, BrowserFailure> {
-        yulius::wiring::browser::UnavailableBrowser
-            .restart(sandbox, profile_dir)
-            .await
-    }
-
-    async fn running(&self, _: &SandboxId) -> Option<Arc<dyn BrowserSession>> {
-        let hold = match &self.publication_reader {
-            Some(reader) => reader
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take_if(|watcher| Some(*watcher) == tokio::task::try_id())
-                .is_some(),
-            None => self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1,
-        };
-        if hold {
-            self.entered.notify_one();
-            self.release.notified().await;
-        }
-        self.session.clone()
-    }
-
-    async fn reap_idle(&self) -> Vec<SandboxId> {
-        Vec::new()
-    }
-
-    async fn stop(&self, _: &SandboxId) -> bool {
-        false
-    }
-
-    async fn shutdown_all(&self) -> Vec<SandboxId> {
-        Vec::new()
-    }
-}
-
 #[tokio::test]
 async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorded_pr() -> TestResult
 {
@@ -4891,7 +4820,7 @@ async fn parked_mcp_uses_the_visible_plan_when_browser_verification_times_out() 
         )
         .await?;
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
-    let caller = crate::task_message::superagent(
+    let caller = crate::support::task_message::superagent(
         &SandboxId::parse("s1")?,
         &UserId::parse("alice")?,
         "admin",
@@ -9457,46 +9386,13 @@ async fn a_relinked_run_log_never_reads_a_host_file() -> TestResult {
     Ok(())
 }
 
-/// Records the plan of the one run it is asked to start and refuses to start it.
-#[derive(Default)]
-struct RecordingHost {
-    plan: std::sync::Mutex<Option<(PathBuf, LaunchPlan)>>,
-}
-
-#[async_trait]
-impl SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        run_dir: &Path,
-        _: &str,
-        _: &str,
-        plan: &LaunchPlan,
-        _: &[u8; 32],
-        _: (u16, u16),
-    ) -> AppResult<SpawnedRun> {
-        if let Ok(mut slot) = self.plan.lock() {
-            *slot = Some((run_dir.to_path_buf(), plan.clone()));
-        }
-        Err(AppError::Upstream("recorded, not started".into()))
-    }
-    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
-        Err(AppError::Upstream("nothing runs".into()))
-    }
-    fn inspect(&self, _: &Path) -> RunInspection {
-        RunInspection::Missing
-    }
-    fn terminate(&self, _: &Path) -> AppResult<()> {
-        Ok(())
-    }
-}
-
 /// #656 (SPEC-219 ENV-002/003, AC-2 where bubblewrap cannot run): a contained server starts an
 /// environment run in the sandbox's containment, as a CD dev run: its root is the sandbox, only its
 /// own directory is writable, its `HOME` is fresh there, and it runs the commit's files written into
 /// that directory, not the sandbox clone.
 #[tokio::test]
 async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> TestResult {
-    let host = Arc::new(RecordingHost::default());
+    let host = Arc::new(crate::support::ScriptedHost::default());
     let f = fixture_with(&DeliveryProfile::product(), contained(), Some(host.clone())).await?;
     deployable(&f).await?;
     let run = agent_deploys(&f).await?;
@@ -9504,12 +9400,7 @@ async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> Test
         run["state"], "error",
         "the recording host starts nothing: {run}"
     );
-    let (run_dir, plan) = host
-        .plan
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-        .ok_or("no run was started")?;
+    let (run_dir, plan) = host.runs().pop().ok_or("no run was started")?;
     let runs = f.h.app.config.data_dir.join("runs");
     assert!(
         run_dir.starts_with(&runs)
@@ -9558,7 +9449,7 @@ async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> Test
 /// files are a production run's, in `<data>/cd/<sandbox>/runs` (SPEC-279 PDE-004).
 #[tokio::test]
 async fn a_production_environment_run_starts_in_production_containment() -> TestResult {
-    let host = Arc::new(RecordingHost::default());
+    let host = Arc::new(crate::support::ScriptedHost::default());
     let f = fixture_with(&DeliveryProfile::product(), contained(), Some(host.clone())).await?;
     let patched = f
         .req(
@@ -9607,12 +9498,7 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
         .wait_run(started.body["run_id"].as_str().ok_or("run id")?)
         .await?;
     assert_eq!(run["commit"], f.origin_sha("main")?.as_str(), "{run}");
-    let (run_dir, plan) = host
-        .plan
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-        .ok_or("no run was started")?;
+    let (run_dir, plan) = host.runs().pop().ok_or("no run was started")?;
     let name = run_dir.file_name().ok_or("run directory")?;
     let work =
         f.h.app
@@ -11188,7 +11074,8 @@ async fn after_all_tasks_includes_a_new_failing_followup_before_discovery() -> T
     let (f, task, owner, head) = parked_primary_with_external_followup().await?;
     support::exhausted_subscription(&f.h).await?;
     let predecessor = f.h.store.task(&task).await?.ok_or("predecessor")?;
-    let caller = crate::task_message::superagent(&predecessor.sandbox_id, &owner.user.id, "bob");
+    let caller =
+        crate::support::task_message::superagent(&predecessor.sandbox_id, &owner.user.id, "bob");
     f.h.github.set_checks(&head, ChecksState::Failure);
     let created =
         f.h.app

@@ -6,9 +6,9 @@
 #![cfg(target_os = "linux")]
 
 use crate::support;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
@@ -18,7 +18,7 @@ use yulius_app::error::AppResult;
 use yulius_app::model::SandboxRecord;
 use yulius_app::model::{AttemptRecord, LaunchKind};
 use yulius_app::ports::isolation::{DiskUsage, SandboxIsolation, SandboxJoin, SandboxRef};
-use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
+use yulius_app::ports::session::SessionHost;
 use yulius_app::ports::store::{CoordinationStore as _, TaskFieldUpdate, TaskStore as _};
 use yulius_app::ports::store_ext::AutomationStore as _;
 use yulius_app::ports::store_ext::DeliveryStore as _;
@@ -28,27 +28,6 @@ use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
 
 /// A quota whose reading the test sets.
 struct Quota {
@@ -771,37 +750,6 @@ async fn an_orphan_worktree_loses_its_caches_after_a_day() -> BoxResult<()> {
     Ok(())
 }
 
-/// A process host that only answers the background-shell probe, with what the test sets
-/// (negative: the probe gives no answer).
-struct Shells(AtomicI64);
-
-#[async_trait::async_trait]
-impl SessionHost for Shells {
-    async fn spawn(
-        &self,
-        _: &Path,
-        _: &str,
-        _: &str,
-        _: &LaunchPlan,
-        _: &[u8; 32],
-        _: (u16, u16),
-    ) -> AppResult<SpawnedRun> {
-        Err(yulius_app::error::AppError::Conflict("no runs here".into()))
-    }
-    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
-        Err(yulius_app::error::AppError::Conflict("no runs here".into()))
-    }
-    fn inspect(&self, _: &Path) -> RunInspection {
-        RunInspection::Missing
-    }
-    fn terminate(&self, _: &Path) -> AppResult<()> {
-        Ok(())
-    }
-    fn background_shells(&self, _: u32) -> Option<u32> {
-        u32::try_from(self.0.load(Ordering::SeqCst)).ok()
-    }
-}
-
 impl World {
     /// Gives `task` a live session whose agent process is `pid`.
     async fn live(&self, task: &str, pid: u32) -> BoxResult<()> {
@@ -843,8 +791,15 @@ impl World {
 /// background subagent and a probe that gives no answer all keep them.
 #[tokio::test]
 async fn an_idle_task_with_background_work_keeps_its_caches() -> BoxResult<()> {
-    let shells = Arc::new(Shells(AtomicI64::new(1)));
-    let w = world_with(Some(shells.clone())).await?;
+    let shells = Arc::new(AtomicI64::new(1));
+    let probed = Arc::clone(&shells);
+    let w = world_with(Some(Arc::new(crate::support::ScriptedHost {
+        background_shells: Some(Box::new(move |_| {
+            u32::try_from(probed.load(Ordering::SeqCst)).ok()
+        })),
+        ..crate::support::ScriptedHost::default()
+    })))
+    .await?;
     let idle = w
         .task("t-gate", TaskStatus::Running, Some(Activity::Waiting))
         .await?;
@@ -863,7 +818,7 @@ async fn an_idle_task_with_background_work_keeps_its_caches() -> BoxResult<()> {
     );
 
     // The probe gives no answer (a timeout under load): unknown counts as working.
-    shells.0.store(-1, Ordering::SeqCst);
+    shells.store(-1, Ordering::SeqCst);
     w.h.app.disk_upkeep(&w.sandbox, true).await?;
     assert!(
         idle.join("target").exists(),
@@ -871,7 +826,7 @@ async fn an_idle_task_with_background_work_keeps_its_caches() -> BoxResult<()> {
     );
 
     // No shell, but the turn ended waiting for a background subagent (a review).
-    shells.0.store(0, Ordering::SeqCst);
+    shells.store(0, Ordering::SeqCst);
     let task = TaskId::parse("t-gate")?;
     w.h.app.background_agents_observed(&task, 1).await;
     w.h.app.disk_upkeep(&w.sandbox, true).await?;

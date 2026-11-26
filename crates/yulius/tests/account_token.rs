@@ -4,10 +4,11 @@
 //! like a captured one and never echoed or audited. The last test starts a real task on such a
 //! subscription with the fake agent.
 
-use crate::pool_supervision::{
-    ScriptedUsage, build_with, new_task, runtime, screen, seed, temp, wait_for,
-};
 use crate::support;
+use crate::support::eventually;
+use crate::support::live::pool::{
+    ScriptedUsage, build_with, new_task, runtime, screen, seed, temp,
+};
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -996,7 +997,7 @@ fn a_task_starts_on_a_pasted_subscription() -> TestResult {
 
         let id = new_task(&app, &sandbox, &user, "Pasted").await?;
         let want = format!("ENV CLAUDE_CODE_OAUTH_TOKEN=set len={}", PASTED.len());
-        wait_for(
+        eventually(
             "the run on the pasted subscription",
             Duration::from_secs(30),
             || {
@@ -1010,7 +1011,7 @@ fn a_task_starts_on_a_pasted_subscription() -> TestResult {
             run.account_id.as_ref().map(AccountId::as_str),
             Some(created.account.id.as_str())
         );
-        crate::pool_supervision::stop(&app, &id).await
+        crate::support::live::pool::stop(&app, &id).await
     })
 }
 

@@ -5,64 +5,27 @@
 //! account at a limit by resuming the conversation, a goal task gets its request as its first
 //! message, and a refreshed sign-in is kept. No test calls Google.
 
+use crate::support::antigravity::{API_KEY, add_google_account, api_key};
+use crate::support::live::{Live, UNSERVED};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::supervision::{
-    build_full, runtime, screen_contains, seed_records, seed_repo, task, wait_for,
-};
 use crate::support;
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius::wiring::session::PtySessionHost;
+use crate::support::live::supervision::{
+    build_full, runtime, screen_contains, seed_records, seed_repo, task,
+};
+use crate::support::{TestResult, eventually};
 use yulius_app::context::App;
-use yulius_app::context::{AppConfig, Deps};
 use yulius_app::lifecycle::NewTask;
-use yulius_app::model::{AccountRecord, AccountStatus, LaunchKind, TaskMode, TaskOrigin};
-use yulius_domain::harness::{Harness, Provider};
+use yulius_app::model::{AccountStatus, LaunchKind, TaskMode, TaskOrigin};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
-use yulius_domain::time::Timestamp;
-use yulius_harness::login::{antigravity_api_key_credential, antigravity_sign_in_credential};
+use yulius_harness::login::antigravity_sign_in_credential;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
-
-const API_KEY: &str = "SYNTHETIC-gemini-api-key-0123456789";
-
-pub(super) async fn add_google_account(
-    app: &App,
-    id: &str,
-    credential: &[u8],
-) -> Result<AccountId, Box<dyn std::error::Error>> {
-    let account = AccountId::parse(id)?;
-    app.deps
-        .store
-        .insert_account(&AccountRecord {
-            id: account.clone(),
-            provider: Provider::Google,
-            label: format!("Antigravity {id}"),
-            credential: Some(app.deps.crypto.seal(credential)?),
-            status: AccountStatus::Ok,
-            usage_json: None,
-            last_error: None,
-            created_at: Timestamp(1),
-            updated_at: Timestamp(1),
-            email: None,
-            email_checked_at: None,
-            email_typed: false,
-        })
-        .await?;
-    Ok(account)
-}
-
-pub(super) fn api_key() -> Result<Vec<u8>, String> {
-    antigravity_api_key_credential(API_KEY).ok_or_else(|| "an API key envelope".to_owned())
-}
 
 async fn new_agy_task(
     app: &Arc<App>,
@@ -99,73 +62,7 @@ async fn build_hooked(
     fake: &Path,
     agent: FakeAgentOptions,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?;
-    let listener = socket.listen(64)?;
-    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
-    config.contained = false;
-    let deps = Deps {
-        store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(support::FakeGitHub::default()),
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(support::agents::FakeAgentHarness {
-            inner: HarnessAdapter::new(exe.clone(), url),
-            fake: fake.to_path_buf(),
-            options: agent,
-            yulius_exe: exe,
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-    };
-    let app = App::new(config, deps);
-    let internal = yulius_server::internal_router(app.clone())
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
-    tokio::spawn(async move { axum::serve(listener, internal).await });
-    Ok(app)
-}
-
-/// The plans a contained server hands its session host, which starts nothing.
-#[derive(Default)]
-struct RecordingHost {
-    plans: std::sync::Mutex<Vec<yulius_app::ports::session::LaunchPlan>>,
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        _run_dir: &Path,
-        _attempt_id: &str,
-        _task_id: &str,
-        plan: &yulius_app::ports::session::LaunchPlan,
-        _token: &[u8; 32],
-        _size: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        if let Ok(mut plans) = self.plans.lock() {
-            plans.push(plan.clone());
-        }
-        Err(yulius_app::error::AppError::Upstream("recorded".into()))
-    }
-    async fn attach(
-        &self,
-        _run_dir: &Path,
-        _token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        Err(yulius_app::error::AppError::NotFound)
-    }
-    fn inspect(&self, _run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        yulius_app::ports::session::RunInspection::Missing
-    }
-    fn terminate(&self, _run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        Ok(())
-    }
+    Ok(Live::new(Some(fake), agent).start(data, 0, |_| {}).await?.0)
 }
 
 fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
@@ -198,7 +95,7 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
         let account = add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_agy_task(&app, &sandbox, &user, "Antigravity echo", TaskMode::Prompt).await?;
-        wait_for("the fake agent banner", Duration::from_secs(30), || {
+        eventually("the fake agent banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -261,7 +158,7 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
 
         // The conversation is the one its SessionStart named.
         let session = attempt.id.as_str().to_owned();
-        wait_for(
+        eventually(
             "the conversation learnt from SessionStart",
             Duration::from_secs(30),
             || async {
@@ -278,7 +175,7 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
         )
         .await?;
         app.send_input(&id, b"hello antigravity\r").await?;
-        wait_for("the echo", Duration::from_secs(10), || {
+        eventually("the echo", Duration::from_secs(10), || {
             screen_contains(&app, &id, "ECHO: hello antigravity")
         })
         .await?;
@@ -286,7 +183,7 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
             .join("antigravity/shared/brain")
             .join(&session)
             .join(".system_generated/logs/transcript.jsonl");
-        wait_for("the transcript's turn", Duration::from_secs(10), || async {
+        eventually("the transcript's turn", Duration::from_secs(10), || async {
             std::fs::read_to_string(&transcript).is_ok_and(|t| t.contains("PLANNER_RESPONSE"))
         })
         .await?;
@@ -323,13 +220,17 @@ exec "${0%/*}/fake-agent" "$@"
             answers_first_message: true,
             resume_prompts: true,
             turn_hold_file: Some(release.clone()),
-            ..crate::first_message::hooked()
+            ..crate::support::live::first_message::hooked()
         };
-        let (app, _) =
-            crate::first_message::start_with(&data, &cli, options, 0, Arc::default(), |config| {
-                config.park_after_ms = 1
-            })
-            .await?;
+        let (app, _) = crate::support::live::first_message::start_with(
+            &data,
+            &cli,
+            options,
+            0,
+            Arc::default(),
+            |config| config.park_after_ms = 1,
+        )
+        .await?;
         let (sandbox, user) = seed_records(&app).await?;
         add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
@@ -340,7 +241,7 @@ exec "${0%/*}/fake-agent" "$@"
             session_hash: None,
             token: None,
         };
-        wait_for("first turn settled", Duration::from_secs(30), || async {
+        eventually("first turn settled", Duration::from_secs(30), || async {
             screen_contains(&app, &id, "ECHO: Neon: answer with an echo").await
                 && task(&app, &id)
                     .await
@@ -350,14 +251,14 @@ exec "${0%/*}/fake-agent" "$@"
         app.close_task_and_wait(&id).await?;
         app.continue_task(&ctx, id.as_str(), &Default::default())
             .await?;
-        wait_for(
+        eventually(
             "resumed conversation screen",
             Duration::from_secs(30),
             || screen_contains(&app, &id, fixture.trim_end()),
         )
         .await?;
         assert_eq!(task(&app, &id).await?.activity, Some(Activity::Waiting));
-        wait_for(
+        eventually(
             "idle conversation parked",
             Duration::from_secs(30),
             || async {
@@ -382,7 +283,7 @@ exec "${0%/*}/fake-agent" "$@"
         assert_eq!(task(&app, &id).await?.activity, Some(Activity::Working));
         assert_eq!(app.park_idle_sessions_now().await, 0);
         std::fs::write(&release, b"")?;
-        wait_for(
+        eventually(
             "new turn answered and settled",
             Duration::from_secs(30),
             || async {
@@ -394,7 +295,7 @@ exec "${0%/*}/fake-agent" "$@"
         )
         .await?;
         app.close_task_for_person(&ctx, id.as_str()).await?;
-        wait_for(
+        eventually(
             "closed with its session released",
             Duration::from_secs(30),
             || async {
@@ -437,13 +338,13 @@ fn an_antigravity_task_at_its_limit_moves_to_another_google_account() -> TestRes
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
         app.send_input(&id, b"again\r").await?;
-        wait_for(
+        eventually(
             "the switch to another account",
             Duration::from_secs(90),
             || async {
@@ -541,11 +442,11 @@ fn an_antigravity_task_moves_only_between_antigravity_subscriptions() -> TestRes
         add_google_account(&app, "a-google-2", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_agy_task(&app, &sandbox, &user, "Antigravity moves", TaskMode::Prompt).await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
-        wait_for("the conversation", Duration::from_secs(30), || async {
+        eventually("the conversation", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .attempts(&id)
@@ -589,7 +490,7 @@ fn an_antigravity_task_moves_only_between_antigravity_subscriptions() -> TestRes
         let mut watch = app.runtime(&id).hub.watch();
         app.delete_account(&ctx, on.as_str()).await?;
         let mut said = Vec::new();
-        wait_for(
+        eventually(
             "the move to the other Antigravity subscription",
             Duration::from_secs(60),
             || {
@@ -617,7 +518,7 @@ fn an_antigravity_task_moves_only_between_antigravity_subscriptions() -> TestRes
             attempts[1].provider_session_id,
             attempts[0].provider_session_id
         );
-        wait_for("the removal's notice", Duration::from_secs(10), || {
+        eventually("the removal's notice", Duration::from_secs(10), || {
             said.extend(notices(&mut watch));
             let done = said
                 .iter()
@@ -627,7 +528,7 @@ fn an_antigravity_task_moves_only_between_antigravity_subscriptions() -> TestRes
         .await?;
 
         app.delete_account(&ctx, other).await?;
-        wait_for(
+        eventually(
             "the wait and its request",
             Duration::from_secs(60),
             || async {
@@ -660,7 +561,7 @@ fn an_antigravity_task_moves_only_between_antigravity_subscriptions() -> TestRes
             "{}",
             request.action
         );
-        wait_for("the stranded notice", Duration::from_secs(10), || {
+        eventually("the stranded notice", Duration::from_secs(10), || {
             said.extend(notices(&mut watch));
             let done = said
                 .iter()
@@ -692,7 +593,7 @@ fn an_antigravity_goal_task_gets_its_request_as_its_first_message() -> TestResul
         let account = add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_agy_task(&app, &sandbox, &user, "Antigravity goal", TaskMode::Goal).await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -761,7 +662,7 @@ fn a_refreshed_antigravity_sign_in_is_kept_and_leaves_the_sandbox() -> TestResul
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -781,12 +682,12 @@ fn a_refreshed_antigravity_sign_in_is_kept_and_leaves_the_sandbox() -> TestResul
         // The CLI refreshes its sign-in during the run.
         std::fs::write(&token, b"SYNTHETIC-token-new")?;
         app.send_input(&id, b"/exit\r").await?;
-        wait_for("the run's end", Duration::from_secs(30), || async {
+        eventually("the run's end", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
         let expected = antigravity_sign_in_credential(b"SYNTHETIC-token-new").ok_or("envelope")?;
-        wait_for("the refresh kept", Duration::from_secs(10), || async {
+        eventually("the refresh kept", Duration::from_secs(10), || async {
             let Ok(Some(record)) = app.deps.store.account(&account).await else {
                 return false;
             };
@@ -796,7 +697,7 @@ fn a_refreshed_antigravity_sign_in_is_kept_and_leaves_the_sandbox() -> TestResul
                 .is_some_and(|plain| plain == expected)
         })
         .await?;
-        wait_for("the file gone", Duration::from_secs(10), || async {
+        eventually("the file gone", Duration::from_secs(10), || async {
             !token.exists()
         })
         .await?;
@@ -833,7 +734,7 @@ fn a_failed_antigravity_turn_leaves_its_task_waiting() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -841,11 +742,11 @@ fn a_failed_antigravity_turn_leaves_its_task_waiting() -> TestResult {
         let worktree = task(&app, &id).await?.worktree_path.ok_or("worktree")?;
         std::fs::write(Path::new(&worktree).join("api.rs"), "fn main() {}\n")?;
         app.send_input(&id, b"/apierror\r").await?;
-        wait_for("the failed turn", Duration::from_secs(20), || {
+        eventually("the failed turn", Duration::from_secs(20), || {
             screen_contains(&app, &id, "API ERROR")
         })
         .await?;
-        wait_for("the task waiting", Duration::from_secs(20), || async {
+        eventually("the task waiting", Duration::from_secs(20), || async {
             task(&app, &id).await.is_ok_and(|t| {
                 t.status == TaskStatus::Running && t.activity == Some(Activity::Waiting)
             })
@@ -894,7 +795,7 @@ fn a_run_never_replaces_a_newer_antigravity_sign_in() -> TestResult {
                 )
                 .await?;
             let id = new_agy_task(&app, &sandbox, &user, title, TaskMode::Prompt).await?;
-            wait_for("the banner", Duration::from_secs(30), || {
+            eventually("the banner", Duration::from_secs(30), || {
                 screen_contains(&app, &id, "FAKE-AGENT READY")
             })
             .await?;
@@ -923,11 +824,11 @@ fn a_run_never_replaces_a_newer_antigravity_sign_in() -> TestResult {
                 std::fs::write(&token, b"SYNTHETIC-token-run")?;
             }
             app.send_input(&id, b"/exit\r").await?;
-            wait_for("the run's end", Duration::from_secs(30), || async {
+            eventually("the run's end", Duration::from_secs(30), || async {
                 task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
             })
             .await?;
-            wait_for("the run's file gone", Duration::from_secs(10), || async {
+            eventually("the run's file gone", Duration::from_secs(10), || async {
                 !token.exists()
             })
             .await?;
@@ -965,13 +866,13 @@ fn an_antigravity_conversation_is_found_without_its_session_start() -> TestResul
         add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
         let id = new_agy_task(&app, &sandbox, &user, "Antigravity found", TaskMode::Prompt).await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the echo", Duration::from_secs(10), || {
+        eventually("the echo", Duration::from_secs(10), || {
             screen_contains(&app, &id, "ECHO: hello")
         })
         .await?;
@@ -983,7 +884,7 @@ fn an_antigravity_conversation_is_found_without_its_session_start() -> TestResul
             cache.join("last_conversations.json"),
             serde_json::json!({ worktree: attempt.id.as_str() }).to_string(),
         )?;
-        wait_for(
+        eventually(
             "the conversation found",
             Duration::from_secs(60),
             || async {
@@ -1034,7 +935,7 @@ fn a_linked_antigravity_folder_fails_the_start() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the failed start", Duration::from_secs(30), || async {
+        eventually("the failed start", Duration::from_secs(30), || async {
             task(&app, &id)
                 .await
                 .is_ok_and(|t| matches!(t.status, TaskStatus::Failed(_)))
@@ -1083,15 +984,11 @@ fn a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes() -> TestResul
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = crate::supervision::build_tuned(
-            &data,
-            Some(&fake),
-            FakeAgentOptions::default(),
-            move |c| {
+        let app =
+            Live::new(Some(&fake), FakeAgentOptions::default()).app(&data, UNSERVED, move |c| {
                 c.contained = true;
                 c.contained_readonly = vec![fake_dir];
-            },
-        )?;
+            })?;
         let (sandbox, user) = seed_records(&app).await?;
         add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
@@ -1103,7 +1000,7 @@ fn a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes() -> TestResul
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the banner", Duration::from_secs(30), || {
+        eventually("the banner", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
@@ -1114,7 +1011,7 @@ fn a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes() -> TestResul
         ] {
             app.send_input(&id, format!("/read {}\r", path.display()).as_bytes())
                 .await?;
-            wait_for(expected, Duration::from_secs(10), || {
+            eventually(expected, Duration::from_secs(10), || {
                 screen_contains(&app, &id, expected)
             })
             .await?;
@@ -1135,40 +1032,24 @@ fn a_contained_antigravity_plan_binds_the_runs_home() -> TestResult {
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let host = Arc::new(RecordingHost::default());
+        let host = Arc::new(crate::support::ScriptedHost::default());
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-        let mut config = AppConfig::new(
-            data.clone(),
-            "https://yulius.test",
-            "http://127.0.0.1:9",
-            exe.clone(),
-        );
-        config.contained = true;
         let cli = data.join("antigravity-cli/1.5.12-linux-x64");
-        let deps = Deps {
-            store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-            clock: Arc::new(SystemClock),
-            crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-            github: Arc::new(support::FakeGitHub::default()),
-            session_host: host.clone(),
-            harness: Arc::new(support::agents::FakeAgentHarness {
-                inner: HarnessAdapter::new(exe.clone(), "http://127.0.0.1:9"),
-                fake: exe.clone(),
-                options: FakeAgentOptions {
+
+        let app = Live {
+            host: Some(host.clone()),
+            ..Live::new(
+                Some(&exe),
+                FakeAgentOptions {
                     provided_antigravity: Some(yulius_app::ports::harness::ProvidedCli {
                         program: cli.join("antigravity"),
                         dir: cli.clone(),
                     }),
                     ..FakeAgentOptions::default()
                 },
-                yulius_exe: exe,
-            }),
-            git: Arc::new(crate::support::confined_git()),
-            system: Arc::new(support::FixedSystem),
-            browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-            usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-        };
-        let app = App::new(config, deps);
+            )
+        }
+        .app(&data, UNSERVED, |config| config.contained = true)?;
         let (sandbox, user) = seed_records(&app).await?;
         add_google_account(&app, "a-google", &api_key()?).await?;
         seed_repo(&data, &sandbox)?;
@@ -1180,17 +1061,11 @@ fn a_contained_antigravity_plan_binds_the_runs_home() -> TestResult {
             TaskMode::Prompt,
         )
         .await?;
-        wait_for("the recorded plan", Duration::from_secs(30), || async {
-            host.plans.lock().is_ok_and(|plans| !plans.is_empty())
+        eventually("the recorded plan", Duration::from_secs(30), || async {
+            !host.plans().is_empty()
         })
         .await?;
-        let plan = host
-            .plans
-            .lock()
-            .map_err(|_| "poisoned")?
-            .first()
-            .cloned()
-            .ok_or("no plan")?;
+        let plan = host.plans().into_iter().next().ok_or("no plan")?;
         let yulius_app::ports::session::Containment::Bubblewrap {
             sandbox_root,
             home,

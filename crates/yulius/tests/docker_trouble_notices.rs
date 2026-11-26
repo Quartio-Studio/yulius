@@ -3,12 +3,15 @@
 //! trouble stayed ended, the tasks told hear that it is no longer full. A fake agent echoes what it is
 //! typed.
 
+use crate::support::live::UNSERVED;
+use crate::support::live::pool::{pool, pool_live};
 use std::time::Duration;
 
 use yulius_app::docker_trouble::{DOCKER_BACK, DOCKER_FULL};
 use yulius_domain::connection_health::{Limit, Refusal};
 
-use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp, wait_for};
+use crate::support::eventually;
+use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -42,10 +45,12 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let id = new_task(&app, &sandbox, &user, "Docker user").await?;
-        wait_for("the first answer", Duration::from_secs(30), || {
+        eventually("the first answer", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("ECHO: Docker user: answer with an echo") }
         })
@@ -92,7 +97,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             .await?;
         let typed = until_typed(&app).await?;
         assert_eq!(typed, vec![(id.clone(), DOCKER_FULL)]);
-        wait_for("the notice echoed", Duration::from_secs(30), || {
+        eventually("the notice echoed", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("do not raise a Needs you about it") }
         })
@@ -139,7 +144,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
         }
         assert_eq!(heard, vec![(id.clone(), DOCKER_BACK)]);
         assert!(app.tell_docker_troubles().await.is_empty());
-        wait_for("the end echoed", Duration::from_secs(30), || {
+        eventually("the end echoed", Duration::from_secs(30), || {
             let shown = screen(&app, &id);
             async move { shown.contains("no longer full") }
         })
@@ -167,13 +172,15 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;
         let other = new_task(&app, &sandbox, &user, "Other").await?;
         for (id, title) in [(&first, "First"), (&second, "Second"), (&other, "Other")] {
-            wait_for("the first answer", Duration::from_secs(30), || {
+            eventually("the first answer", Duration::from_secs(30), || {
                 let shown = screen(&app, id);
                 let expected = format!("ECHO: {title}: answer with an echo");
                 async move { shown.contains(&expected) }
@@ -387,12 +394,14 @@ fn continuing_a_stopped_task_answers_no_other_tasks_request() -> TestResult {
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let stopped = new_task(&app, &sandbox, &user, "Stopped").await?;
         let working = new_task(&app, &sandbox, &user, "Working").await?;
         for (id, title) in [(&stopped, "Stopped"), (&working, "Working")] {
-            wait_for("the first answer", Duration::from_secs(30), || {
+            eventually("the first answer", Duration::from_secs(30), || {
                 let shown = screen(&app, id);
                 let expected = format!("ECHO: {title}: answer with an echo");
                 async move { shown.contains(&expected) }
@@ -451,12 +460,14 @@ fn a_page_answer_to_a_shared_docker_question_answers_the_others() -> TestResult 
     };
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let app = pool(pool_live(&fake, agent), &data, UNSERVED, |config| {
+            config.goal_ready_ms = 2_000
+        })?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;
         for (id, title) in [(&first, "First"), (&second, "Second")] {
-            wait_for("the first answer", Duration::from_secs(30), || {
+            eventually("the first answer", Duration::from_secs(30), || {
                 let shown = screen(&app, id);
                 let expected = format!("ECHO: {title}: answer with an echo");
                 async move { shown.contains(&expected) }

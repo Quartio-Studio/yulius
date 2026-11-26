@@ -2,12 +2,13 @@
 //! through a bundle Yulius fetches as the task's owner, instead of asking a person for access.
 
 use crate::support;
+use crate::support::git_stdout;
 
 use std::path::{Path, PathBuf};
 
 use axum::http::Method;
 use serde_json::{Value, json};
-use support::repos::{World, git};
+use support::repos::World;
 use support::{Creds, TestResult, call};
 use yulius_app::ports::store::UserStore as _;
 use yulius_domain::task::TaskStatus;
@@ -68,7 +69,7 @@ fn clone_bundle(record: &Value, into: &Path) -> Result<PathBuf, BoxError> {
         "clone-{}",
         record["commit"].as_str().unwrap_or("x")
     ));
-    git(
+    git_stdout(
         into,
         &[
             "clone",
@@ -108,7 +109,7 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
         "{record}"
     );
     assert_eq!(record["branch"], "main", "{record}");
-    let head = git(&lib, &["rev-parse", "refs/heads/main"])?;
+    let head = git_stdout(&lib, &["rev-parse", "refs/heads/main"])?;
     assert_eq!(record["commit"], head.trim(), "{record}");
     assert!(
         record["clone_into"]
@@ -136,8 +137,8 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
     // AC2: the repository moved; a second call brings its new commit.
     let seed = w.scratch.path().join("seed/acme/lib");
     std::fs::write(seed.join("README.md"), "# Lib v2\n")?;
-    git(&seed, &["commit", "--quiet", "-am", "v2"])?;
-    git(
+    git_stdout(&seed, &["commit", "--quiet", "-am", "v2"])?;
+    git_stdout(
         &seed,
         &["push", "--quiet", &lib.to_string_lossy(), "HEAD:main"],
     )?;
@@ -149,7 +150,7 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
     )
     .await?;
     let record = support::tool_text(&second);
-    let moved = git(&lib, &["rev-parse", "refs/heads/main"])?;
+    let moved = git_stdout(&lib, &["rev-parse", "refs/heads/main"])?;
     assert_eq!(record["commit"], moved.trim(), "{record}");
     let clone = clone_bundle(&record, w.scratch.path())?;
     assert_eq!(
@@ -171,12 +172,12 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
 /// `dev`'s commit.
 fn add_dev_and_tag(w: &World, lib: &Path) -> Result<String, BoxError> {
     let seed = w.scratch.path().join("seed/acme/lib");
-    git(&seed, &["tag", "v1"])?;
-    git(&seed, &["checkout", "--quiet", "-b", "dev"])?;
+    git_stdout(&seed, &["tag", "v1"])?;
+    git_stdout(&seed, &["checkout", "--quiet", "-b", "dev"])?;
     std::fs::write(seed.join("model.rs"), "pub struct Model;\n")?;
-    git(&seed, &["add", "model.rs"])?;
-    git(&seed, &["commit", "--quiet", "-m", "model on dev"])?;
-    git(
+    git_stdout(&seed, &["add", "model.rs"])?;
+    git_stdout(&seed, &["commit", "--quiet", "-m", "model on dev"])?;
+    git_stdout(
         &seed,
         &[
             "push",
@@ -186,7 +187,7 @@ fn add_dev_and_tag(w: &World, lib: &Path) -> Result<String, BoxError> {
             "refs/tags/v1:refs/tags/v1",
         ],
     )?;
-    Ok(git(lib, &["rev-parse", "refs/heads/dev"])?
+    Ok(git_stdout(lib, &["rev-parse", "refs/heads/dev"])?
         .trim()
         .to_owned())
 }
@@ -198,7 +199,7 @@ fn add_dev_and_tag(w: &World, lib: &Path) -> Result<String, BoxError> {
 async fn a_task_gets_every_branch_and_tag_its_owner_can_read() -> TestResult {
     let (w, _alice, lib) = world().await?;
     let dev = add_dev_and_tag(&w, &lib)?;
-    let main = git(&lib, &["rev-parse", "refs/heads/main"])?
+    let main = git_stdout(&lib, &["rev-parse", "refs/heads/main"])?
         .trim()
         .to_owned();
 
@@ -245,8 +246,14 @@ async fn a_task_gets_every_branch_and_tag_its_owner_can_read() -> TestResult {
     }
     let clone = clone_bundle(&record, w.scratch.path())?;
     assert!(!clone.join("model.rs").exists());
-    assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
-    assert_eq!(git(&clone, &["rev-parse", "v1^{commit}"])?.trim(), main);
+    assert_eq!(
+        git_stdout(&clone, &["rev-parse", "origin/dev"])?.trim(),
+        dev
+    );
+    assert_eq!(
+        git_stdout(&clone, &["rev-parse", "v1^{commit}"])?.trim(),
+        main
+    );
     assert_eq!(attachments(&w), ["acme-lib.bundle"]);
     assert_eq!(tmp_entries(&w), 0);
     Ok(())
@@ -280,8 +287,8 @@ async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
     let dev = add_dev_and_tag(&w, &lib)?;
     let seed = w.scratch.path().join("seed/acme/lib");
     let odd = "odd$(touch${IFS}pwned)'q";
-    git(&seed, &["branch", odd, "dev"])?;
-    git(
+    git_stdout(&seed, &["branch", odd, "dev"])?;
+    git_stdout(
         &seed,
         &[
             "push",
@@ -302,19 +309,19 @@ async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
     let copy = PathBuf::from(record["clone_into"].as_str().ok_or("clone_into")?);
     std::fs::create_dir_all(copy.parent().ok_or("parent")?)?;
     run_answered(&record, "clone_command", w.scratch.path())?;
-    assert_eq!(git(&copy, &["rev-parse", "HEAD"])?.trim(), dev);
+    assert_eq!(git_stdout(&copy, &["rev-parse", "HEAD"])?.trim(), dev);
     assert!(
         !w.scratch.path().join("pwned").exists() && !copy.join("pwned").exists(),
         "the branch name is not run"
     );
 
     // The owner's repository moves on: the branch gets a commit, v1 is re-pointed, v2 is new.
-    git(&seed, &["checkout", "--quiet", odd])?;
+    git_stdout(&seed, &["checkout", "--quiet", odd])?;
     std::fs::write(seed.join("model.rs"), "pub struct Model2;\n")?;
-    git(&seed, &["commit", "--quiet", "-am", "model 2"])?;
-    git(&seed, &["tag", "-f", "v1", "dev"])?;
-    git(&seed, &["tag", "v2"])?;
-    git(
+    git_stdout(&seed, &["commit", "--quiet", "-am", "model 2"])?;
+    git_stdout(&seed, &["tag", "-f", "v1", "dev"])?;
+    git_stdout(&seed, &["tag", "v2"])?;
+    git_stdout(
         &seed,
         &[
             "push",
@@ -326,7 +333,7 @@ async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
             "refs/tags/v2:refs/tags/v2",
         ],
     )?;
-    let moved = git(&lib, &["rev-parse", &format!("refs/heads/{odd}")])?;
+    let moved = git_stdout(&lib, &["rev-parse", &format!("refs/heads/{odd}")])?;
     let second = support::mcp_tool(
         &w.h,
         "tok-ref",
@@ -337,10 +344,16 @@ async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
     assert_ne!(second["isError"], true, "{second}");
     let record = support::tool_text(&second);
     run_answered(&record, "update_command", w.scratch.path())?;
-    assert_eq!(git(&copy, &["rev-parse", "HEAD"])?.trim(), moved.trim());
-    assert_eq!(git(&copy, &["rev-parse", "v1^{commit}"])?.trim(), dev);
     assert_eq!(
-        git(&copy, &["rev-parse", "v2^{commit}"])?.trim(),
+        git_stdout(&copy, &["rev-parse", "HEAD"])?.trim(),
+        moved.trim()
+    );
+    assert_eq!(
+        git_stdout(&copy, &["rev-parse", "v1^{commit}"])?.trim(),
+        dev
+    );
+    assert_eq!(
+        git_stdout(&copy, &["rev-parse", "v2^{commit}"])?.trim(),
         moved.trim()
     );
     assert_eq!(
@@ -359,11 +372,11 @@ async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
 #[tokio::test]
 async fn an_answer_lists_at_most_a_hundred_branches_and_counts_them_all() -> TestResult {
     let (w, _alice, lib) = world().await?;
-    let main = git(&lib, &["rev-parse", "refs/heads/main"])?
+    let main = git_stdout(&lib, &["rev-parse", "refs/heads/main"])?
         .trim()
         .to_owned();
     for n in 0..101 {
-        git(&lib, &["update-ref", &format!("refs/heads/b{n:03}"), &main])?;
+        git_stdout(&lib, &["update-ref", &format!("refs/heads/b{n:03}"), &main])?;
     }
     let done = support::mcp_tool(
         &w.h,
@@ -704,10 +717,10 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     let w = World::new("org").await?;
     let lib = w.remote("acme", "lib", &[("README.md", "# Lib\n")], &["other"])?;
     let dev = add_dev_and_tag(&w, &lib)?;
-    let main = git(&lib, &["rev-parse", "main"])?.trim().to_owned();
+    let main = git_stdout(&lib, &["rev-parse", "main"])?.trim().to_owned();
     // Longer than Yulius's own branch names may be, but Git's: still in the bundle, so counted.
     let long = format!("{}x", "long/".repeat(60));
-    git(&lib, &["update-ref", &format!("refs/heads/{long}"), &main])?;
+    git_stdout(&lib, &["update-ref", &format!("refs/heads/{long}"), &main])?;
     let adapter =
         crate::support::confined_git().with_github_base(&w.scratch.path().join("remotes"));
     let token = yulius_app::model::Secret("token-alice".into());
@@ -733,10 +746,10 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
         ]
     );
     assert_eq!(carried.tags, 1);
-    let heads = git(&out, &["bundle", "list-heads", &bundle.to_string_lossy()])?;
+    let heads = git_stdout(&out, &["bundle", "list-heads", &bundle.to_string_lossy()])?;
     let mut heads: Vec<&str> = heads.lines().collect();
     heads.sort_unstable();
-    let tag = git(&lib, &["rev-parse", "refs/tags/v1"])?;
+    let tag = git_stdout(&lib, &["rev-parse", "refs/tags/v1"])?;
     let mut wanted = [
         format!("{dev} refs/heads/dev"),
         format!("{main} HEAD"),
@@ -748,7 +761,7 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     wanted.sort_unstable();
     assert_eq!(heads, wanted, "HEAD, every branch and the tag");
     let clone = out.join("clone");
-    git(
+    git_stdout(
         &out,
         &[
             "clone",
@@ -758,7 +771,10 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
         ],
     )?;
     assert_eq!(std::fs::read_to_string(clone.join("README.md"))?, "# Lib\n");
-    assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
+    assert_eq!(
+        git_stdout(&clone, &["rev-parse", "origin/dev"])?.trim(),
+        dev
+    );
     // SPEC-349 AC3: past its byte limit the fetch is stopped as a capacity bound.
     let small = out.join("small");
     std::fs::create_dir_all(&small)?;

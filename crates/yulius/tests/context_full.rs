@@ -3,16 +3,17 @@
 //! 2.1.292. Yulius compacts it once, continues the task in a fresh session when compacting
 //! fails, and flags the task when the fresh session is full too.
 
+use crate::support::live::UNSERVED;
+use crate::support::live::pool::{pool, pool_live};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::pool_supervision::{
-    ScriptedUsage, build_tuned, build_with, echoed, new_task, runtime, screen, seed, stop, task,
-    temp, wait_for,
-};
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::pool::{
+    ScriptedUsage, build_with, echoed, new_task, runtime, screen, seed, stop, task, temp,
+};
+use crate::support::{TestResult, eventually};
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::TryRecvError;
 use yulius_app::context::App;
@@ -71,7 +72,7 @@ async fn audit_when(
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let rows = || audited(data, id).unwrap_or_default();
     // A timeout is reported by the caller's assertion on what the audit then holds.
-    let _ = wait_for("the audit", Duration::from_secs(30), || {
+    let _ = eventually("the audit", Duration::from_secs(30), || {
         let ready = done(&rows());
         async move { ready }
     })
@@ -95,7 +96,7 @@ fn agent(full_after: u32, compact_fails: bool) -> FakeAgentOptions {
 async fn started(app: &Arc<App>, data: &Path) -> Result<TaskId, Box<dyn std::error::Error>> {
     let (sandbox, user) = seed(app, data, &["a-only"]).await?;
     let id = new_task(app, &sandbox, &user, "Full").await?;
-    wait_for("the first answer", Duration::from_secs(30), || {
+    eventually("the first answer", Duration::from_secs(30), || {
         let app = app.clone();
         let id = id.clone();
         async move { screen(&app, &id).contains("ECHO: Full: answer with an echo") }
@@ -122,7 +123,7 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
         let id = started(&app, &data).await?;
         let mut frames = app.runtime(&id).hub.watch();
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the compaction", Duration::from_secs(30), || {
+        eventually("the compaction", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -134,7 +135,7 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
             shown.contains("COMPACTED: Keep: task #1 \"Full\" and its goal: Full: answer with"),
             "the focus names the task: {shown}"
         );
-        wait_for(
+        eventually(
             "the wake-up after the compaction",
             Duration::from_secs(30),
             || {
@@ -145,7 +146,7 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
         )
         .await?;
         app.send_input(&id, b"next\r").await?;
-        wait_for("the next prompt", Duration::from_secs(30), || {
+        eventually("the next prompt", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { echoed(&app, &id).iter().any(|l| l == "next") }
@@ -238,11 +239,11 @@ fn a_full_session_reads_working_while_yulius_compacts_it() -> TestResult {
         let id = started(&app, &data).await?;
         let (seen, collector) = published(&app, &id);
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the prompt worked on", Duration::from_secs(30), || {
+        eventually("the prompt worked on", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::Working)
         })
         .await?;
-        wait_for("the compaction asked for", Duration::from_secs(30), || {
+        eventually("the compaction asked for", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTING") }
@@ -253,7 +254,7 @@ fn a_full_session_reads_working_while_yulius_compacts_it() -> TestResult {
         // Two more watcher rounds: everything the session wrote by now was applied.
         let runtime = app.runtime(&id);
         let rounds = runtime.transcript_rounds();
-        wait_for("the transcript read", Duration::from_secs(20), || async {
+        eventually("the transcript read", Duration::from_secs(20), || async {
             runtime.transcript_rounds() >= rounds + 2
         })
         .await?;
@@ -316,7 +317,7 @@ fn a_full_session_a_person_types_into_waits_for_them() -> TestResult {
                 .any(|n| n.contains("leaves the full session to you")),
             "the terminal says it: {said:?}"
         );
-        wait_for("Your turn", Duration::from_secs(10), || {
+        eventually("Your turn", Duration::from_secs(10), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
@@ -365,7 +366,7 @@ async fn served_on(
     tune: impl FnOnce(&mut yulius_app::context::AppConfig),
 ) -> Result<(Arc<App>, u16), Box<dyn std::error::Error>> {
     let usage = Arc::new(ScriptedUsage::default());
-    crate::first_message::start_with(data, fake, agent, port, usage, tune).await
+    crate::support::live::first_message::start_with(data, fake, agent, port, usage, tune).await
 }
 
 /// Waits for a notice that contains `words` and fails when the terminal never says it.
@@ -425,7 +426,7 @@ async fn refused_soon(
         .await?;
     assert!(app.has_draft(&id), "typed, not sent yet");
     app.terminal_input(&ctx, &attach, b"\r", false).await?;
-    wait_for("the prompt's submit", Duration::from_secs(30), || async {
+    eventually("the prompt's submit", Duration::from_secs(30), || async {
         !app.has_draft(&id)
     })
     .await?;
@@ -443,7 +444,7 @@ fn a_persons_own_refused_prompt_is_compacted() -> TestResult {
     rt.block_on(async {
         let (app, _) = served(&data, &fake, hooked(0), |_| {}).await?;
         let (id, _ctx, _attach) = refused_soon(&app, &data).await?;
-        wait_for("the compaction", Duration::from_secs(30), || {
+        eventually("the compaction", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -474,7 +475,7 @@ fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult 
         app.terminal_input(&ctx, &attach, b"and then", false)
             .await?;
         assert!(app.has_draft(&id));
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
@@ -500,7 +501,7 @@ fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult 
         // They type on: the session is theirs now, the flag ends and the task waits for them.
         app.terminal_input(&ctx, &attach, b" this", false).await?;
         must_hear(&mut frames, &mut said, "leaves the full session to you").await?;
-        wait_for("Your turn", Duration::from_secs(30), || {
+        eventually("Your turn", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
@@ -508,7 +509,7 @@ fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult 
         // They send it: the box is empty, the full context refuses the prompt, and that
         // refusal is compacted.
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
-        wait_for("the compaction", Duration::from_secs(60), || {
+        eventually("the compaction", Duration::from_secs(60), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -542,12 +543,12 @@ fn a_held_compaction_is_typed_once_its_hold_is_over() -> TestResult {
         let person = task(&app, &id).await?.created_by;
         app.record_typing(&id, &person);
         assert!(app.has_draft(&id));
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
         assert!(!screen(&app, &id).contains("COMPACT"), "held first");
-        wait_for("the compaction", Duration::from_secs(60), || {
+        eventually("the compaction", Duration::from_secs(60), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -557,7 +558,7 @@ fn a_held_compaction_is_typed_once_its_hold_is_over() -> TestResult {
             !activity_is(&app, &id, Activity::NeedsAttention).await,
             "the flag ended with the hold"
         );
-        wait_for("the wake-up", Duration::from_secs(30), || {
+        eventually("the wake-up", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Yulius: your context was full") }
@@ -588,11 +589,11 @@ fn a_command_sent_behind_real_text_continues_in_a_fresh_session() -> TestResult 
         let mut frames = app.runtime(&id).hub.watch();
         app.terminal_input(&ctx, &attach, b"and then", false)
             .await?;
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
-        wait_for("the fresh session", Duration::from_secs(60), || async {
+        eventually("the fresh session", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
@@ -629,7 +630,7 @@ fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
         // only what Yulius knows of it.
         let person = task(&app, &id).await?.created_by;
         app.record_typing(&id, &person);
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
@@ -676,7 +677,7 @@ fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
         let answer = String::from_utf8_lossy(&answer);
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
         assert!(!app.has_draft(&id), "the command's submit emptied the box");
-        wait_for("the compaction", Duration::from_secs(60), || {
+        eventually("the compaction", Duration::from_secs(60), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -706,7 +707,7 @@ fn a_compaction_held_at_a_restart_is_taken_up_again() -> TestResult {
         let (id, ctx, attach) = refused_soon(&app, &data).await?;
         app.terminal_input(&ctx, &attach, b"and then", false)
             .await?;
-        wait_for("the flag", Duration::from_secs(30), || {
+        eventually("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
@@ -721,7 +722,7 @@ fn a_compaction_held_at_a_restart_is_taken_up_again() -> TestResult {
         })
         .await?;
         app.reconcile().await?;
-        wait_for("the fresh session", Duration::from_secs(90), || async {
+        eventually("the fresh session", Duration::from_secs(90), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
@@ -783,7 +784,7 @@ fn a_key_just_before_the_compaction_keeps_it_out() -> TestResult {
                 .any(|n| n.contains("leaves the full session to you")),
             "{said:?}"
         );
-        wait_for("Your turn", Duration::from_secs(10), || {
+        eventually("Your turn", Duration::from_secs(10), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
@@ -819,7 +820,7 @@ fn a_draft_typed_during_the_compaction_keeps_the_wake_up_out() -> TestResult {
         let mut frames = app.runtime(&id).hub.watch();
         a_key_at(&app, &id, &person, yulius_app::race::Point::LineEntered);
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the compaction", Duration::from_secs(30), || {
+        eventually("the compaction", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -833,7 +834,7 @@ fn a_draft_typed_during_the_compaction_keeps_the_wake_up_out() -> TestResult {
             "Yulius did not tell the session to carry on",
         )
         .await?;
-        wait_for("Your turn", Duration::from_secs(30), || {
+        eventually("Your turn", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
@@ -859,9 +860,14 @@ fn nothing_is_typed_between_a_line_of_yulius_and_its_enter() -> TestResult {
     rt.block_on(async {
         // A session without hooks counts as started half this time after its spawn: a message
         // for it is not refused for a session that still starts.
-        let app = build_tuned(&data, &fake, agent(1, false), |config| {
-            config.goal_ready_ms = 200;
-        })?;
+        let app = pool(
+            pool_live(&fake, agent(1, false)),
+            &data,
+            UNSERVED,
+            |config| {
+                config.goal_ready_ms = 200;
+            },
+        )?;
         let id = started(&app, &data).await?;
         let record = task(&app, &id).await?;
         let refused = Arc::new(std::sync::Mutex::new(None));
@@ -894,7 +900,7 @@ fn nothing_is_typed_between_a_line_of_yulius_and_its_enter() -> TestResult {
             );
         }
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the compaction", Duration::from_secs(30), || {
+        eventually("the compaction", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
@@ -944,7 +950,7 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), options)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let id = new_task(&app, &sandbox, &user, "Full").await?;
-        wait_for("the compaction asked for", Duration::from_secs(30), || {
+        eventually("the compaction asked for", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTING") }
@@ -972,12 +978,12 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
             },
         )
         .await?;
-        wait_for("the continued run", Duration::from_secs(30), || async {
+        eventually("the continued run", Duration::from_secs(30), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
         .await?;
-        wait_for("the continued agent", Duration::from_secs(30), || {
+        eventually("the continued agent", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -985,11 +991,11 @@ fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResu
         .await?;
         // The continued session is just as full.
         app.send_input(&id, b"one\r").await?;
-        wait_for("the second compaction", Duration::from_secs(30), || async {
+        eventually("the second compaction", Duration::from_secs(30), || async {
             audited(&data, &id).is_ok_and(|a| a.len() == 2)
         })
         .await?;
-        wait_for("the second /compact typed", Duration::from_secs(30), || {
+        eventually("the second /compact typed", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("COMPACTING") }
@@ -1024,7 +1030,7 @@ fn a_fresh_session_that_cannot_start_needs_a_person() -> TestResult {
         std::fs::rename(repo.join(".git"), repo.join("git.away"))?;
         let mut frames = app.runtime(&id).hub.watch();
         app.send_input(&id, b"too much\r").await?;
-        wait_for("needs attention", Duration::from_secs(60), || {
+        eventually("needs attention", Duration::from_secs(60), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
@@ -1071,7 +1077,7 @@ fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
         let id = started(&app, &data).await?;
         let mut frames = app.runtime(&id).hub.watch();
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the fresh session", Duration::from_secs(60), || async {
+        eventually("the fresh session", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
@@ -1083,7 +1089,7 @@ fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
             attempts[1].provider_session_id
         );
         assert_eq!(attempts[0].account_id, attempts[1].account_id);
-        wait_for("the handoff", Duration::from_secs(30), || {
+        eventually("the handoff", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move { screen(&app, &id).contains("ECHO: Yulius: you continue task #1") }
@@ -1139,7 +1145,7 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let id = new_task(&app, &sandbox, &user, "Full").await?;
         let mut frames = app.runtime(&id).hub.watch();
-        wait_for("needs attention", Duration::from_secs(90), || {
+        eventually("needs attention", Duration::from_secs(90), || {
             let app = app.clone();
             let id = id.clone();
             async move {
@@ -1238,7 +1244,7 @@ fn a_context_that_filled_during_a_restart_is_compacted_after_it() -> TestResult 
 
         // Phase 2: the new server reconciles, reattaches and replays the transcript.
         app.reconcile().await?;
-        wait_for(
+        eventually(
             "the compaction after the restart",
             Duration::from_secs(30),
             || {

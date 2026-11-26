@@ -11,16 +11,6 @@ use crate::validate::{require_absolute, validate_branch_name, validate_full_ref}
 /// Branch prefix that every imported ref lands under.
 pub const IMPORT_PREFIX: &str = "import/";
 
-/// One rev-list argument of [`Git::create_bundle`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BundleSpec {
-    /// Include a full ref name (`refs/heads/...` or `refs/tags/...`).
-    Include(String),
-    /// Exclude history reachable from a revision (resolved to a commit, passed as `^<id>`);
-    /// the receiver must already have it (a bundle prerequisite).
-    Exclude(String),
-}
-
 /// A ref advertised by a bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleHead {
@@ -40,46 +30,6 @@ pub struct ImportRef {
 }
 
 impl Git {
-    /// Writes a bundle at the absolute `out_path` containing the included refs minus the
-    /// excluded history.
-    pub fn create_bundle(
-        &self,
-        repo: &Path,
-        out_path: &Path,
-        refs_and_exclusions: &[BundleSpec],
-    ) -> Result<(), GitError> {
-        require_absolute("bundle path", out_path)?;
-        let mut revisions = Vec::with_capacity(refs_and_exclusions.len());
-        for spec in refs_and_exclusions {
-            match spec {
-                BundleSpec::Include(name) => {
-                    validate_full_ref(name)?;
-                    revisions.push(name.clone());
-                }
-                BundleSpec::Exclude(rev) => {
-                    revisions.push(format!("^{}", self.rev_parse(repo, rev)?));
-                }
-            }
-        }
-        if !refs_and_exclusions
-            .iter()
-            .any(|spec| matches!(spec, BundleSpec::Include(_)))
-        {
-            return Err(GitError::InvalidInput {
-                what: "bundle refs",
-                reason: "at least one ref must be included".to_owned(),
-            });
-        }
-        self.run_ok(
-            Invocation::new(self, "bundle create", Some(repo))
-                .args(["bundle", "create", "--quiet"])
-                .arg(out_path)
-                .args(&revisions)
-                .touching(out_path),
-        )?;
-        Ok(())
-    }
-
     /// Writes a bundle at the absolute `out_path` of `HEAD`, every branch and every tag of
     /// `repo`: a whole repository's copy (a task's reference copy, SPEC-330), of at most `limit`
     /// bytes (SPEC-349).

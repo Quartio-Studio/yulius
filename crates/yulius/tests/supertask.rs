@@ -5,6 +5,7 @@
 //! stays `queued`.
 
 use crate::support;
+use crate::support::eventually;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -380,12 +381,16 @@ async fn stopping_a_queued_supertask_starts_the_tasks_it_held() -> TestResult {
     )
     .await?;
     assert!(r.status.is_success(), "{:?}", r.body);
-    wait_until("the held task to be offered a slot", || async {
-        h.store
-            .task(&b.id)
-            .await
-            .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
-    })
+    eventually(
+        "the held task to be offered a slot",
+        std::time::Duration::from_secs(20),
+        || async {
+            h.store
+                .task(&b.id)
+                .await
+                .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
+        },
+    )
     .await
 }
 
@@ -434,21 +439,6 @@ async fn a_running_task_is_not_started_twice() -> TestResult {
         TaskStatus::Running
     );
     Ok(())
-}
-
-async fn wait_until<F, Fut>(what: &str, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while std::time::Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
 }
 
 /// SUP-002 (review round 2): a task paused for capacity before it ran keeps its pause, with its
@@ -535,12 +525,16 @@ async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
     )
     .await?;
     assert!(r.status.is_success(), "{:?}", r.body);
-    wait_until("the resume loop to resume the task", || async {
-        h.store
-            .open_pause(&paused.id)
-            .await
-            .is_ok_and(|pause| pause.is_none())
-    })
+    eventually(
+        "the resume loop to resume the task",
+        std::time::Duration::from_secs(20),
+        || async {
+            h.store
+                .open_pause(&paused.id)
+                .await
+                .is_ok_and(|pause| pause.is_none())
+        },
+    )
     .await
 }
 
@@ -567,12 +561,16 @@ async fn a_deleted_or_failed_supertask_releases_its_project() -> TestResult {
     )
     .await?;
     assert!(r.status.is_success(), "{:?}", r.body);
-    wait_until("the task the deleted supertask held to go", || async {
-        h.store
-            .task(&b.id)
-            .await
-            .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
-    })
+    eventually(
+        "the task the deleted supertask held to go",
+        std::time::Duration::from_secs(20),
+        || async {
+            h.store
+                .task(&b.id)
+                .await
+                .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
+        },
+    )
     .await?;
 
     // A supertask whose start fails (here: no Git) releases the next one at once.
@@ -595,12 +593,16 @@ async fn a_deleted_or_failed_supertask_releases_its_project() -> TestResult {
         )
         .await?;
     assert_ne!(offer(&h, &s).await?, TaskStatus::Queued);
-    wait_until("the task the failed supertask held to go", || async {
-        h.store
-            .task(&c.id)
-            .await
-            .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
-    })
+    eventually(
+        "the task the failed supertask held to go",
+        std::time::Duration::from_secs(20),
+        || async {
+            h.store
+                .task(&c.id)
+                .await
+                .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
+        },
+    )
     .await
 }
 
@@ -619,7 +621,7 @@ async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestR
         .task(&TaskId::parse("t-agent")?)
         .await?
         .ok_or("agent")?;
-    crate::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
+    crate::support::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
     let unseen = seed_task(&h, "t-unseen", "s1", "u-alice", TaskStatus::Running, None).await?;
     seed_live_attempt(&h, "t-unseen", "tok-unseen").await?;
     for task in [&agent, &unseen] {
@@ -707,7 +709,7 @@ async fn a_merge_during_an_updates_hold_is_still_news_due() -> TestResult {
         .task(&TaskId::parse("t-agent")?)
         .await?
         .ok_or("agent")?;
-    crate::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
+    crate::support::pr_watch::leave_verification_step(&h.app, &agent.id).await?;
     h.store
         .set_activity(&agent.id, Some(Activity::Waiting), h.app.now())
         .await?;

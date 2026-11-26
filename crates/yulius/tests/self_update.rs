@@ -181,7 +181,7 @@ async fn an_unreadable_ci_observation_adds_no_install_delay() -> TestResult {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("yulius.db");
     let i = instance_on(support::harness_with(support::HarnessOptions {
-        store: Some(yulius_store::SqliteStore::open(&file)?),
+        store: Some(crate::support::store::migrated(&file)?),
         ..support::HarnessOptions::default()
     })?)
     .await?;

@@ -5,6 +5,8 @@
 //! merge.
 
 use crate::support;
+use crate::support::BareRemote;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -49,97 +51,6 @@ const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "check"
 command = 'if [ -f clash-1 ] && [ -f clash-2 ]; then echo "clash-1 and clash-2 together"; exit 1; fi; echo ok'
 "#;
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
-fn git_ok(dir: &Path, args: &[&str]) -> Option<String> {
-    git(dir, args).ok()
-}
-
-/// GitHub's repository side: the bare `origin`. Merges land as GitHub lands them: the tree of
-/// merging the head into the base, as one squash commit or a merge commit.
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git_ok(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-    }
-    fn merge(&self, base: &str, head: &str, method: &str, message: &str) -> Result<String, String> {
-        let base_sha = self.branch_sha(base).ok_or("base branch not found")?;
-        let tree = git(&self.0, &["merge-tree", "--write-tree", &base_sha, head])
-            .map_err(|e| e.to_string())?;
-        let mut args = vec!["commit-tree", tree.as_str(), "-p", base_sha.as_str()];
-        if method == "merge" {
-            args.extend(["-p", head]);
-        }
-        args.extend(["-m", message]);
-        let commit = git(&self.0, &args).map_err(|e| e.to_string())?;
-        git(
-            &self.0,
-            &[
-                "update-ref",
-                &format!("refs/heads/{base}"),
-                &commit,
-                &base_sha,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(commit)
-    }
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-    fn contains(&self, ancestor: &str, descendant: &str) -> Option<bool> {
-        let status = Command::new("git")
-            .args(["merge-base", "--is-ancestor", ancestor, descendant])
-            .current_dir(&self.0)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .status()
-            .ok()?;
-        status.code().map(|code| code == 0)
-    }
-}
 
 /// The spec of a task that finished its work: `done`, every Plan item ticked, Evidence (a task
 /// whose spec does not say done is not Done, SPEC-491 DON-004).
@@ -286,7 +197,7 @@ async fn fixture_with(
             &format!("HEAD:{integration}"),
         ],
     )?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     h.github.strict.store(true, Ordering::SeqCst);
 
     let data = h.app.config.data_dir.clone();
@@ -476,6 +387,36 @@ impl Fixture {
 
     async fn runs(&self, app: &App) -> BoxResult<Vec<CiRunRecord>> {
         Ok(app.deps.store.ci_runs(&self.sandbox, 200).await?)
+    }
+
+    /// Arms tasks 1 and 2 at their worktrees once CI knows them.
+    async fn arm_both(
+        &self,
+        app: &App,
+        sandbox: &yulius_app::model::SandboxRecord,
+        one: &Path,
+        two: &Path,
+    ) -> TestResult {
+        app.ci_sync_sandbox(sandbox).await?;
+        self.arm(1, one).await?;
+        self.arm(2, two).await
+    }
+
+    /// Moves dev on so that the armed members need a candidate, forms it and returns its run.
+    async fn first_candidate(
+        &self,
+        app: &Arc<App>,
+        sandbox: &yulius_app::model::SandboxRecord,
+    ) -> BoxResult<CiRunRecord> {
+        self.advance_dev("other.txt")?;
+        app.ci_sync_sandbox(sandbox).await?;
+        app.merge_armed(&self.sandbox).await;
+        Ok(self
+            .train_runs(app)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("no candidate")?)
     }
 
     /// The runs of merge trains.
@@ -2070,7 +2011,7 @@ async fn check_recovered_singleton_arm(
         SingletonChange::MergedRetry | SingletonChange::MergedRetryOffline
     ) {
         let landed =
-            Origin(f.origin.clone()).merge(f.integration, head, "squash", "external merge")?;
+            BareRemote(f.origin.clone()).merge(f.integration, head, "squash", "external merge")?;
         {
             let mut pulls = f.h.github.pulls.lock().map_err(|_| "pulls")?;
             let pull = pulls
@@ -2436,7 +2377,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         _ => "prior-train",
     };
     let (mut red, mut job) =
-        crate::pr_watch::run(&f.sandbox, run_id, &sha, RunState::Failed, None, 1);
+        crate::support::pr_watch::run(&f.sandbox, run_id, &sha, RunState::Failed, None, 1);
     red.reference = CiRef::Train(vec![8, 9]);
     job.name = "shard 2".into();
     job.state = RunState::Running;
@@ -2537,7 +2478,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             tokio::spawn(async move { app.merge_armed(&sandbox).await })
         };
         support::point_reached(at).await?;
-        let (mut newer, job) = crate::pr_watch::run(
+        let (mut newer, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "new-train-verdict",
             "another-tree",
@@ -2645,7 +2586,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             tokio::spawn(async move { app.merge_armed(&sandbox).await })
         };
         support::point_reached(at).await?;
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "later-rerun",
             &head,
@@ -2698,7 +2639,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                         }
                         _ => RunState::Failed,
                     };
-                    let (mut own, job) = crate::pr_watch::run(
+                    let (mut own, job) = crate::support::pr_watch::run(
                         &f.sandbox,
                         "ordinary-rerun",
                         &head,
@@ -2713,7 +2654,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
                     } else {
                         RunState::Passed
                     };
-                    let (mut peer, job) = crate::pr_watch::run(
+                    let (mut peer, job) = crate::support::pr_watch::run(
                         &f.sandbox,
                         "peer",
                         &head,
@@ -2963,7 +2904,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
         // Both the live slot and its durable decision still name this failure. A new
         // ordinary rerun must enter its bounded wait even before the daemon restarts.
         f.h.clock.0.fetch_add(1, Ordering::SeqCst);
-        let (mut rerun, job) = crate::pr_watch::run(
+        let (mut rerun, job) = crate::support::pr_watch::run(
             &f.sandbox,
             "recheck-owner",
             &head,
@@ -3503,9 +3444,7 @@ async fn a_candidate_runs_beside_its_members_own_runs() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let heads = [
         git(&one, &["rev-parse", "HEAD"])?,
         git(&two, &["rev-parse", "HEAD"])?,
@@ -3574,15 +3513,7 @@ async fn a_passed_candidate_merges_while_a_members_own_run_goes() -> TestResult 
     app.ci_sync_sandbox(&sandbox).await?;
     f.arm(1, &one).await?;
     let own = hold_own_run(&f, &app, 1).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     f.decide_until(&app, || async {
         app.ci_sync_sandbox(&sandbox).await?;
@@ -3602,7 +3533,7 @@ async fn a_passed_candidate_merges_while_a_members_own_run_goes() -> TestResult 
     let landed = git(&f.origin, &["rev-parse", "dev"])?;
     assert_eq!(f.origin_tree(&checked)?, f.origin_tree(&landed)?);
     assert_eq!(
-        Origin(f.origin.clone()).contains(&checked, &landed),
+        BareRemote(f.origin.clone()).contains(&checked, &landed),
         Some(false)
     );
     let ctx = owner_ctx(&f, 1).await?;
@@ -3712,19 +3643,9 @@ async fn a_stuck_own_run_holds_nothing_back() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let stuck = hold_own_run(&f, &app, 1).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     f.decide_until(&app, || async {
         app.ci_sync_sandbox(&sandbox).await?;
@@ -3751,20 +3672,10 @@ async fn a_member_whose_own_run_is_cancelled_or_errors_stays_in_the_candidate() 
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held_one = hold_own_run(&f, &app, 1).await?;
     let held_two = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     end_own_run(&app, &held_one, RunState::Cancelled).await?;
     end_own_run(&app, &held_two, RunState::Error).await?;
     app.merge_armed(&f.sandbox).await;
@@ -3975,20 +3886,10 @@ async fn a_member_whose_own_run_fails_during_the_merges_is_not_merged() -> TestR
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
     let (at, go) = support::hold_point(yulius_app::race::Point::TrainMemberMerging, "t2");
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     // A pass merges #1 and stops before #2; #2's own run fails there.
     let pass = {
@@ -4021,19 +3922,9 @@ async fn a_failed_own_run_beats_a_passed_candidate() -> TestResult {
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     let two = f.task(2, &[("b.txt", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Passed);
     end_own_run(&app, &held, RunState::Failed).await?;
     app.merge_armed(&f.sandbox).await;
@@ -4064,19 +3955,9 @@ async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestRe
     // Each passes alone; together they fail the check.
     let one = f.task(1, &[("clash-1", "x\n")]).await?;
     let two = f.task(2, &[("clash-2", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let held = hold_own_run(&f, &app, 2).await?;
-    f.advance_dev("other.txt")?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    app.merge_armed(&f.sandbox).await;
-    let train = f
-        .train_runs(&app)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or("no candidate")?;
+    let train = f.first_candidate(&app, &sandbox).await?;
     assert_eq!(run_candidate(&f, &app, &train.id).await?, RunState::Failed);
     f.settle_but(&app, &held).await?;
     app.merge_armed(&f.sandbox).await;
@@ -4163,9 +4044,7 @@ async fn failed_member_leaves(fail_during_decision: bool) -> TestResult {
     let one = f.task(1, &[("a.txt", "x\n")]).await?;
     // Its own change fails the check alone.
     let two = f.task(2, &[("clash-1", "x\n"), ("clash-2", "x\n")]).await?;
-    app.ci_sync_sandbox(&sandbox).await?;
-    f.arm(1, &one).await?;
-    f.arm(2, &two).await?;
+    f.arm_both(&app, &sandbox, &one, &two).await?;
     let own = if fail_during_decision {
         Some(hold_own_run(&f, &app, 2).await?)
     } else {
@@ -5221,7 +5100,7 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     );
 
     // Its agent merges `dev` in, Yulius pushes at the turn's end, and the new head passes.
-    assert!(git_ok(&worktree, &["merge", "-q", "origin/dev"]).is_none());
+    assert!(git(&worktree, &["merge", "-q", "origin/dev"]).is_err());
     std::fs::write(worktree.join("shared.txt"), "mine\nother\n")?;
     git(&worktree, &["add", "-A"])?;
     git(&worktree, &["commit", "-q", "--no-edit"])?;

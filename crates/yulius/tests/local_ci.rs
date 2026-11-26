@@ -4,6 +4,8 @@
 //! deletions.
 
 use crate::support;
+use crate::support::BareRemote;
+use crate::support::git;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,8 +16,8 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode};
 use serde_json::Value;
 use support::{
-    Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
-    seed_github_user, seed_sandbox,
+    Creds, HarnessOptions, call, configure_github_app, harness_with, perms, seed_github_user,
+    seed_sandbox,
 };
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::error::{AppError, AppResult};
@@ -33,64 +35,6 @@ type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
 
 const WAIT: Duration = Duration::from_secs(60);
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
-
-/// The bare `origin` as the fake GitHub's repository side.
-struct Origin(PathBuf);
-
-impl FakeRemote for Origin {
-    fn branch_sha(&self, branch: &str) -> Option<String> {
-        git(
-            &self.0,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .ok()
-    }
-    fn merge(&self, _: &str, _: &str, _: &str, _: &str) -> Result<String, String> {
-        Err("not used".into())
-    }
-    fn fast_forward(&self, _: &str, _: &str) -> Result<(), String> {
-        Err("not used".into())
-    }
-    fn delete_branch(&self, branch: &str) -> Result<bool, String> {
-        if self.branch_sha(branch).is_none() {
-            return Ok(false);
-        }
-        git(
-            &self.0,
-            &["update-ref", "-d", &format!("refs/heads/{branch}")],
-        )
-        .map(|_| true)
-        .map_err(|e| e.to_string())
-    }
-}
 
 const YULIUS_TOML: &str = r#"[[ci.jobs]]
 name = "lint"
@@ -185,7 +129,7 @@ async fn fixture_tuned(
     git(&work, &["commit", "-q", "-m", "feature"])?;
     git(&work, &["push", "-q", "origin", "feat/one"])?;
     let head = git(&work, &["rev-parse", "HEAD"])?;
-    h.github.set_remote(Arc::new(Origin(origin.clone())));
+    h.github.set_remote(Arc::new(BareRemote(origin.clone())));
     if let Ok(mut pulls) = h.github.pulls.lock() {
         pulls.push(GhPull {
             number: 1,
@@ -3798,7 +3742,7 @@ async fn launched_groups(
     grouping: Grouping,
 ) -> BoxResult<(Vec<PathBuf>, Vec<String>, Vec<(&'static str, String)>)> {
     use yulius_app::ports::session::Containment;
-    let recording = Arc::new(crate::cd::Recording {
+    let recording = Arc::new(crate::support::cd::Recording {
         inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
         seen: std::sync::Mutex::new(Vec::new()),
     });
@@ -7739,14 +7683,14 @@ async fn a_job_relinking_ci_logs_keeps_the_host_file() -> TestResult {
 #[tokio::test]
 async fn a_ci_job_binds_the_agent_cli_of_its_join() -> TestResult {
     use yulius_app::ports::session::{Bind, Containment};
-    let recording = Arc::new(crate::cd::Recording {
+    let recording = Arc::new(crate::support::cd::Recording {
         inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
         seen: std::sync::Mutex::new(Vec::new()),
     });
     let f = fixture_hosted(true, |_| YULIUS_TOML.to_owned(), Some(recording.clone())).await?;
     assert!(
         f.h.app
-            .set_isolation(Arc::new(crate::cd::Holders::default()))
+            .set_isolation(Arc::new(crate::support::cd::Holders::default()))
     );
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;

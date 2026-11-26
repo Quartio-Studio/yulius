@@ -22,7 +22,7 @@
 
 use crate::cron::{MAX_UTC_OFFSET_MINUTES, Schedule};
 use crate::spec_format::markdown::scan;
-use crate::workflow_format::{unquote, valid_workflow_id};
+use crate::workflow_format::{frontmatter, valid_workflow_id};
 
 /// Longest name, in characters (the automation name limit).
 pub const MAX_NAME_CHARS: usize = 100;
@@ -97,50 +97,18 @@ pub fn parse_automation(
         return problem(1, "the file is larger than 32 KiB");
     }
     let lines = scan(text);
-    if lines.first().map(|l| l.text.trim_end()) != Some("---") {
-        return problem(1, "the file must start with a `---` frontmatter line");
-    }
-    let Some(close) = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.text.trim_end() == "---")
-        .map(|i| i + 1)
-    else {
-        return problem(1, "the frontmatter is not closed with `---`");
-    };
-
-    let (mut name, mut description, mut cron) = (None, None, None);
-    let (mut offset, mut workflow, mut order) = (None, None, None);
-    for line in &lines[1..close] {
-        let raw = line.text.trim();
-        if raw.is_empty() || raw.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = raw.split_once(':') else {
-            return problem(line.number, "expected `key: value`");
-        };
-        let (key, value) = (key.trim(), unquote(value.trim()).trim().to_owned());
-        let slot = match key {
-            "name" => &mut name,
-            "description" => &mut description,
-            "cron" => &mut cron,
-            "utc_offset_minutes" => &mut offset,
-            "workflow" => &mut workflow,
-            "order" => &mut order,
-            _ => {
-                return problem(
-                    line.number,
-                    format!(
-                        "unknown key `{key}` (name, description, cron, utc_offset_minutes, workflow, order)"
-                    ),
-                );
-            }
-        };
-        if slot.is_some() {
-            return problem(line.number, format!("`{key}` is set twice"));
-        }
-        *slot = Some((line.number, value));
-    }
+    let (close, [name, description, cron, offset, workflow, order]) = frontmatter(
+        &lines,
+        [
+            "name",
+            "description",
+            "cron",
+            "utc_offset_minutes",
+            "workflow",
+            "order",
+        ],
+    )
+    .or_else(|(line, why)| problem(line, why))?;
     let required = |field: Option<(usize, String)>, key: &str, max: usize| {
         let Some((line, value)) = field else {
             return problem(1, format!("the frontmatter needs `{key}`"));

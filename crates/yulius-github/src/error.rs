@@ -113,11 +113,7 @@ pub(crate) fn scrub(text: &str, known: &[&str]) -> String {
     out = scrub_github_tokens(&out, REDACTED);
     out = scrub_jwts(&out);
     if out.len() > MAX_MESSAGE {
-        let mut end = MAX_MESSAGE;
-        while !out.is_char_boundary(end) {
-            end -= 1;
-        }
-        out.truncate(end);
+        out.truncate(out.floor_char_boundary(MAX_MESSAGE));
         out.push('…');
     }
     out

@@ -1,9 +1,11 @@
 //! The repository's own Vidoc switch (ADR-0107): `enabled` in `.config/vidoc.toml`, as Yulius
-//! reports it on a sandbox's Security scan card (SPEC-359 VSB-003). It checks the file's shape as
-//! the scanner's `parse_config` does (the keys, the tables, `enabled`, `exclude` and each
-//! `[[ignore]]` entry), so a file the scanner refuses reads as unreadable, never as on or off; it
-//! is no full TOML parser, and a TOML form beyond that shape (a multi-line string, a number
-//! written `1_0`, an inline `ignore = []`) reads as unreadable too: the safer side, a warning.
+//! reports it on a sandbox's Security scan card (SPEC-359 VSB-003). It reads the file as TOML,
+//! as the scanner's `parse_config` does (`tomllib`), and checks its shape in the scanner's order
+//! (the keys, `enabled`, `exclude`, each `[[ignore]]` entry), so a file the scanner refuses reads
+//! as unreadable, never as on or off. Known gaps where it reads more than the scanner: a
+//! byte-order mark, and the TOML 1.1 string escapes `\e` and `\xHH`.
+
+use toml::de::{DeTable, DeValue};
 
 /// Where the repository's Vidoc switch lives.
 pub const VIDOC_CONFIG: &str = ".config/vidoc.toml";
@@ -49,226 +51,98 @@ pub fn repository_vidoc(text: Option<&str>) -> RepositoryVidoc {
 
 /// Whether the scan is on (`enabled`, true when absent), or why the scanner would refuse `text`.
 fn read(text: &str) -> Result<bool, String> {
-    let mut enabled = None;
-    let mut top: Vec<String> = Vec::new();
-    // The `[[ignore]]` entry being read: the keys it set so far.
-    let mut entry: Option<Vec<String>> = None;
-    // Open `[` of a multi-line array value: its lines are not keys.
-    let mut depth = 0usize;
-    // `exclude`'s value while its lines are read, checked once its array closes.
-    let mut exclude: Option<String> = None;
-    for (index, raw) in text.lines().enumerate() {
-        let line = index + 1;
-        let Some(code) = without_comment(raw) else {
-            return Err(format!(
-                "cannot be read: a string is not closed (line {line})"
-            ));
-        };
-        let code = code.trim();
-        if depth > 0 {
-            depth = brackets(code, depth);
-            if let Some(value) = exclude.as_mut() {
-                value.push(' ');
-                value.push_str(code);
+    let line = |offset: usize| {
+        let before = &text.as_bytes()[..offset.min(text.len())];
+        before.iter().filter(|&&b| b == b'\n').count() + 1
+    };
+    let root = DeTable::parse(text).map_err(|error| {
+        let at = error.span().map_or(1, |span| line(span.start));
+        let message = error
+            .message()
+            .lines()
+            .next()
+            .unwrap_or("invalid TOML")
+            .trim();
+        format!("cannot be read: {message} (line {at})")
+    })?;
+    let root = root.get_ref();
+    let mut unknown: Vec<String> = root
+        .keys()
+        .map(|key| key.get_ref().to_string())
+        .filter(|key| !["enabled", "exclude", "ignore"].contains(&key.as_str()))
+        .map(|key| format!("'{key}'"))
+        .collect();
+    if !unknown.is_empty() {
+        unknown.sort();
+        return Err(format!("has unexpected keys [{}]", unknown.join(", ")));
+    }
+    let enabled = match root.get("enabled") {
+        None => true,
+        Some(value) => match value.get_ref() {
+            DeValue::Boolean(flag) => *flag,
+            _ => {
+                return Err(format!(
+                    "must set enabled = true or enabled = false (line {})",
+                    line(value.span().start)
+                ));
             }
-            if depth == 0 {
-                globs(exclude.take())?;
-            }
-            continue;
-        }
-        if code.is_empty() {
-            continue;
-        }
-        if let Some(name) = code.strip_prefix("[[").and_then(|r| r.strip_suffix("]]")) {
-            let name = unquote(name.trim());
-            if name != "ignore" {
-                return Err(format!("has unexpected keys ['{name}']"));
-            }
-            finish(entry.take())?;
-            entry = Some(Vec::new());
-            continue;
-        }
-        if let Some(name) = code.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-            let name = unquote(name.trim());
-            return Err(if name == "ignore" {
-                format!(": {IGNORE_PROBLEM}")
-            } else {
-                format!("has unexpected keys ['{name}']")
-            });
-        }
-        let Some((key, value)) = code.split_once('=') else {
-            return Err(format!("cannot be read: no key = value (line {line})"));
-        };
-        let key = unquote(key.trim());
-        let value = value.trim();
-        let seen = entry.as_mut().unwrap_or(&mut top);
-        if seen.iter().any(|known| known == key) {
-            return Err(format!("sets {key} twice (line {line})"));
-        }
-        seen.push(key.to_owned());
-        if entry.is_some() {
-            let valid = match key {
-                "line" => value.parse::<u64>().is_ok_and(|n| n >= 1),
-                _ if ENTRY_KEYS.contains(&key) => filled_string(value),
-                _ => false,
-            };
-            if !valid {
-                return Err(format!(": {IGNORE_PROBLEM}"));
-            }
-        } else {
-            match key {
-                "enabled" => {
-                    enabled = Some(match value {
-                        "true" => true,
-                        "false" => false,
-                        _ => {
-                            return Err(format!(
-                                "must set enabled = true or enabled = false (line {line})"
-                            ));
-                        }
-                    });
-                }
-                "exclude" => exclude = Some(value.to_owned()),
-                other => return Err(format!("has unexpected keys ['{other}']")),
-            }
-        }
-        depth = brackets(value, 0);
-        if depth == 0 {
-            globs(exclude.take())?;
+        },
+    };
+    if let Some(exclude) = root.get("exclude") {
+        let globs = matches!(exclude.get_ref(), DeValue::Array(items) if items.iter().all(|item| {
+            matches!(item.get_ref(), DeValue::String(glob) if !glob.is_empty())
+        }));
+        if !globs {
+            return Err(": exclude must be a list of glob strings".to_owned());
         }
     }
-    if depth > 0 {
-        return Err("cannot be read: an array is not closed".to_owned());
+    if let Some(ignore) = root.get("ignore") {
+        let DeValue::Array(entries) = ignore.get_ref() else {
+            return Err(format!(": {IGNORE_PROBLEM}"));
+        };
+        let kept = |entry: &toml::Spanned<DeValue<'_>>| {
+            ignore_entry(entry.get_ref()) && text.get(entry.span()).is_some_and(toml_1_0)
+        };
+        if !entries.iter().all(kept) {
+            return Err(format!(": {IGNORE_PROBLEM}"));
+        }
     }
-    finish(entry)?;
-    Ok(enabled != Some(false))
+    Ok(enabled)
 }
 
-/// `exclude`'s whole value, if it was set: a list of non-empty strings, nothing after it.
-fn globs(value: Option<String>) -> Result<(), String> {
-    match value {
-        Some(value) if !glob_list(&value) => {
-            Err(": exclude must be a list of glob strings".to_owned())
-        }
-        _ => Ok(()),
-    }
+/// An entry's source as TOML 1.0 has it, which the scanner's `tomllib` reads: an inline table
+/// on one line and without a comma before its `}` (TOML 1.1 allows both; the `toml` crate reads
+/// 1.1). A newline inside one of its strings is refused too, the safer side.
+fn toml_1_0(source: &str) -> bool {
+    let Some(inline) = source.trim().strip_prefix('{') else {
+        return true;
+    };
+    let inner = inline.strip_suffix('}').unwrap_or(inline);
+    !inline.contains(['\n', '\r']) && !inner.trim_end().ends_with(',')
 }
 
-/// `[ "a", 'b', ]`: quoted non-empty strings between commas (one may trail), and nothing after.
-fn glob_list(value: &str) -> bool {
-    let Some(mut rest) = value.trim().strip_prefix('[') else {
+/// An `[[ignore]]` entry the scanner keeps: path, title and reason, maybe function and line, the
+/// strings not blank and the line a number from 1.
+fn ignore_entry(entry: &DeValue<'_>) -> bool {
+    let DeValue::Table(entry) = entry else {
         return false;
     };
-    let mut item_next = true;
-    loop {
-        rest = rest.trim_start();
-        if let Some(after) = rest.strip_prefix(']') {
-            return after.trim().is_empty();
-        }
-        if !item_next {
-            let Some(after) = rest.strip_prefix(',') else {
-                return false;
-            };
-            rest = after;
-            item_next = true;
-            continue;
-        }
-        let Some((inner, after)) = quoted(rest) else {
-            return false;
-        };
-        if inner.is_empty() {
-            return false;
-        }
-        rest = after;
-        item_next = false;
-    }
-}
-
-/// The string `text` starts with and what follows it.
-fn quoted(text: &str) -> Option<(&str, &str)> {
-    let quote = text.chars().next().filter(|c| *c == '"' || *c == '\'')?;
-    let mut escaped = false;
-    for (at, c) in text.char_indices().skip(1) {
-        if quote == '"' && c == '\\' && !escaped {
-            escaped = true;
-            continue;
-        }
-        if c == quote && !escaped {
-            return Some((&text[1..at], &text[at + 1..]));
-        }
-        escaped = false;
-    }
-    None
-}
-
-/// An `[[ignore]]` entry's end: it named its path, title and reason.
-fn finish(entry: Option<Vec<String>>) -> Result<(), String> {
-    let named = |keys: &[String]| {
-        ["path", "title", "reason"]
-            .iter()
-            .all(|key| keys.iter().any(|set| set == key))
-    };
-    match entry {
-        Some(keys) if !named(&keys) => Err(format!(": {IGNORE_PROBLEM}")),
-        _ => Ok(()),
-    }
-}
-
-/// `key` without the quotes of a quoted key.
-fn unquote(key: &str) -> &str {
-    ['"', '\'']
+    let named = ["path", "title", "reason"]
         .iter()
-        .find_map(|q| key.strip_prefix(*q).and_then(|k| k.strip_suffix(*q)))
-        .unwrap_or(key)
-}
-
-/// A one-line string value with more than blanks in it.
-fn filled_string(value: &str) -> bool {
-    ['"', '\'']
-        .iter()
-        .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
-        .is_some_and(|inner| !inner.trim().is_empty())
-}
-
-/// `line` up to a `#` outside a string; `None` when a string is left open.
-fn without_comment(line: &str) -> Option<&str> {
-    let mut quote = None;
-    let mut escaped = false;
-    for (at, c) in line.char_indices() {
-        match (quote, c) {
-            (Some('"'), '\\') if !escaped => {
-                escaped = true;
-                continue;
-            }
-            (None, '"' | '\'') => quote = Some(c),
-            (Some(open), _) if c == open && !escaped => quote = None,
-            (None, '#') => return Some(&line[..at]),
-            _ => {}
-        }
-        escaped = false;
-    }
-    quote.is_none().then_some(line)
-}
-
-/// The open-bracket depth after `code` (comment-free), brackets inside strings left out.
-fn brackets(code: &str, mut depth: usize) -> usize {
-    let mut quote = None;
-    let mut escaped = false;
-    for c in code.chars() {
-        match (quote, c) {
-            (Some('"'), '\\') if !escaped => {
-                escaped = true;
-                continue;
-            }
-            (None, '"' | '\'') => quote = Some(c),
-            (Some(open), _) if c == open && !escaped => quote = None,
-            (None, '[') => depth += 1,
-            (None, ']') => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-        escaped = false;
-    }
-    depth
+        .all(|key| entry.contains_key(*key));
+    named
+        && entry.iter().all(
+            |(key, value)| match (key.get_ref().as_ref(), value.get_ref()) {
+                ("line", DeValue::Integer(number)) => {
+                    u64::from_str_radix(number.as_str(), number.radix()).is_ok_and(|n| n >= 1)
+                }
+                ("line", _) => false,
+                (key, DeValue::String(text)) => {
+                    ENTRY_KEYS.contains(&key) && !text.trim().is_empty()
+                }
+                _ => false,
+            },
+        )
 }
 
 #[cfg(test)]
@@ -359,6 +233,10 @@ mod tests {
         );
         assert!(unreadable(&format!("{ignore}line = 0\n")), "a line from 1");
         assert!(
+            unreadable(&format!("{ignore}line = \"3\"\n")),
+            "a line is a number"
+        );
+        assert!(
             unreadable(&format!("{ignore}reason = \"again\"\n")),
             "a key twice"
         );
@@ -401,6 +279,40 @@ mod tests {
         assert_eq!(
             problem,
             ".config/vidoc.toml: exclude must be a list of glob strings"
+        );
+    }
+
+    /// The file is read as TOML, as the scanner reads it, so forms the earlier line reader called
+    /// unreadable read as the scanner reads them, and unknown keys are named as the scanner names
+    /// them; an inline table only TOML 1.1 allows (the scanner's `tomllib` reads 1.0) stays
+    /// unreadable.
+    #[test]
+    fn forms_the_scanner_reads_are_read_the_same() {
+        assert_eq!(
+            repository_vidoc(Some("ignore = []\nenabled = false\n")),
+            RepositoryVidoc::Off
+        );
+        let entry = "[[ignore]]\npath = \"a\"\ntitle = \"t\"\nreason = \"\"\"two\nlines\"\"\"\nline = 1_0\n";
+        assert_eq!(repository_vidoc(Some(entry)), RepositoryVidoc::On);
+        assert_eq!(
+            repository_vidoc(Some("enabled = false\ntypo = 1\nother = 2\n")),
+            RepositoryVidoc::Unreadable(
+                ".config/vidoc.toml has unexpected keys ['other', 'typo']".to_owned()
+            )
+        );
+
+        for toml_1_1 in [
+            "ignore = [{path = \"a\", title = \"t\", reason = \"r\",}]\n",
+            "ignore = [{path = \"a\",\n  title = \"t\", reason = \"r\"}]\n",
+        ] {
+            assert!(unreadable(toml_1_1), "{toml_1_1}");
+        }
+        assert_eq!(
+            repository_vidoc(Some(
+                "ignore = [{path = \"a\", title = \"t\", reason = \"r\"}]\n"
+            )),
+            RepositoryVidoc::On,
+            "a TOML 1.0 inline table"
         );
     }
 

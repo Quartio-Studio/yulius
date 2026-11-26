@@ -4,8 +4,9 @@
 //! releases, the dev drill runs by itself, a person rolls back in one request, production waits
 //! for a proven rollback, agents roll back dev only, and barriers block.
 
-use crate::cd::{BoxResult, Fixture, TOKEN, TestResult, VALUE, fixture};
 use crate::support;
+use crate::support::cd::{BoxResult, Fixture, TOKEN, TestResult, VALUE, fixture};
+use crate::support::cd_rollback::superagent;
 
 use std::time::Duration;
 
@@ -690,7 +691,7 @@ async fn a_waiting_production_deploy_honours_what_was_asked() -> TestResult {
 
 /// `branch` on the origin contains `sha`.
 fn git_contains(f: &Fixture, branch: &str, sha: &str) -> TestResult {
-    crate::cd::git(&f.origin, &["merge-base", "--is-ancestor", sha, branch])?;
+    crate::support::git(&f.origin, &["merge-base", "--is-ancestor", sha, branch])?;
     Ok(())
 }
 
@@ -1040,21 +1041,6 @@ async fn a_redeployed_release_keeps_its_barrier() -> TestResult {
         .await?;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     Ok(())
-}
-
-/// Bob's (an administrator's) or alice's (a writer's) Superagent in `app`.
-pub(crate) fn superagent(
-    user: &str,
-    login: &str,
-) -> BoxResult<yulius_app::coordination::ProjectCaller> {
-    Ok(yulius_app::coordination::ProjectCaller {
-        sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
-        user: yulius_domain::ids::UserId::parse(user)?,
-        task: None,
-        channel: yulius_app::coordination::Channel::Superagent,
-        actor: format!("cockpit:{login}"),
-        detail: json!({"via": "cockpit", "shell": format!("sh-{login}")}),
-    })
 }
 
 impl Fixture {

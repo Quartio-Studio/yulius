@@ -6,21 +6,18 @@
 //! new server releases it; the session is the same process, never respawned.
 
 use crate::support;
+use crate::support::live::{Live, listen, serve_internal, url_of};
+use crate::support::{eventually, git};
 
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use support::TestResult;
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
+use support::agents::FakeAgentOptions;
 use support::updates::{FakeHelper, FakeSource, NEW, OLD, services};
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius::wiring::session::PtySessionHost;
 use yulius_app::auth::AuthContext;
-use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
     AccountRecord, AccountStatus, SandboxRecord, TaskMode, TaskOrigin, UserRecord,
@@ -32,8 +29,6 @@ use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::Activity;
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
 
 type BoxError = Box<dyn std::error::Error>;
 
@@ -46,58 +41,18 @@ async fn start(
     source: &Arc<FakeSource>,
     helper: &Arc<FakeHelper>,
 ) -> Result<(Arc<App>, u16), BoxError> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
-    let listener = socket.listen(64)?;
+    let listener = listen(port)?;
     let port = listener.local_addr()?.port();
-    let url = format!("http://127.0.0.1:{port}");
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
-    config.contained = false;
-    let deps = Deps {
-        store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock: Arc::new(SystemClock),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(support::FakeGitHub::default()),
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(FakeAgentHarness {
-            inner: HarnessAdapter::new(exe.clone(), url),
-            fake: fake.to_path_buf(),
-            options: FakeAgentOptions {
-                transcript: true,
-                hooks: true,
-                ..FakeAgentOptions::default()
-            },
-            yulius_exe: exe,
-        }),
-        git: Arc::new(crate::support::confined_git()),
-        system: Arc::new(support::FixedSystem),
-        browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-        usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
     };
-    let app = App::new(config, deps);
+    let app = Live::new(Some(fake), agent).app(data, &url_of(&listener)?, |_| {})?;
     app.set_updates(services(build, source, helper));
     app.restore_update_hold().await;
-    let internal = yulius_server::internal_router(app.clone())
-        .into_make_service_with_connect_info::<SocketAddr>();
-    tokio::spawn(async move { axum::serve(listener, internal).await });
+    serve_internal(&app, listener, |router| router);
     Ok((app, port))
-}
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
 }
 
 /// The superadmin, a sandbox cloned from a bare origin and a Claude account.
@@ -184,21 +139,6 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserRecord), BoxErro
     Ok((sandbox.id, user))
 }
 
-async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -244,16 +184,16 @@ fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() ->
             })
             .await?;
         let id = task.id;
-        wait_for("the session", Duration::from_secs(60), || async {
+        eventually("the session", Duration::from_secs(60), || async {
             screen(&app, &id).contains("FAKE-AGENT READY")
         })
         .await?;
         app.send_input(&id, b"write the parser\r").await?;
-        wait_for("the first turn", Duration::from_secs(60), || async {
+        eventually("the first turn", Duration::from_secs(60), || async {
             screen(&app, &id).contains("ECHO: write the parser")
         })
         .await?;
-        wait_for("the turn end", Duration::from_secs(30), || async {
+        eventually("the turn end", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .task(&id)
@@ -317,7 +257,7 @@ fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() ->
         helper.report(&install, HelperState::Done, "succeeded", None);
         let _ = app.update_round().await;
         let _ = app.update_round().await;
-        wait_for("the held prompt", Duration::from_secs(30), || async {
+        eventually("the held prompt", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: now add tests")
         })
         .await?;
@@ -329,7 +269,7 @@ fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() ->
         assert_eq!(attempts.len(), 1, "the same session, never respawned");
         assert_eq!(attempts[0].child_pid, pid);
         app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
+        eventually("the stop", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .task(&id)

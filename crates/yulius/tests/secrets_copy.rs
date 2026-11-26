@@ -82,7 +82,7 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     )
     .await?;
     assert_eq!(other.status, StatusCode::CREATED, "{}", other.body);
-    let browser = crate::secrets::admit_again(&h, "alice", 501).await?;
+    let browser = crate::support::secrets::admit_again(&h, "alice", 501).await?;
     Ok(World {
         h,
         admin,
@@ -238,7 +238,7 @@ async fn a_person_allows_the_copy_an_agent_asked_for() -> TestResult {
         "{}",
         locked.body
     );
-    crate::secrets::enroll(&w.h, &w.browser).await?;
+    crate::support::secrets::enroll(&w.h, &w.browser).await?;
     let names: Vec<String> =
         w.h.store
             .vault_agent_in(&SandboxId::parse("s1")?)
@@ -506,7 +506,7 @@ async fn copies_are_answered_only_where_and_by_whom_they_may_be() -> TestResult 
     w.h.github.set_perm("alice", "acme/web", perms("write"));
     seed_sandbox(&w.h, "s3", "hidden", "u-alice").await?;
     ask(&w, TOKEN, copy_args(&[HOST])).await?;
-    crate::secrets::enroll(&w.h, &w.browser).await?;
+    crate::support::secrets::enroll(&w.h, &w.browser).await?;
     // Another project of alice's has no such request; one she cannot see does not exist.
     let other = answer_in(&w, "s2").await?;
     assert_eq!(other.status, StatusCode::CONFLICT, "{}", other.body);
@@ -660,7 +660,7 @@ async fn a_saved_interpreter_copy_request_can_only_be_dismissed() -> TestResult 
         asked_at: w.h.app.now(),
     };
     assert!(w.h.store.vault_put_copy_request(&req, None).await?);
-    crate::secrets::enroll(&w.h, &w.browser).await?;
+    crate::support::secrets::enroll(&w.h, &w.browser).await?;
     let refused = answer(&w, &w.browser, true, &req.name, &[HOST]).await?;
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(

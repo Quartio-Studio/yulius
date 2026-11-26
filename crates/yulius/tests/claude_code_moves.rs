@@ -3,11 +3,11 @@
 //! `pool_supervision.rs`: the fake agent's transcript names the version a file holds when it
 //! starts, so rewriting the file stands for a newer Claude Code at the session's next start.
 
-use crate::pool_supervision::{
-    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp, wait_for,
-};
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
+use crate::support::live::pool::{
+    ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp,
+};
+use crate::support::{TestResult, eventually};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -29,7 +29,7 @@ async fn ctx(app: &App, user: &UserId) -> Result<AuthContext, Box<dyn std::error
 }
 
 async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
-    wait_for("the run", Duration::from_secs(30), || {
+    eventually("the run", Duration::from_secs(30), || {
         let app = app.clone();
         let id = id.clone();
         async move { screen(&app, &id).contains("FAKE-AGENT READY") }
@@ -97,7 +97,7 @@ fn a_session_records_its_claude_code_and_the_task_shows_it() -> TestResult {
         assert_eq!(run_versions(&app, &id).await, [Some("2.1.300".to_owned())]);
 
         app.send_input(&id, b"first turn\r").await?;
-        wait_for("the version", Duration::from_secs(30), || async {
+        eventually("the version", Duration::from_secs(30), || async {
             run_versions(&app, &id).await == [Some("2.1.311".to_owned())]
         })
         .await?;
@@ -106,7 +106,7 @@ fn a_session_records_its_claude_code_and_the_task_shows_it() -> TestResult {
             .assume_run_cli_version(&run, &id, "2.1.999", app.now())
             .await?;
         assert_eq!(run_versions(&app, &id).await, [Some("2.1.311".to_owned())]);
-        wait_for("the answering model", Duration::from_secs(60), || async {
+        eventually("the answering model", Duration::from_secs(60), || async {
             app.task_detail(&ctx, id.as_str())
                 .await
                 .is_ok_and(|d| d.attempts[0].model.is_some())
@@ -280,12 +280,12 @@ async fn with_a_waiting_prompt(app: &Arc<App>, data: &Path) -> Result<(TaskId, U
     app.send_input(&id, b"one\r").await?;
     for (entered, said) in [(&b""[..], "TURN HELD"), (&b"two\r"[..], "QUEUED: two")] {
         app.send_input(&id, entered).await?;
-        wait_for(said, Duration::from_secs(30), || async {
+        eventually(said, Duration::from_secs(30), || async {
             screen(app, &id).contains(said)
         })
         .await?;
     }
-    wait_for(
+    eventually(
         "the prompt in the queue",
         Duration::from_secs(30),
         || async { app.claude_queue_holds(&id) },
@@ -323,7 +323,7 @@ fn a_reattached_run_knows_what_waits_in_its_queue() -> TestResult {
         app.reconcile().await?;
         // The count, not "holds": a reattached run reads as holding something from the moment
         // it is attached, before a line of it was read again.
-        wait_for("the replayed queue", Duration::from_secs(30), || async {
+        eventually("the replayed queue", Duration::from_secs(30), || async {
             app.claude_queue_waiting(&id) == 1
         })
         .await?;
@@ -357,7 +357,7 @@ fn a_reattached_runs_queue_is_not_known_until_its_lines_were_read() -> TestResul
         let id = new_task(&app, &sandbox, &user, "Queue").await?;
         ready(&app, &id).await?;
         app.send_input(&id, b"one\r").await?;
-        wait_for("the turn", Duration::from_secs(30), || async {
+        eventually("the turn", Duration::from_secs(30), || async {
             screen(&app, &id).contains("ECHO: one")
         })
         .await?;
@@ -383,7 +383,7 @@ fn a_reattached_runs_queue_is_not_known_until_its_lines_were_read() -> TestResul
             unknown.load(Ordering::SeqCst),
             "a reattached run's queue is not known before its lines were read"
         );
-        wait_for("the run's lines", Duration::from_secs(30), || async {
+        eventually("the run's lines", Duration::from_secs(30), || async {
             !app.claude_queue_holds(&id)
         })
         .await?;
@@ -420,7 +420,7 @@ fn a_resumed_run_starts_with_an_empty_queue() -> TestResult {
         )
         .await?;
         // The resumed run's first line names its version: the watcher reads the run's lines.
-        wait_for("the resumed run", Duration::from_secs(60), || async {
+        eventually("the resumed run", Duration::from_secs(60), || async {
             app.deps.store.attempts(&id).await.is_ok_and(|runs| {
                 runs.len() == 2 && runs[1].state == yulius_domain::task::AttemptState::Live
             })
@@ -434,7 +434,7 @@ fn a_resumed_run_starts_with_an_empty_queue() -> TestResult {
         );
         ready(&app, &id).await?;
         app.send_input(&id, b"three\r").await?;
-        wait_for(
+        eventually(
             "the resumed run's lines",
             Duration::from_secs(60),
             || async {
@@ -459,11 +459,12 @@ fn a_resumed_run_starts_with_an_empty_queue() -> TestResult {
 
 mod moves {
     use super::{TestResult, run_versions};
-    use crate::first_message::{
-        data_dir, hooked, new_task, runtime, screen, start_with, stop, wait_for,
-    };
-    use crate::pool_supervision::{HOUR, ScriptedUsage, add_account, refresh, seed, usage};
     use crate::support::agents::FakeAgentOptions;
+    use crate::support::eventually;
+    use crate::support::live::first_message::{
+        data_dir, hooked, new_task, runtime, screen, start_with, stop,
+    };
+    use crate::support::live::pool::{HOUR, ScriptedUsage, add_account, refresh, seed, usage};
 
     use std::os::unix::fs::OpenOptionsExt as _;
     use std::path::{Path, PathBuf};
@@ -549,7 +550,7 @@ mod moves {
     }
 
     async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
-        wait_for("the run", Duration::from_secs(60), || async {
+        eventually("the run", Duration::from_secs(60), || async {
             screen(app, id).contains("FAKE-AGENT READY")
         })
         .await
@@ -629,7 +630,7 @@ mod moves {
 
         /// Ends the process that reads it.
         async fn let_go(&self) -> TestResult {
-            wait_for("the reader", Duration::from_secs(30), || async {
+            eventually("the reader", Duration::from_secs(30), || async {
                 self.end_reader()
             })
             .await
@@ -644,7 +645,7 @@ mod moves {
 
     /// Waits until the session's terminal named `count` background shells.
     async fn backgrounds(s: &Server, count: usize) -> TestResult {
-        wait_for("the background shell", Duration::from_secs(30), || async {
+        eventually("the background shell", Duration::from_secs(30), || async {
             screen(&s.app, &s.id).matches("BACKGROUND ").count() == count
         })
         .await
@@ -670,7 +671,7 @@ mod moves {
     async fn turn_of(app: &Arc<App>, id: &TaskId, text: &str) -> TestResult {
         let before = app.deps.store.attempts(id).await?.len();
         app.send_input(id, format!("{text}\r").as_bytes()).await?;
-        wait_for("the turn", Duration::from_secs(60), || async {
+        eventually("the turn", Duration::from_secs(60), || async {
             screen(app, id).contains(&format!("ECHO: {text}"))
                 || app.deps.store.attempts(id).await.unwrap_or_default().len() > before
         })
@@ -687,7 +688,7 @@ mod moves {
     }
 
     async fn settled(s: &Server, activity: Activity) -> TestResult {
-        let waited = wait_for("the task to settle", Duration::from_secs(30), || async {
+        let waited = eventually("the task to settle", Duration::from_secs(30), || async {
             state(&s.app, &s.id).await == Some((TaskStatus::Running, Some(activity)))
         })
         .await;
@@ -712,7 +713,7 @@ mod moves {
 
     /// Waits until the task has `runs` runs and the last one is live.
     async fn run_live(s: &Server, runs: usize) -> TestResult {
-        wait_for("the restarted session", Duration::from_secs(90), || async {
+        eventually("the restarted session", Duration::from_secs(90), || async {
             let attempts = s.app.deps.store.attempts(&s.id).await.unwrap_or_default();
             attempts.len() == runs && attempts[runs - 1].state == AttemptState::Live
         })
@@ -764,7 +765,7 @@ mod moves {
     }
 
     async fn until_decided(flag: &AtomicBool) -> TestResult {
-        wait_for(
+        eventually(
             "the turn's end to decide",
             Duration::from_secs(60),
             || async { flag.load(Ordering::SeqCst) },
@@ -859,7 +860,7 @@ mod moves {
                 ["↻ Claude Code 2.1.322 is installed: this session restarts on it and continues…"]
             );
             // The restarted session counts as on the new version before its first prompt.
-            wait_for(
+            eventually(
                 "the new session's version",
                 Duration::from_secs(30),
                 || async {
@@ -895,7 +896,7 @@ mod moves {
             run_live(&s, 3).await?;
             until_decided(&again).await?;
             settled(&s, Activity::Waiting).await?;
-            wait_for(
+            eventually(
                 "the third session's version",
                 Duration::from_secs(30),
                 || async {
@@ -924,7 +925,7 @@ mod moves {
         let rt = runtime()?;
         rt.block_on(async {
             let s = server(&data, &version, hooked(), TaskMode::Prompt, "2.1.311").await?;
-            crate::pool_supervision::add_account(&s.app, "b-second").await?;
+            crate::support::live::pool::add_account(&s.app, "b-second").await?;
             turn(&s, "one").await?;
             settled(&s, Activity::Waiting).await?;
             // What a person typed into the old session is no draft in the new one, whose
@@ -1265,7 +1266,7 @@ mod moves {
         let dir = tempfile::tempdir()?;
         let db = dir.path().join("store.db");
         let h = crate::support::harness_with(crate::support::HarnessOptions {
-            store: Some(yulius_store::SqliteStore::open(&db)?),
+            store: Some(crate::support::store::migrated(&db)?),
             dir: Some(dir),
             ..Default::default()
         })?;
@@ -1601,7 +1602,7 @@ mod moves {
             // A turn runs, and the gate will block its end.
             let submitted = reached(Point::PromptTurnChecked, &s.id);
             s.app.send_input(&s.id, b"one\r").await?;
-            wait_for("the prompt's submit", Duration::from_secs(60), || async {
+            eventually("the prompt's submit", Duration::from_secs(60), || async {
                 submitted.load(Ordering::SeqCst)
             })
             .await?;
@@ -1616,7 +1617,7 @@ mod moves {
             // The turn ends, the message gets its turn, and the session moves at that turn's end.
             std::fs::write(&may_end, "")?;
             let mut shown = String::new();
-            wait_for("the restarted session", Duration::from_secs(90), || {
+            eventually("the restarted session", Duration::from_secs(90), || {
                 shown.push_str(&printed(&mut watch));
                 async { runs(&s).await == 2 }
             })
@@ -1677,7 +1678,7 @@ mod moves {
 
     /// Waits until the session's terminal said `text`.
     async fn says(s: &Server, text: &str) -> TestResult {
-        wait_for(text, Duration::from_secs(60), || async {
+        eventually(text, Duration::from_secs(60), || async {
             screen(&s.app, &s.id).contains(text)
         })
         .await
@@ -1685,7 +1686,7 @@ mod moves {
 
     /// Waits until Yulius read that something waits in the session's queue.
     async fn waits_in_the_queue(s: &Server) -> TestResult {
-        wait_for(
+        eventually(
             "the prompt in the queue",
             Duration::from_secs(60),
             || async { s.app.claude_queue_holds(&s.id) },
@@ -1747,7 +1748,7 @@ mod moves {
         // waited is answered there.
         std::fs::write(&may_end, "")?;
         let mut shown = String::new();
-        wait_for(
+        eventually(
             "the waiting prompt's answer",
             Duration::from_secs(90),
             || {
@@ -1769,13 +1770,13 @@ mod moves {
             [Some("2.1.311".to_owned())]
         );
         // Nothing waits any more: the next turn the gate blocks restarts the session.
-        wait_for("an empty queue", Duration::from_secs(30), || async {
+        eventually("an empty queue", Duration::from_secs(30), || async {
             !s.app.claude_queue_holds(&s.id)
         })
         .await?;
         s.app.send_input(&s.id, b"three\r").await?;
         second_run_live(&s).await?;
-        wait_for(
+        eventually(
             "the new session's version",
             Duration::from_secs(30),
             || async {
@@ -1858,7 +1859,7 @@ mod moves {
         // The hand-over goes on: one turn answers all, and its end restarts the session.
         std::fs::write(&handed_on, "")?;
         let mut shown = String::new();
-        wait_for("the restarted session", Duration::from_secs(90), || {
+        eventually("the restarted session", Duration::from_secs(90), || {
             shown.push_str(&printed(&mut watch));
             async { runs(&s).await == 2 }
         })
@@ -1922,13 +1923,14 @@ mod moves {
             waits_in_the_queue(&s).await?;
             std::fs::write(&may_end, "")?;
             says(&s, "QUEUE HELD").await?;
-            wait_for("the idle turn's end", Duration::from_secs(60), || async {
-                crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Waiting)
+            eventually("the idle turn's end", Duration::from_secs(60), || async {
+                crate::support::live::first_message::activity(&s.app, &s.id).await
+                    == Some(Activity::Waiting)
             })
             .await?;
             assert!(s.app.claude_queue_holds(&s.id));
             // Past the 1 ms grace period, so the pass refuses for what it checks.
-            wait_for("the grace period", Duration::from_secs(10), || async {
+            eventually("the grace period", Duration::from_secs(10), || async {
                 s.app
                     .deps
                     .store
@@ -2036,7 +2038,7 @@ mod moves {
                 },
             );
             std::fs::write(&turn_starts, "")?;
-            wait_for("the handed-on turn", Duration::from_secs(60), || async {
+            eventually("the handed-on turn", Duration::from_secs(60), || async {
                 screen(&s.app, &s.id).matches("TURN HELD").count() == 2
             })
             .await?;
@@ -2045,7 +2047,7 @@ mod moves {
                 counted.load(Ordering::SeqCst),
                 "the hand-over ended before its turn was known"
             );
-            wait_for("the hand-over's end", Duration::from_secs(30), || async {
+            eventually("the hand-over's end", Duration::from_secs(30), || async {
                 !s.app.claude_queue_holds(&s.id)
             })
             .await?;
@@ -2053,7 +2055,7 @@ mod moves {
             // The turn may end: the prompt is answered, and that end restarts the session.
             std::fs::write(&may_end, "")?;
             let mut shown = String::new();
-            wait_for("the restarted session", Duration::from_secs(90), || {
+            eventually("the restarted session", Duration::from_secs(90), || {
                 shown.push_str(&printed(&mut watch));
                 async { runs(&s).await == 2 }
             })
@@ -2102,7 +2104,7 @@ mod moves {
             says(&s, "QUEUED TURN HELD").await?;
             until_decided(&first_end).await?;
             assert_eq!(runs(&s).await, 1);
-            wait_for("the hand-over", Duration::from_secs(30), || async {
+            eventually("the hand-over", Duration::from_secs(30), || async {
                 s.app.claude_queue_waiting(&s.id) == 0
             })
             .await?;
@@ -2115,11 +2117,11 @@ mod moves {
             // still runs.
             std::fs::remove_file(&may_end)?;
             std::fs::write(&turn_starts, "")?;
-            wait_for("the scheduled turn", Duration::from_secs(60), || async {
+            eventually("the scheduled turn", Duration::from_secs(60), || async {
                 screen(&s.app, &s.id).matches("TURN HELD").count() == 2
             })
             .await?;
-            wait_for("the hand-over's end", Duration::from_secs(30), || async {
+            eventually("the hand-over's end", Duration::from_secs(30), || async {
                 !s.app.claude_queue_holds(&s.id)
             })
             .await?;
@@ -2131,7 +2133,7 @@ mod moves {
             // The turn ends, and that end restarts the session.
             std::fs::write(&may_end, "")?;
             let mut shown = String::new();
-            wait_for("the restarted session", Duration::from_secs(90), || {
+            eventually("the restarted session", Duration::from_secs(90), || {
                 shown.push_str(&printed(&mut watch));
                 async { runs(&s).await == 2 }
             })
@@ -2190,8 +2192,9 @@ mod moves {
                 serde_json::json!({"type":"attachment",
                 "attachment":{"type":"goal_status","condition":"build checked","met":true}})
             )?;
-            wait_for("the achieved goal", Duration::from_secs(30), || async {
-                crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Done)
+            eventually("the achieved goal", Duration::from_secs(30), || async {
+                crate::support::live::first_message::activity(&s.app, &s.id).await
+                    == Some(Activity::Done)
             })
             .await?;
             s.app.record_typing(&s.id, &s.user);
@@ -2202,11 +2205,12 @@ mod moves {
                 s.app.has_draft(&s.id),
                 "the scheduled hook emptied a person's draft"
             );
-            wait_for(
+            eventually(
                 "the achieved goal after the scheduled turn",
                 Duration::from_secs(30),
                 || async {
-                    crate::first_message::activity(&s.app, &s.id).await == Some(Activity::Done)
+                    crate::support::live::first_message::activity(&s.app, &s.id).await
+                        == Some(Activity::Done)
                 },
             )
             .await?;
@@ -2268,7 +2272,7 @@ mod moves {
             );
             // The time a record may take passes; the record comes; the queue is handed on;
             // that turn's end restarts the session.
-            wait_for(
+            eventually(
                 "the time a record may take",
                 Duration::from_secs(60),
                 || async { !s.app.prompt_just_went_on(&s.id) },
@@ -2278,7 +2282,7 @@ mod moves {
             waits_in_the_queue(&s).await?;
             std::fs::write(&handed_on, "")?;
             let mut shown = String::new();
-            wait_for("the restarted session", Duration::from_secs(90), || {
+            eventually("the restarted session", Duration::from_secs(90), || {
                 shown.push_str(&printed(&mut watch));
                 async { runs(&s).await == 2 }
             })
@@ -2348,7 +2352,7 @@ mod moves {
         );
         let flag = decided(&task);
         assert_eq!(hook(&h, None).await?, StatusCode::OK);
-        wait_for("the look at the session", HELD, || async {
+        eventually("the look at the session", HELD, || async {
             looking.load(Ordering::SeqCst)
         })
         .await?;
@@ -2432,7 +2436,7 @@ mod moves {
             std::fs::write(&version, "2.1.322\n")?;
             // The goal's turn ends once Yulius read that the goal is set: the session works on
             // after that turn.
-            wait_for("the goal to be read", Duration::from_secs(60), || async {
+            eventually("the goal to be read", Duration::from_secs(60), || async {
                 s.app.goal_is_open(&s.id)
             })
             .await?;
@@ -2446,7 +2450,7 @@ mod moves {
                 attempts[1].provider_session_id
             );
             // The goal is set again in the restarted session, and achieved there.
-            wait_for("the goal again", Duration::from_secs(90), || async {
+            eventually("the goal again", Duration::from_secs(90), || async {
                 screen(&s.app, &s.id).contains("GOAL SET")
             })
             .await?;
@@ -2573,7 +2577,7 @@ mod moves {
                 GoalMove::Limit => s.app.send_input(&s.id, b"reach limit\r").await?,
             }
             second_run_live(&s).await?;
-            wait_for("the new terminal", Duration::from_secs(30), || async {
+            eventually("the new terminal", Duration::from_secs(30), || async {
                 let shown = screen(&s.app, &s.id);
                 shown.contains("FAKE-AGENT READY") && !shown.contains("GOAL SET")
             })
@@ -2597,7 +2601,7 @@ mod moves {
             // /size reads terminal dimensions without starting a turn. Seeing its answer proves
             // the preceding work turn's synchronous Stop returned with no new verdict or turn record.
             s.app.send_input(&s.id, b"/work 1 resumed\r/size\r").await?;
-            wait_for(
+            eventually(
                 "the resumed clean Stop to return",
                 Duration::from_secs(30),
                 || async {
@@ -2630,7 +2634,7 @@ mod moves {
             let rt = runtime()?;
             rt.block_on(async {
                 let fake = locate_fake_agent().ok_or("fake-agent")?;
-                let (app, _) = crate::first_message::start(
+                let (app, _) = crate::support::live::first_message::start(
                     &data,
                     &fake,
                     hooked(),
@@ -2639,7 +2643,7 @@ mod moves {
                 )
                 .await?;
                 app.reconcile().await?;
-                wait_for(
+                eventually(
                     "the resumed run’s transcript replay",
                     Duration::from_secs(30),
                     || async { app.runtime(&id).transcript_rounds() >= 2 },
@@ -2685,7 +2689,7 @@ mod moves {
 
     /// Waits until Yulius read from the transcript that the session's goal is set.
     async fn goal_read(s: &Server) -> TestResult {
-        wait_for("the goal to be read", Duration::from_secs(60), || async {
+        eventually("the goal to be read", Duration::from_secs(60), || async {
             s.app.goal_is_open(&s.id)
         })
         .await
@@ -2694,7 +2698,7 @@ mod moves {
     /// Waits until the goal turn's Stop was answered: with the gate's block, or by a restart
     /// of the session.
     async fn stop_answered(s: &Server) -> TestResult {
-        wait_for("the Stop's answer", Duration::from_secs(60), || async {
+        eventually("the Stop's answer", Duration::from_secs(60), || async {
             screen(&s.app, &s.id).contains("STOP BLOCKED") || runs(s).await > 1
         })
         .await
@@ -2882,7 +2886,7 @@ mod moves {
                 launch.contains("prompt: Some(\"This task needs a spec"),
                 "{launch}"
             );
-            wait_for("the switch to end", Duration::from_secs(60), || async {
+            eventually("the switch to end", Duration::from_secs(60), || async {
                 let switches = s.app.deps.store.switches(&s.id).await;
                 switches.is_ok_and(|all| {
                     !all.is_empty() && all.iter().all(|one| one.outcome != "started")
@@ -2897,7 +2901,7 @@ mod moves {
             assert_eq!(made, [("claude_code", "completed")]);
             // The restarted session counts as on the new version once the move recorded it,
             // a moment after its switch.
-            wait_for(
+            eventually(
                 "the new session's version",
                 Duration::from_secs(30),
                 || async {
@@ -2931,7 +2935,7 @@ mod moves {
             // The new Claude Code does not start.
             std::fs::write(&broken, "")?;
             turn(&s, "two").await?;
-            wait_for("the failed move", Duration::from_secs(90), || async {
+            eventually("the failed move", Duration::from_secs(90), || async {
                 state(&s.app, &s.id).await.map(|(status, _)| status)
                     == Some(TaskStatus::Stopped(StopReason::SwitchFailed))
             })
@@ -2959,7 +2963,7 @@ mod moves {
     /// Waits until the Instance page says why running tasks are no longer moved.
     async fn moves_stopped(s: &Server) -> Result<String, Box<dyn std::error::Error>> {
         let ctx = s.ctx().await?;
-        wait_for("the card to say so", Duration::from_secs(60), || async {
+        eventually("the card to say so", Duration::from_secs(60), || async {
             s.app
                 .claude_code_view(&ctx)
                 .await
@@ -3034,7 +3038,7 @@ mod moves {
                 ),
                 "{stopped}"
             );
-            wait_for("the task to stop", Duration::from_secs(60), || async {
+            eventually("the task to stop", Duration::from_secs(60), || async {
                 state(&s.app, &s.id)
                     .await
                     .is_some_and(|(status, _)| !status.is_live())
@@ -3125,7 +3129,7 @@ mod moves {
             let restarted = decided(&s.id);
             turn(&s, "two").await?;
             second_run_live(&s).await?;
-            wait_for(
+            eventually(
                 "the restarted session's start",
                 Duration::from_secs(60),
                 || async { started.load(Ordering::SeqCst) },
@@ -3141,7 +3145,7 @@ mod moves {
             // over first: a session's start can be noticed before its run takes input.
             until_decided(&restarted).await?;
             s.app.send_input(&s.id, b"/crash\r").await?;
-            wait_for("the session's end", Duration::from_secs(60), || async {
+            eventually("the session's end", Duration::from_secs(60), || async {
                 state(&s.app, &s.id)
                     .await
                     .is_some_and(|(status, _)| !status.is_live())
@@ -3205,7 +3209,7 @@ mod moves {
         }
         let judged = reached(Point::ClaudeMoveStartJudged, &s.id);
         turn(&s, "two").await?;
-        wait_for(
+        eventually(
             "the first turn's end to decide",
             Duration::from_secs(60),
             || async { first_decided.load(Ordering::SeqCst) },
@@ -3221,7 +3225,7 @@ mod moves {
         );
         assert_eq!(runs(&s).await, 2, "one restart");
         // It is watched: the session that never starts is noticed.
-        wait_for(
+        eventually(
             "its time to start to pass",
             Duration::from_secs(60),
             || async { judged.load(Ordering::SeqCst) },
@@ -3298,7 +3302,7 @@ mod moves {
             let restarted = decided(&s.id);
             turn(&s, "two").await?;
             let both = [Some("2.1.311".to_owned()), Some("2.1.330".to_owned())];
-            wait_for(
+            eventually(
                 "the transcript's version",
                 Duration::from_secs(60),
                 || async { run_versions(&s.app, &s.id).await == both },
@@ -3377,7 +3381,7 @@ mod moves {
             std::fs::remove_file(&may_end)?;
             let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
             s.app.send_input(&s.id, b"two\r").await?;
-            wait_for("the turn to run", Duration::from_secs(30), || async {
+            eventually("the turn to run", Duration::from_secs(30), || async {
                 state(&s.app, &s.id).await == Some((TaskStatus::Running, Some(Activity::Working)))
             })
             .await?;
@@ -3470,7 +3474,7 @@ mod moves {
         assert_eq!(runs(&s).await, 1, "no move in the middle of a turn");
         std::fs::write(&may_end, "")?;
         let mut shown = String::new();
-        wait_for(
+        eventually(
             "the waiting prompt's answer, or the move",
             Duration::from_secs(90),
             || {
@@ -3580,7 +3584,7 @@ mod moves {
             refresh(&s.app, &s.user, "a-first").await?;
             // The turn ends with the entry in the queue: it may be a prompt, the session stays.
             std::fs::write(&may_end, "")?;
-            wait_for(
+            eventually(
                 "the turn's closing record",
                 Duration::from_secs(60),
                 || async { s.app.claude_queue_left_over(&s.id) == 1 || runs(&s).await > 1 },
@@ -3641,7 +3645,7 @@ mod moves {
             // What the first run printed until the move: its gate blocks run out at the third
             // Stop, and a turn that closes after that would move only at a later turn's end.
             let mut shown = String::new();
-            wait_for("the move", Duration::from_secs(90), || {
+            eventually("the move", Duration::from_secs(90), || {
                 shown.push_str(&printed(&mut watch));
                 let s = &s;
                 async move { runs(s).await > 1 }
@@ -3692,7 +3696,7 @@ mod moves {
             let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
             std::fs::write(&may_end, "")?;
             let mut shown = String::new();
-            wait_for(
+            eventually(
                 "the waiting prompt's answer, or the move",
                 Duration::from_secs(90),
                 || {
@@ -3745,13 +3749,13 @@ mod moves {
             says(&s, "QUEUED: note").await?;
             s.app.send_input(&s.id, b"two\r").await?;
             says(&s, "QUEUED: two").await?;
-            wait_for("both in the queue", Duration::from_secs(60), || async {
+            eventually("both in the queue", Duration::from_secs(60), || async {
                 s.app.claude_queue_waiting(&s.id) == 2
             })
             .await?;
             std::fs::write(&may_end, "")?;
             let mut shown = String::new();
-            wait_for(
+            eventually(
                 "the waiting prompt's answer, or the move",
                 Duration::from_secs(90),
                 || {
@@ -3834,7 +3838,7 @@ mod moves {
             refresh(&s.app, &s.user, "a-first").await?;
             // The turn ends: nothing has room and the gate would block, so the turn is held.
             std::fs::write(&may_end, "")?;
-            wait_for("the held turn", Duration::from_secs(60), || async {
+            eventually("the held turn", Duration::from_secs(60), || async {
                 state(&s.app, &s.id).await.map(|(status, _)| status)
                     == Some(TaskStatus::WaitingCapacity)
             })
@@ -3850,14 +3854,14 @@ mod moves {
             refresh(&s.app, &s.user, "b-second").await?;
             if record_late {
                 std::fs::write(&written, "")?;
-                wait_for("the prompt's record", Duration::from_secs(60), || async {
+                eventually("the prompt's record", Duration::from_secs(60), || async {
                     transcripts(&data).contains(r#""operation":"enqueue""#)
                 })
                 .await?;
             }
             let _ = s.app.resume_round().await;
             let mut shown = String::new();
-            wait_for(
+            eventually(
                 "the waiting prompt's answer, or the move",
                 Duration::from_secs(90),
                 || {
@@ -3998,7 +4002,7 @@ mod moves {
     }
 
     async fn until_move_tried(h: &crate::support::Harness, task: &TaskId) -> TestResult {
-        wait_for("the move", Duration::from_secs(60), || async {
+        eventually("the move", Duration::from_secs(60), || async {
             move_tried(h, task).await
         })
         .await
@@ -4051,7 +4055,7 @@ mod moves {
             let _ = tokio::task::block_in_place(|| held.recv_timeout(HELD));
         });
         let meanwhile = async {
-            wait_for("the look at the session", HELD, || async {
+            eventually("the look at the session", HELD, || async {
                 looking.load(Ordering::SeqCst)
             })
             .await?;

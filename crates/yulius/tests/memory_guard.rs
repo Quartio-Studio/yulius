@@ -3,61 +3,19 @@
 //! Runs everywhere: the session host records the plans and starts nothing; the namespace itself is
 //! proven by the opt-in isolation test and on a guest (SPEC-652 Evidence).
 
+use crate::support::live::{Live, UNSERVED};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::supervision::{runtime, seed_records, seed_repo, wait_for};
-use crate::support;
-use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
-use yulius::wiring::clock::SystemClock;
-use yulius::wiring::harness::HarnessAdapter;
-use yulius_app::context::{App, AppConfig, Deps};
+use crate::support::live::supervision::{runtime, seed_records, seed_repo};
+use crate::support::{TestResult, eventually};
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{TaskMode, TaskOrigin};
 use yulius_app::ports::session::{Containment, LaunchPlan};
 use yulius_contracts::ptyhost::{GuardKind, GuardPath};
 use yulius_domain::harness::Harness;
-use yulius_store::SqliteStore;
-use yulius_store::crypto::MasterKeyCrypto;
-
-/// The plans a contained server hands its session host, which starts nothing.
-#[derive(Default)]
-struct RecordingHost {
-    plans: std::sync::Mutex<Vec<LaunchPlan>>,
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        _run_dir: &Path,
-        _attempt_id: &str,
-        _task_id: &str,
-        plan: &LaunchPlan,
-        _token: &[u8; 32],
-        _size: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        if let Ok(mut plans) = self.plans.lock() {
-            plans.push(plan.clone());
-        }
-        Err(yulius_app::error::AppError::Upstream("recorded".into()))
-    }
-    async fn attach(
-        &self,
-        _run_dir: &Path,
-        _token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        Err(yulius_app::error::AppError::NotFound)
-    }
-    fn inspect(&self, _run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        yulius_app::ports::session::RunInspection::Missing
-    }
-    fn terminate(&self, _run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        Ok(())
-    }
-}
 
 /// The recorded plan of a new contained task of `harness` in a fresh sandbox.
 fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std::error::Error>> {
@@ -65,15 +23,8 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
     let data = dir.path().canonicalize()?;
     let rt = runtime()?;
     let plan = rt.block_on(async {
-        let host = Arc::new(RecordingHost::default());
+        let host = Arc::new(crate::support::ScriptedHost::default());
         let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-        let mut config = AppConfig::new(
-            data.clone(),
-            "https://yulius.test",
-            "http://127.0.0.1:9",
-            exe.clone(),
-        );
-        config.contained = true;
         let provided = |name: &str| {
             let dir = data.join(format!("{name}-cli"));
             yulius_app::ports::harness::ProvidedCli {
@@ -81,32 +32,19 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
                 dir,
             }
         };
-        let deps = Deps {
-            store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-            clock: Arc::new(SystemClock),
-            crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-            github: Arc::new(support::FakeGitHub::default()),
-            session_host: host.clone(),
-            harness: Arc::new(support::agents::FakeAgentHarness {
-                inner: HarnessAdapter::new(exe.clone(), "http://127.0.0.1:9"),
-                fake: exe.clone(),
-                options: FakeAgentOptions {
-                    provided_codex: Some(provided("codex")),
-                    provided_antigravity: Some(provided("antigravity")),
-                    ..FakeAgentOptions::default()
-                },
-                yulius_exe: exe,
-            }),
-            git: Arc::new(crate::support::confined_git()),
-            system: Arc::new(support::FixedSystem),
-            browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
-            usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
-        };
-        let app = App::new(config, deps);
+        let app = Live {
+            host: Some(host.clone()),
+            ..Live::new(Some(&exe), FakeAgentOptions {
+            provided_codex: Some(provided("codex")),
+            provided_antigravity: Some(provided("antigravity")),
+            ..FakeAgentOptions::default()
+        })
+        }
+        .app(&data, UNSERVED, |config| config.contained = true)?;
         let (sandbox, user) = seed_records(&app).await?;
         match harness {
             Harness::Codex => {
-                crate::codex::add_codex_account(
+                crate::support::codex::add_codex_account(
                     &app,
                     "a-codex",
                     r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-access","refresh_token":"SYNTHETIC-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-01T10:00:00Z"}"#,
@@ -114,10 +52,10 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
                 .await?;
             }
             Harness::Antigravity => {
-                crate::antigravity::add_google_account(
+                crate::support::antigravity::add_google_account(
                     &app,
                     "a-google",
-                    &crate::antigravity::api_key()?,
+                    &crate::support::antigravity::api_key()?,
                 )
                 .await?;
             }
@@ -141,17 +79,11 @@ fn contained_plan(harness: Harness) -> Result<(PathBuf, LaunchPlan), Box<dyn std
             supertask: false,
         })
         .await?;
-        wait_for("the recorded plan", Duration::from_secs(30), || async {
-            host.plans.lock().is_ok_and(|plans| !plans.is_empty())
+        eventually("the recorded plan", Duration::from_secs(30), || async {
+            !host.plans().is_empty()
         })
         .await?;
-        let plan = host
-            .plans
-            .lock()
-            .map_err(|_| "poisoned")?
-            .first()
-            .cloned()
-            .ok_or("no plan")?;
+        let plan = host.plans().into_iter().next().ok_or("no plan")?;
         Ok::<_, Box<dyn std::error::Error>>(plan)
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -449,7 +381,7 @@ async fn a_guarded_session_cannot_write_its_memory_but_reads_it() -> TestResult 
         (80, 24),
     )
     .await?;
-    let finished = wait_for("the attempts", Duration::from_secs(60), || async {
+    let finished = eventually("the attempts", Duration::from_secs(60), || async {
         std::fs::read_to_string(&results).is_ok_and(|text| text.ends_with("done\n"))
     })
     .await;

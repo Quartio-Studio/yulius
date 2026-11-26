@@ -2,12 +2,14 @@
 //! tests' fake `claude`: one per person, in a folder of its own without built-in tools, served
 //! every sandbox's tools for its person through its own bearer, outliving its host sandbox.
 
-use crate::cockpit::{
+use crate::support;
+use crate::support::cockpit::{
     Fixture, ORIGIN, answer_record, attach, cockpit_id, cockpit_tool, conversation, fixture,
     fixture_with, insert_account, limited_conversation, mcp, predate_launch_digest, printed,
-    project_of, prompt_record, read_message, read_until, task_rests, wait_for,
+    project_of, prompt_record, read_message, read_until, task_rests,
 };
-use crate::support;
+use crate::support::eventually;
+use std::future::ready;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -420,9 +422,11 @@ async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
     )
     .await?;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
-    wait_for("the Global Superagent to end with its host", || {
-        globals(&f).is_empty()
-    })
+    eventually(
+        "the Global Superagent to end with its host",
+        crate::support::cockpit::WAIT,
+        || ready(globals(&f).is_empty()),
+    )
     .await?;
 
     let again = global_id(&f, &f.alice).await?;
@@ -468,43 +472,6 @@ async fn a_global_superagent_whose_host_was_lost_moves_to_another_sandbox() -> T
     Ok(())
 }
 
-/// The plans a contained server hands its session host, which starts nothing (AC-GSA-4).
-#[derive(Default)]
-struct RecordingHost {
-    plans: std::sync::Mutex<Vec<yulius_app::ports::session::LaunchPlan>>,
-}
-
-#[async_trait::async_trait]
-impl yulius_app::ports::session::SessionHost for RecordingHost {
-    async fn spawn(
-        &self,
-        _run_dir: &Path,
-        _attempt_id: &str,
-        _task_id: &str,
-        plan: &yulius_app::ports::session::LaunchPlan,
-        _token: &[u8; 32],
-        _size: (u16, u16),
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        if let Ok(mut plans) = self.plans.lock() {
-            plans.push(plan.clone());
-        }
-        Err(yulius_app::error::AppError::Upstream("recorded".into()))
-    }
-    async fn attach(
-        &self,
-        _run_dir: &Path,
-        _token: &[u8; 32],
-    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        Err(yulius_app::error::AppError::NotFound)
-    }
-    fn inspect(&self, _run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        yulius_app::ports::session::RunInspection::Missing
-    }
-    fn terminate(&self, _run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        Ok(())
-    }
-}
-
 /// AC-GSA-4 (GSA-002): on a contained server the plan its session host gets is contained in a
 /// bubblewrap root of its own folder, without a sandbox holder, identity, repository or the
 /// person's home, with the host's password files covered, every shell command refused through a
@@ -513,7 +480,7 @@ impl yulius_app::ports::session::SessionHost for RecordingHost {
 async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
     use yulius_app::ports::session::Containment;
 
-    let host = std::sync::Arc::new(RecordingHost::default());
+    let host = std::sync::Arc::new(crate::support::ScriptedHost::default());
     let h = support::harness_with(support::HarnessOptions {
         session_host: Some(host.clone()),
         configure: Some(Box::new(|config| config.contained = true)),
@@ -533,13 +500,7 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
 
     let resp = call(&h.router, Method::POST, "/api/superagent", None, &alice).await?;
     assert_eq!(resp.status, StatusCode::BAD_GATEWAY, "{:?}", resp.body);
-    let plan = host
-        .plans
-        .lock()
-        .map_err(|_| "poisoned")?
-        .first()
-        .cloned()
-        .ok_or("nothing spawned")?;
+    let plan = host.plans().into_iter().next().ok_or("nothing spawned")?;
     let Containment::Bubblewrap {
         sandbox_root,
         home,
@@ -721,13 +682,19 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     let exit = read_message(&mut socket, "exit").await?;
     assert_eq!(exit["status"], "switched", "{exit}");
     let mut again = None;
-    wait_for("the Global Superagent on another subscription", || {
-        again = globals(&f)
-            .into_iter()
-            .map(|(_, id)| id)
-            .find(|other| *other != id);
-        again.is_some()
-    })
+    eventually(
+        "the Global Superagent on another subscription",
+        crate::support::cockpit::WAIT,
+        || {
+            ready({
+                again = globals(&f)
+                    .into_iter()
+                    .map(|(_, id)| id)
+                    .find(|other| *other != id);
+                again.is_some()
+            })
+        },
+    )
     .await?;
     let again = again.ok_or("moved")?;
     let mut socket = attach(served.addr, &again, &f.alice).await?;
@@ -772,13 +739,19 @@ async fn a_global_superagent_started_before_an_update_restarts_as_global() -> Te
     let served = serve(g.h.router.clone()).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
     let mut again = None;
-    wait_for("the Global Superagent to start again", || {
-        again = globals(&g)
-            .into_iter()
-            .map(|(_, other)| other)
-            .find(|other| *other != id);
-        again.is_some()
-    })
+    eventually(
+        "the Global Superagent to start again",
+        crate::support::cockpit::WAIT,
+        || {
+            ready({
+                again = globals(&g)
+                    .into_iter()
+                    .map(|(_, other)| other)
+                    .find(|other| *other != id);
+                again.is_some()
+            })
+        },
+    )
     .await?;
     let again = again.ok_or("restarted")?;
     let mut socket = attach(served.addr, &again, &g.alice).await?;
@@ -1051,7 +1024,7 @@ async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestR
     use yulius_app::ports::session::Containment;
     use yulius_contracts::ptyhost::GuardKind;
 
-    let host = std::sync::Arc::new(RecordingHost::default());
+    let host = std::sync::Arc::new(crate::support::ScriptedHost::default());
     let h = support::harness_with(support::HarnessOptions {
         session_host: Some(host.clone()),
         configure: Some(Box::new(|config| config.contained = true)),
@@ -1074,13 +1047,7 @@ async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestR
     )
     .await?;
     assert!(!resp.status.is_success(), "{:?}", resp.body);
-    let plan = host
-        .plans
-        .lock()
-        .map_err(|_| "poisoned")?
-        .first()
-        .cloned()
-        .ok_or("nothing spawned")?;
+    let plan = host.plans().into_iter().next().ok_or("nothing spawned")?;
     let Containment::Bubblewrap { home, guard, .. } = &plan.containment else {
         return Err("not contained".into());
     };

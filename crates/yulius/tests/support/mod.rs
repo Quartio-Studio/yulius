@@ -870,6 +870,8 @@ pub struct Harness {
     /// The machine metrics (the data disk is settable).
     pub system: Arc<SettableSystem>,
     pub _dir: tempfile::TempDir,
+    /// Holds the store's file, apart from the data folder the app scans.
+    pub _store: tempfile::TempDir,
 }
 
 /// The real Git adapter as the server builds it: on Linux every command confined (ADR-0322),
@@ -908,7 +910,7 @@ pub fn harness_with_git(
     )
 }
 
-/// The shared builder: in-memory store, fake GitHub, fixed clock and system metrics.
+/// The shared builder: a migrated store of its own, fake GitHub, fixed clock and system metrics.
 pub fn build_harness(
     git: Arc<dyn yulius_app::ports::git::GitPort>,
     session_host: Arc<dyn yulius_app::ports::session::SessionHost>,
@@ -1401,6 +1403,50 @@ pub mod gated;
 pub mod pending;
 /// Repository fixtures (real Git over local remotes) for project and import tests.
 pub mod repos;
+pub use repos::{git, git_stdout};
+/// Waiting on a condition.
+pub mod wait;
+pub use wait::eventually;
+/// A bare repository behind the fake GitHub.
+pub mod remote;
+pub use remote::BareRemote;
+/// A Google account for Antigravity tasks and its API key.
+pub mod antigravity;
+/// A sandbox with CD environments, its container holders and a process host that records containment.
+pub mod cd;
+/// A person's Superagent, by role.
+pub mod cd_rollback;
+/// The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and records.
+pub mod cockpit;
+/// A connected Codex account and Codex tasks.
+pub mod codex;
+/// A browser port whose lookups a test holds.
+pub mod delivery;
+/// A process host double answering what a test scripts.
+pub mod host;
+/// Real-process servers (the fake agent behind a real ptyhost).
+pub mod live;
+/// Apps whose pull requests a test scripts, and reads of parked tasks.
+pub mod parking;
+/// CI runs of a pull request and a verification step a task leaves.
+pub mod pr_watch;
+/// A person enrolled for secrets and their unlocked browser session.
+pub mod secrets;
+/// Synthetic keys and what a run sources into its environment.
+pub mod secrets_env;
+/// The integration branch's CI gates as staging reads them.
+pub mod staging;
+/// Stores copied from a migrated template.
+pub mod store;
+/// Live runs on subscriptions and the notices a task's terminal shows.
+pub mod subscription_moves;
+/// Subscriptions, running tasks on them and the hooks they send.
+pub mod subscription_pool;
+/// The fake agent's screen modes and a Superagent's terminal.
+pub mod task_message;
+/// Exhausted models, a person's context and a session's transcript lines.
+pub mod usage_credits;
+pub use host::ScriptedHost;
 /// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
 pub mod updates;
 
@@ -1720,7 +1766,7 @@ pub struct HarnessOptions {
     pub harness: Option<Arc<dyn yulius_app::ports::harness::HarnessPort>>,
     /// Provider usage probe (default: unavailable).
     pub usage: Option<Arc<dyn yulius_app::ports::usage::UsageProbe>>,
-    /// Store (default: a new in-memory database).
+    /// Store (default: a copy of the migrated template in a folder of its own).
     pub store: Option<SqliteStore>,
     /// Crypto (default: [`test_crypto`]).
     pub crypto: Option<Arc<dyn yulius_app::ports::Crypto>>,
@@ -1828,9 +1874,10 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         None => tempfile::tempdir()?,
     };
     let data = dir.path().canonicalize()?;
+    let store_dir = tempfile::tempdir()?;
     let store = match options.store {
         Some(store) => store,
-        None => SqliteStore::open_in_memory()?,
+        None => store::migrated(&store_dir.path().join("yulius.db"))?,
     };
     let github = Arc::new(FakeGitHub::default());
     let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
@@ -1886,6 +1933,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         router,
         system,
         _dir: dir,
+        _store: store_dir,
     })
 }
 
@@ -2212,7 +2260,7 @@ pub async fn replace_park_at(
         .join("worktrees")
         .join(target.as_str());
     std::fs::create_dir_all(&tree)?;
-    repos::git(&tree, &["init", "--quiet"])?;
+    git_stdout(&tree, &["init", "--quiet"])?;
     seed_live_attempt(h, target.as_str(), "first parked attempt").await?;
     let mut run = h
         .store

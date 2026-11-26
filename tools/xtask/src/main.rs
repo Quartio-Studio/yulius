@@ -307,7 +307,7 @@ fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
                 args.extend(["-E", filter.as_str()]);
             }
             run(&cargo, &args)?;
-            run(&python, &["scripts/doctests.py"])
+            doctests(&cargo)
         }
         // Everything `ci` runs but the tests, which a CI job of their own runs.
         "checks" => gates(false, &cargo, &python),
@@ -318,6 +318,65 @@ fn execute_in(task: &str, after_quick: bool) -> io::Result<()> {
         "ci" => gates(true, &cargo, &python),
         _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown task")),
     }
+}
+
+/// The workspace's library packages whose targets run doctests, from `cargo metadata`'s JSON:
+/// Cargo refuses `--doc` for a package without a library.
+fn library_packages(metadata: &serde_json::Value) -> Vec<String> {
+    const LIBRARIES: [&str; 5] = ["lib", "rlib", "dylib", "cdylib", "staticlib"];
+    let members: Vec<&serde_json::Value> = metadata["workspace_members"]
+        .as_array()
+        .map(|members| members.iter().collect())
+        .unwrap_or_default();
+    metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|package| members.contains(&&package["id"]))
+        .filter(|package| {
+            package["targets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|target| {
+                    target["doctest"].as_bool() == Some(true)
+                        && target["kind"].as_array().into_iter().flatten().any(|kind| {
+                            kind.as_str().is_some_and(|kind| {
+                                LIBRARIES.contains(&kind) || kind == "proc-macro"
+                            })
+                        })
+                })
+        })
+        .filter_map(|package| package["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The doctests of the workspace's library packages, if it has any.
+fn doctests(cargo: &str) -> io::Result<()> {
+    let metadata = ["metadata", "--locked", "--no-deps", "--format-version", "1"];
+    println!("+ {cargo} {}", metadata.join(" "));
+    let out = Command::new(cargo)
+        .args(metadata)
+        .stderr(std::process::Stdio::inherit())
+        .output()?;
+    if !out.status.success() {
+        return Err(io::Error::other(format!(
+            "{cargo} metadata failed: {}",
+            out.status
+        )));
+    }
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(io::Error::other)?;
+    let packages = library_packages(&metadata);
+    if packages.is_empty() {
+        println!("Doctests: not applicable (no workspace library targets with doctests enabled)");
+        return Ok(());
+    }
+    let mut args = vec!["test", "--locked", "--all-features", "--doc"];
+    for name in &packages {
+        args.extend(["--package", name.as_str()]);
+    }
+    run(cargo, &args)
 }
 
 /// The workspace's documentation, warnings as `RUSTDOCFLAGS` sets them.
@@ -439,7 +498,9 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{beside, gate_sequence, macos_env, quarantine_filter, stage_marker};
+    use super::{
+        beside, gate_sequence, library_packages, macos_env, quarantine_filter, stage_marker,
+    };
     use std::path::Path;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -491,6 +552,27 @@ mod tests {
         );
         assert_eq!(quarantine_filter(names, ""), "test(=tests::bare)");
         assert_eq!(quarantine_filter("", "app\n"), "");
+    }
+
+    /// The doctests run for the workspace's libraries and proc-macros only: not for a binary,
+    /// nor for a dependency outside the workspace.
+    #[test]
+    fn doctests_select_the_workspaces_libraries() {
+        let binary_only = serde_json::json!({
+            "workspace_members": ["app"],
+            "packages": [{"id": "app", "name": "app", "targets": [{"kind": ["bin"], "doctest": false}]}],
+        });
+        assert!(library_packages(&binary_only).is_empty());
+        let mixed = serde_json::json!({
+            "workspace_members": ["core", "app", "macros"],
+            "packages": [
+                {"id": "core", "name": "core", "targets": [{"kind": ["lib"], "doctest": true}]},
+                {"id": "app", "name": "app", "targets": [{"kind": ["bin"], "doctest": false}]},
+                {"id": "macros", "name": "macros", "targets": [{"kind": ["proc-macro"], "doctest": true}]},
+                {"id": "external", "name": "external", "targets": [{"kind": ["lib"], "doctest": true}]},
+            ],
+        });
+        assert_eq!(library_packages(&mixed), ["core", "macros"]);
     }
 
     #[test]

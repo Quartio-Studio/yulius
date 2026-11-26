@@ -4,13 +4,13 @@
 //! model it was launched with, a limit binds that model, and Fable is used again at the next
 //! launch once a subscription can run it. Real processes, as in `usage_credits.rs`.
 
-use crate::pool_supervision::{
-    HOUR, ScriptedUsage, build_with, has_status, new_fable_task, reading, runtime, seed, stop,
-    temp, usage, wait_for,
-};
-use crate::subscription_moves::{live_run, notices, ready, run_accounts};
-use crate::support::TestResult;
 use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
+use crate::support::live::pool::{
+    HOUR, ScriptedUsage, build_with, has_status, new_fable_task, reading, runtime, seed, stop,
+    temp, usage,
+};
+use crate::support::subscription_moves::{live_run, notices, ready, run_accounts};
+use crate::support::{TestResult, eventually};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -72,7 +72,7 @@ fn asked_for(model: &str) -> String {
 /// recorded live a moment before its terminal is attached, and input is refused until then.
 async fn type_into_run(app: &App, id: &TaskId, n: usize, line: &[u8]) -> TestResult {
     live_run(app, id, n).await?;
-    wait_for("the run takes input", Duration::from_secs(30), || async {
+    eventually("the run takes input", Duration::from_secs(30), || async {
         app.send_input(id, line).await.is_ok()
     })
     .await
@@ -211,7 +211,7 @@ fn a_task_out_of_fable_everywhere_goes_on_with_opus_on_its_subscription() -> Tes
         );
 
         let mut said = Vec::new();
-        wait_for("the fallback's line", Duration::from_secs(30), || {
+        eventually("the fallback's line", Duration::from_secs(30), || {
             said.extend(notices(&mut watch));
             let found = said.iter().any(|notice| notice == FELL_BACK);
             async move { found }
@@ -262,7 +262,7 @@ fn a_limit_on_the_fallback_binds_the_fallback_model() -> TestResult {
         assert!(fable["resets_at"].is_number(), "{fable}");
 
         type_into_run(&app, &id, 2, b"again\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -355,7 +355,7 @@ fn named_continue_during_change(change: NamedChange) -> TestResult {
         if matches!(change, NamedChange::ExhaustedModel | NamedChange::Relogin) {
             app.archive_task(&ctx, id.as_str(), true).await?;
         }
-        crate::parking::ask(&app, &id).await?;
+        crate::support::parking::ask(&app, &id).await?;
         let mut question = app
             .deps
             .store
@@ -556,8 +556,8 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
         // Fable runs again on one subscription: the run on the fallback is not restarted for it.
         store_usage(&app, "b-second", false).await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the turn", Duration::from_secs(30), || async {
-            crate::pool_supervision::echoed(&app, &id)
+        eventually("the turn", Duration::from_secs(30), || async {
+            crate::support::live::pool::echoed(&app, &id)
                 .iter()
                 .any(|line| line.contains("hello"))
         })
@@ -598,7 +598,7 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
             (asked_for(FABLE), Some(FABLE.to_owned()))
         );
         let mut said = Vec::new();
-        wait_for("the line", Duration::from_secs(30), || {
+        eventually("the line", Duration::from_secs(30), || {
             said.extend(notices(&mut watch));
             let found = said.iter().any(|notice| notice == BACK);
             async move { found }
@@ -642,7 +642,7 @@ fn a_task_refused_for_both_models_is_retried_once_then_asks_a_person() -> TestRe
         ready(&app, &id).await?;
         app.send_input(&id, b"hello\r").await?;
         type_into_run(&app, &id, 2, b"again\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || {
+        eventually("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
         .await?;
@@ -661,7 +661,7 @@ fn a_task_refused_for_both_models_is_retried_once_then_asks_a_person() -> TestRe
         live_run(&app, &id, 4).await?;
         needs_nobody(&app, &id).await?;
         type_into_run(&app, &id, 4, b"fourth\r").await?;
-        wait_for("the request", Duration::from_secs(30), || async {
+        eventually("the request", Duration::from_secs(30), || async {
             app.deps
                 .store
                 .audit_details(id.as_str(), "task.limit_without_end", 10)
@@ -722,7 +722,7 @@ fn a_fallback_refused_with_no_end_is_retried_once_then_waits_for_fable() -> Test
             }
         };
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || paused(1)).await?;
+        eventually("the pause", Duration::from_secs(30), || paused(1)).await?;
         let stored = stored_usage(&app, "a-only").await?;
         assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
         assert!(stored["weekly_opus"]["resets_at"].is_null(), "{stored}");
@@ -735,7 +735,7 @@ fn a_fallback_refused_with_no_end_is_retried_once_then_waits_for_fable() -> Test
         assert_eq!(stored["weekly_fable"], fable, "Fable's reset is kept");
         let _ = app.resume_round().await;
         type_into_run(&app, &id, 2, b"again\r").await?;
-        wait_for("the second pause", Duration::from_secs(30), || paused(2)).await?;
+        eventually("the second pause", Duration::from_secs(30), || paused(2)).await?;
 
         // Every later reading shows room for the fallback again: the task stays off it.
         for round in 0..3 {
@@ -834,8 +834,9 @@ fn a_fresh_session_of_a_run_on_the_fallback_goes_where_fable_runs_again() -> Tes
             store_usage(&app, account, true).await?;
         }
         let id = new_fable_task(&app, &sandbox, &user, "Full").await?;
-        wait_for("the first answer", Duration::from_secs(30), || async {
-            crate::pool_supervision::screen(&app, &id).contains("ECHO: Full: answer with an echo")
+        eventually("the first answer", Duration::from_secs(30), || async {
+            crate::support::live::pool::screen(&app, &id)
+                .contains("ECHO: Full: answer with an echo")
         })
         .await?;
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
@@ -848,7 +849,7 @@ fn a_fresh_session_of_a_run_on_the_fallback_goes_where_fable_runs_again() -> Tes
         // Fable runs again on the other subscription; then the context fills.
         store_usage(&app, "b-second", false).await?;
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the fresh session", Duration::from_secs(60), || async {
+        eventually("the fresh session", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
             attempts.len() == 2 && attempts[1].state == AttemptState::Live
         })
@@ -865,7 +866,7 @@ fn a_fresh_session_of_a_run_on_the_fallback_goes_where_fable_runs_again() -> Tes
             (asked_for(FABLE), Some(FABLE.to_owned()))
         );
         let mut said = Vec::new();
-        wait_for("the line", Duration::from_secs(30), || {
+        eventually("the line", Duration::from_secs(30), || {
             said.extend(notices(&mut watch));
             let found = said.iter().any(|notice| notice == BACK);
             async move { found }

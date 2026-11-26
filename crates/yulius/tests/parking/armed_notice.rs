@@ -110,14 +110,14 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
         let (id, caller) = answered(&app, &data).await?;
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
         let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
-        crate::pr_watch::git(&data.join("seed"), &["push", "-q", "origin", "main:dev"])?;
-        crate::pr_watch::git(tree, &["fetch", "-q", "origin"])?;
+        crate::support::git(&data.join("seed"), &["push", "-q", "origin", "main:dev"])?;
+        crate::support::git(tree, &["fetch", "-q", "origin"])?;
         let branch = task.branch.as_deref().ok_or("branch")?;
-        crate::pr_watch::git(
+        crate::support::git(
             tree,
             &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
         )?;
-        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        let head = crate::support::git(tree, &["rev-parse", "HEAD"])?;
         open_pull_at(&app, &github, &id, 1481, &head).await?;
         app.deps
             .store
@@ -136,7 +136,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
         } else {
             &head
         };
-        let (mut run, job) = crate::pr_watch::run(
+        let (mut run, job) = crate::support::pr_watch::run(
             &caller.sandbox,
             "ordinary-red",
             sha,
@@ -167,7 +167,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
     rt.block_on(async {
         let id = &id;
         let (cold, remote) = app_with_pulls(&data, 8, 1).await?;
-        let browser = Arc::new(crate::delivery::HeldBrowserLookup::for_publication());
+        let browser = Arc::new(crate::support::delivery::HeldBrowserLookup::for_publication());
         let cold = if matches!(case, OwnerCase::BrowserRestart) {
             let mut deps = cold.deps.clone();
             deps.browser = browser.clone();
@@ -176,9 +176,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             cold
         };
         let origin = data.join("origin.git");
-        remote.set_remote(Arc::new(crate::delivery::BareRemote {
-            origin: origin.clone(),
-        }));
+        remote.set_remote(Arc::new(crate::support::BareRemote(origin.clone())));
         open_pull_at(&cold, &remote, id, 1481, &head).await?;
         std::fs::write(
             data.join(yulius_app::agent_wait::ARMED_MERGES_FILE),
@@ -248,7 +246,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             let news = pass.await?;
             assert!(news.is_empty(), "idle advice after turn began: {news:?}");
             let task = cold.deps.store.task(id).await?.ok_or("owner")?;
-            let (mut run, job) = crate::pr_watch::run(
+            let (mut run, job) = crate::support::pr_watch::run(
                 &task.sandbox_id,
                 "ordinary-red-current",
                 &head,
@@ -260,7 +258,8 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             cold.deps.store.insert_ci_run(&run, &[job]).await?;
         }
         if let OwnerCase::ReplacedAttempt(point) = case {
-            let replacement = crate::pool_supervision::add_account(&cold, "b-replacement").await?;
+            let replacement =
+                crate::support::live::pool::add_account(&cold, "b-replacement").await?;
             let (entered, release) = super::pause_watch_or_queue(point, id);
             let watcher = Arc::clone(&cold);
             let pass = tokio::spawn(async move { watcher.watch_prs(&bounds).await });
@@ -272,7 +271,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                 Some("Replacement session ready".into()),
             )
             .await?;
-            super::wait_for(
+            crate::support::eventually(
                 "the new attempt to attach",
                 Duration::from_secs(10),
                 || async {
@@ -352,7 +351,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                 "advice from prior CI head: {previous:?}"
             );
             let task = cold.deps.store.task(id).await?.ok_or("owner")?;
-            let (mut run, job) = crate::pr_watch::run(
+            let (mut run, job) = crate::support::pr_watch::run(
                 &task.sandbox_id,
                 "ordinary-red-current",
                 &head,
@@ -507,11 +506,11 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                 case,
                 OwnerCase::ExternalRepair(_) | OwnerCase::BrowserRestart
             ) {
-                crate::pr_watch::git(
+                crate::support::git(
                     tree,
                     &["clone", "-q", ".", other.to_str().ok_or("clone path")?],
                 )?;
-                crate::pr_watch::git(
+                crate::support::git(
                     &other,
                     &[
                         "remote",
@@ -524,7 +523,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             } else {
                 tree
             };
-            crate::pr_watch::git(
+            crate::support::git(
                 tree,
                 &[
                     "commit",
@@ -534,7 +533,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                     "Repair the failed check",
                 ],
             )?;
-            crate::pr_watch::git(
+            crate::support::git(
                 tree,
                 &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
             )?;
@@ -544,14 +543,14 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             ) {
                 let checkout = Path::new(task.worktree_path.as_deref().ok_or("owner checkout")?);
                 assert_eq!(
-                    crate::pr_watch::git(
+                    crate::support::git(
                         checkout,
                         &["rev-parse", &format!("refs/remotes/origin/{branch}")]
                     )?,
                     head
                 );
                 assert_ne!(
-                    crate::pr_watch::git(&origin, &["rev-parse", &format!("refs/heads/{branch}")])?,
+                    crate::support::git(&origin, &["rev-parse", &format!("refs/heads/{branch}")])?,
                     head
                 );
             }
@@ -596,7 +595,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
 
 #[test]
 fn an_armed_pr_without_an_ordinary_run_checks_conflicts_at_its_published_head() -> TestResult {
-    use crate::pr_watch::git;
+    use crate::support::git;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -672,22 +671,24 @@ fn an_armed_pr_without_an_ordinary_run_checks_conflicts_at_its_published_head() 
 
 #[test]
 fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestResult {
-    use crate::first_message::ShiftedClock;
-    use crate::pr_watch::git;
+    use crate::support::git;
+    use crate::support::live::first_message::ShiftedClock;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
         let fake = yulius_ptyhost::test_support::locate_fake_agent().ok_or("fake agent")?;
         let clock = Arc::new(ShiftedClock::new(-13 * 60_000));
-        let (app, _, github) = crate::first_message::start_hosted_with_github(
-            &data,
-            &fake,
-            crate::task_message::full_screen(),
-            (0, Arc::new(super::ScriptedUsage::default()), clock.clone()),
-            None,
-            None,
-            |_| {},
-        )
+        let github = Arc::new(crate::support::FakeGitHub::default());
+        let (app, _) = crate::support::live::Live {
+            usage: Arc::new(super::ScriptedUsage::default()),
+            clock: clock.clone(),
+            github: github.clone(),
+            ..crate::support::live::Live::new(
+                Some(&fake),
+                crate::support::task_message::full_screen(),
+            )
+        }
+        .start(&data, 0, |_| {})
         .await?;
         let (id, caller) = answered(&app, &data).await?;
         let task = app.deps.store.task(&id).await?.ok_or("owner")?;
@@ -706,7 +707,7 @@ fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestRes
                 },
             )
             .await?;
-        let (mut run, job) = crate::pr_watch::run(
+        let (mut run, job) = crate::support::pr_watch::run(
             &task.sandbox_id,
             "guarded-red",
             &head,
@@ -723,7 +724,8 @@ fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestRes
             )?,
         )?;
         app.restore_armed_merges().await;
-        let (ctx, attach) = crate::task_message::full_screen_terminal(&app, &caller, &id).await?;
+        let (ctx, attach) =
+            crate::support::task_message::full_screen_terminal(&app, &caller, &id).await?;
         app.terminal_input(&ctx, &attach, b"\x7f", false).await?;
         clock.shift(-11 * 60_000);
         let (entered, release) = super::pause_watch_or_queue(super::Point::BoxSeenEmpty, &id);

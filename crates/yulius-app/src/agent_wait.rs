@@ -220,6 +220,35 @@ impl ArmedSlot {
             self.note.clone().filter(|_| armed),
         )
     }
+
+    /// The armed merge as a merge train sees it.
+    fn now(&self) -> ArmedNow {
+        if self.retirement_pending.is_some() {
+            return ArmedNow::None;
+        }
+        match (&self.merge, self.deciding) {
+            (_, 1..) => ArmedNow::Deciding,
+            (Some(merge), 0) => ArmedNow::Armed(merge.clone()),
+            (None, 0) => ArmedNow::None,
+        }
+    }
+}
+
+/// `task`'s armed slot read once under its lock ([`App::armed_snapshot`]); compare two with
+/// [`ArmedSnapshot::same_arm`].
+#[derive(Debug)]
+pub(crate) struct ArmedSnapshot {
+    pub(crate) now: ArmedNow,
+    pub(crate) observation: ArmObservation,
+    /// Where an armed merge stands, while one is armed or decided.
+    pub(crate) note: Option<QueueNote>,
+}
+
+impl ArmedSnapshot {
+    /// Whether no arm, clear or decision happened between `self` and `later`.
+    pub(crate) fn same_arm(&self, later: &Self) -> bool {
+        self.now == later.now && self.observation == later.observation
+    }
 }
 
 /// The live slot changes relevant to delivering advice prepared across asynchronous reads.
@@ -228,6 +257,19 @@ pub(crate) struct ArmObservation {
     generation: u64,
     decisions_started: u64,
     pub(crate) deciding: bool,
+}
+
+/// What keeps the merge queue from touching a task's branch now ([`App::queue_readiness`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Readiness {
+    Working,
+    Shells,
+    /// Uncommitted changes, or they cannot be read.
+    Dirty,
+    NotRunning,
+    /// No worktree, or not at the armed head.
+    MovedOn,
+    Ready,
 }
 
 /// An armed merge as a merge train sees it (SPEC-084).
@@ -712,11 +754,6 @@ impl App {
         armed.then(|| self.train_note(task).or(note)).flatten()
     }
 
-    /// The slot’s own queue note when no current train holds the armed request.
-    pub(crate) fn arm_queue_note(&self, task: &TaskId) -> Option<QueueNote> {
-        lock_slot(&self.runtime(task)).view().2
-    }
-
     /// Records where `task`'s armed merge stands, for the decision in progress (SPEC-441
     /// MQ-007): kept when that decision keeps the merge armed.
     fn note_armed(&self, task: &TaskId, text: String) {
@@ -748,7 +785,6 @@ impl App {
     /// integration tests.
     pub async fn decidable_in(&self, sandbox: &crate::model::SandboxRecord) -> bool {
         use yulius_domain::ci::{GateResult, RunState};
-        use yulius_domain::task::{Activity, TaskStatus};
         if self.train_run_ended(sandbox).await {
             return true;
         }
@@ -796,28 +832,58 @@ impl App {
             {
                 return true;
             }
-            let idle = task.status == TaskStatus::Running
-                && task.activity.is_some_and(Activity::is_idle)
-                && self.background_shells_of(&task.id).unwrap_or(0) == 0;
             // A member of a train is the train's to decide (SPEC-493: one waiting for a member's
             // own run decides nothing until that run ends).
-            if !candidate_running && idle && free && self.at_clean_head(&task, &armed.head).await {
+            if !candidate_running
+                && free
+                && self.queue_readiness(&task, Some(&armed.head)).await == Readiness::Ready
+            {
                 return true;
             }
         }
         false
     }
 
-    /// Whether `task`'s worktree is at `head` with nothing uncommitted.
-    async fn at_clean_head(&self, task: &TaskRecord, head: &str) -> bool {
+    /// Whether `task`'s agent is running with its turn ended and no background command.
+    pub(crate) fn agent_idle(&self, task: &TaskRecord) -> bool {
+        use yulius_domain::task::{Activity, TaskStatus};
+        task.status == TaskStatus::Running
+            && task.activity.is_some_and(Activity::is_idle)
+            && self.background_shells_of(&task.id).unwrap_or(0) == 0
+    }
+
+    /// Whether the merge queue may touch `task`'s branch now (DLV-203): its turn ended, no
+    /// background command runs, the task runs, it has a worktree with nothing uncommitted (a
+    /// failed read counts as uncommitted), at `head` when one is given. Checked in this order,
+    /// cheapest first, so the first reason is the one to tell.
+    pub(crate) async fn queue_readiness(&self, task: &TaskRecord, head: Option<&str>) -> Readiness {
+        use yulius_domain::task::{Activity, TaskStatus};
+        if !task.activity.is_some_and(Activity::is_idle) {
+            return Readiness::Working;
+        }
+        if self.background_shells_of(&task.id).unwrap_or(0) > 0 {
+            return Readiness::Shells;
+        }
+        if task.status != TaskStatus::Running {
+            return Readiness::NotRunning;
+        }
         let Some(worktree) = task.worktree_path.as_deref().map(std::path::Path::new) else {
-            return false;
+            return Readiness::MovedOn;
         };
-        !self.deps.git.has_changes(worktree).await.unwrap_or(true)
-            && matches!(
-                self.deps.git.log(worktree, "HEAD", 1).await,
-                Ok(log) if log.first().is_some_and(|commit| commit.sha == head)
-            )
+        if self.deps.git.has_changes(worktree).await.unwrap_or(true) {
+            return Readiness::Dirty;
+        }
+        match head {
+            Some(head)
+                if !matches!(
+                    self.deps.git.log(worktree, "HEAD", 1).await,
+                    Ok(log) if log.first().is_some_and(|commit| commit.sha == head)
+                ) =>
+            {
+                Readiness::MovedOn
+            }
+            _ => Readiness::Ready,
+        }
     }
 
     /// Whether `task` has a merge armed (or being decided), and how the last one ended: its
@@ -847,26 +913,22 @@ impl App {
 
     /// `task`'s armed merge as a merge train sees it (SPEC-084).
     pub(crate) fn armed_now(&self, task: &TaskId) -> ArmedNow {
-        let runtime = self.runtime(task);
-        let slot = lock_slot(&runtime);
-        if slot.retirement_pending.is_some() {
-            return ArmedNow::None;
-        }
-        match (&slot.merge, slot.deciding) {
-            (_, 1..) => ArmedNow::Deciding,
-            (Some(merge), 0) => ArmedNow::Armed(merge.clone()),
-            (None, 0) => ArmedNow::None,
-        }
+        lock_slot(&self.runtime(task)).now()
     }
 
-    /// Observe both new requests and completed retries under the same slot lock.
-    pub(crate) fn arm_observation(&self, task: &TaskId) -> ArmObservation {
+    /// `task`'s armed merge, its arms and decisions so far, and its queue note, read under one
+    /// lock: new requests and completed retries are seen together.
+    pub(crate) fn armed_snapshot(&self, task: &TaskId) -> ArmedSnapshot {
         let runtime = self.runtime(task);
         let slot = lock_slot(&runtime);
-        ArmObservation {
-            generation: slot.generation,
-            decisions_started: slot.decisions_started,
-            deciding: slot.deciding > 0,
+        ArmedSnapshot {
+            now: slot.now(),
+            observation: ArmObservation {
+                generation: slot.generation,
+                decisions_started: slot.decisions_started,
+                deciding: slot.deciding > 0,
+            },
+            note: slot.view().2,
         }
     }
 
@@ -1444,41 +1506,23 @@ impl App {
         sandbox: &crate::model::SandboxRecord,
     ) -> Current {
         use crate::ports::git::MergeIntegration;
-        use yulius_domain::task::{Activity, TaskStatus};
         let (Some(worktree), Some(branch)) =
             (task.worktree_path.as_deref(), task.branch.as_deref())
         else {
             return Current::Unchanged;
         };
         let worktree = std::path::Path::new(worktree);
-        let idle = task.status == TaskStatus::Running
-            && task.activity.is_some_and(Activity::is_idle)
-            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
-        if !idle || self.deps.git.has_changes(worktree).await.unwrap_or(true) {
+        if self.queue_readiness(task, None).await != Readiness::Ready {
             return Current::Unchanged;
         }
         let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
         let Ok(token) = self.task_github_token(task, sandbox).await else {
             return Current::Unchanged;
         };
-        let updating = self.now();
-        let merged = self
-            .deps
-            .git
-            .merge_integration(worktree, &integration, &token)
-            .await;
-        match &merged {
-            Ok(MergeIntegration::Merged(_)) => {
-                self.integration_update_span(&task.id, &integration, updating, "merged")
-                    .await;
-            }
-            Ok(MergeIntegration::Conflict(_)) => {
-                self.integration_update_span(&task.id, &integration, updating, "conflict")
-                    .await;
-            }
-            _ => {}
-        }
-        match merged {
+        match self
+            .bring_armed_up_to_date(&task.id, worktree, &integration, &token)
+            .await
+        {
             Ok(MergeIntegration::UpToDate) => Current::Unchanged,
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "an armed pull request could not be brought up to date");
@@ -1493,20 +1537,15 @@ impl App {
                     .await
                 {
                     Ok(()) => {
-                        let detail = format!(
-                            "merged {integration} into {branch} at {head} for the armed merge"
-                        );
-                        let _ = self
-                            .deps
-                            .store
-                            .audit(
-                                self.now(),
-                                "yulius",
-                                "delivery.branch_updated",
-                                Some(&format!("{}#{}", sandbox.slug, task.number)),
-                                Some(&detail),
-                            )
-                            .await;
+                        self.audit_branch_updated(
+                            sandbox,
+                            task,
+                            branch,
+                            &head,
+                            &integration,
+                            "the armed merge",
+                        )
+                        .await;
                         Current::Moved(head)
                     }
                     Err(err) => {
@@ -1516,6 +1555,57 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Merges `origin/<integration>` into `task`'s worktree for its armed merge (DLV-203), and
+    /// records the update as a span when it merged or conflicted (a conflict is aborted).
+    pub(crate) async fn bring_armed_up_to_date(
+        &self,
+        task: &TaskId,
+        worktree: &std::path::Path,
+        integration: &str,
+        token: &crate::model::PlaintextSecret,
+    ) -> AppResult<crate::ports::git::MergeIntegration> {
+        use crate::ports::git::MergeIntegration;
+        let updating = self.now();
+        let merged = self
+            .deps
+            .git
+            .merge_integration(worktree, integration, token)
+            .await;
+        let outcome = match &merged {
+            Ok(MergeIntegration::Merged(_)) => "merged",
+            Ok(MergeIntegration::Conflict(_)) => "conflict",
+            _ => return merged,
+        };
+        self.integration_update_span(task, integration, updating, outcome)
+            .await;
+        merged
+    }
+
+    /// Audits that Yulius pushed `head`, `integration` merged into `branch`, for `purpose`.
+    pub(crate) async fn audit_branch_updated(
+        &self,
+        sandbox: &crate::model::SandboxRecord,
+        task: &TaskRecord,
+        branch: &str,
+        head: &str,
+        integration: &str,
+        purpose: &str,
+    ) {
+        let _ = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                "yulius",
+                "delivery.branch_updated",
+                Some(&format!("{}#{}", sandbox.slug, task.number)),
+                Some(&format!(
+                    "merged {integration} into {branch} at {head} for {purpose}"
+                )),
+            )
+            .await;
     }
 
     /// Non-destructive preview of conflicting file paths between `origin/<integration>` and
@@ -1565,24 +1655,11 @@ impl App {
     /// Why a green armed pull request behind its base is not in a merge candidate yet, in one
     /// sentence (SPEC-441 MQ-007).
     async fn candidate_wait_note(&self, task: &TaskRecord, armed: &ArmedMerge, pr: u64) -> String {
-        use yulius_domain::task::{Activity, TaskStatus};
         let lead = format!(
             "Pull request #{pr} passed its own run at {}, but the integration branch moved since:",
             short(&armed.head)
         );
-        let idle = task.status == TaskStatus::Running
-            && task.activity.is_some_and(Activity::is_idle)
-            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
-        let dirty = match task.worktree_path.as_deref() {
-            Some(worktree) => self
-                .deps
-                .git
-                .has_changes(std::path::Path::new(worktree))
-                .await
-                .unwrap_or(true),
-            None => true,
-        };
-        if !idle || dirty {
+        if self.queue_readiness(task, None).await != Readiness::Ready {
             return format!(
                 "{lead} Yulius tests it on top of the current integration branch as soon as your \
                  turn ends with everything committed. {QUEUE_BASE_GUIDANCE}"
