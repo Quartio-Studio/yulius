@@ -8,14 +8,13 @@ use yulius_app::ports::store::SandboxStore;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, to_i64, to_u64};
+use crate::{SqliteStore, bad_column, opt_ts, text_parsed, to_i64, to_u64};
 
 const COLS: &str = "id, slug, repo_owner, repo_name, github_repo_id, default_branch, profile, port_base, \
     port_count, onboarding_state, onboarding_task_id, created_by, created_at, removed_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<SandboxRecord> {
     let id: String = row.get("id")?;
-    let by: String = row.get("created_by")?;
     let otask: Option<String> = row.get("onboarding_task_id")?;
     let port = |name: &str| -> rusqlite::Result<u16> {
         let v: i64 = row.get(name)?;
@@ -36,9 +35,9 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<SandboxRecord> {
             .as_deref()
             .map(|t| TaskId::parse(t).map_err(|_| bad_column("task id", t)))
             .transpose()?,
-        created_by: UserId::parse(&by).map_err(|_| bad_column("user id", &by))?,
+        created_by: text_parsed(row, "created_by", "user id", UserId::parse)?,
         created_at: Timestamp(row.get("created_at")?),
-        removed_at: row.get::<_, Option<i64>>("removed_at")?.map(Timestamp),
+        removed_at: opt_ts(row, "removed_at")?,
     })
 }
 

@@ -6,8 +6,6 @@ briefing) in the form `spec_check` validates: start from [the template](../../.a
 and skill `om-spec-writing`. Record observable behavior, constraints, decisions and evidence
 rather than a code narrative.
 
-The form: a frontmatter with `yulius-task` (the task's id) and `status`, then the sections Goal,
-Context, Requirements, Plan (a `- [ ]` checklist), Acceptance criteria, Test plan and Decisions.
 The status moves draft → approved (optional) → in-progress → done, or abandoned; `done` needs
 every Plan item ticked and an Evidence section with the commands run and their results.
 `delivery_merge` refuses a head whose spec does not validate. The status is also the task's own

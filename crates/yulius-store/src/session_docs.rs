@@ -11,41 +11,30 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, to_i64, to_u32, to_u64};
+use crate::{SqliteStore, opt_ts, parsed, text_as, text_parsed, to_i64, to_u32, to_u64};
 
 const COLS: &str = "id, sandbox_id, kind, task_id, harness, session_id, title, author_id, \
     git_branch, cwd_relative, base, transcript_path, sha256, bytes, redactions, started_at, \
     ended_at, continued_task_id, indexed_bytes, indexed_lines, index_full, created_at, updated_at";
 
-fn parse<T>(
-    column: &str,
-    text: &str,
-    f: fn(&str) -> Result<T, yulius_domain::ids::IdError>,
-) -> rusqlite::Result<T> {
-    f(text).map_err(|_| bad_column(column, text))
-}
-
 fn from_row(row: &Row<'_>) -> rusqlite::Result<SessionDocRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
-    let kind: String = row.get("kind")?;
     let task: Option<String> = row.get("task_id")?;
-    let harness: String = row.get("harness")?;
     let author: Option<String> = row.get("author_id")?;
     let continued: Option<String> = row.get("continued_task_id")?;
     Ok(SessionDocRecord {
         id: row.get("id")?,
-        sandbox_id: parse("sandbox id", &sandbox, SandboxId::parse)?,
-        kind: SessionKind::parse(&kind).ok_or_else(|| bad_column("kind", &kind))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
+        kind: text_as(row, "kind", "kind", SessionKind::parse)?,
         task_id: task
             .as_deref()
-            .map(|t| parse("task id", t, TaskId::parse))
+            .map(|t| parsed("task id", t, TaskId::parse))
             .transpose()?,
-        harness: Harness::parse(&harness).map_err(|_| bad_column("harness", &harness))?,
+        harness: text_parsed(row, "harness", "harness", Harness::parse)?,
         session_id: row.get("session_id")?,
         title: row.get("title")?,
         author_id: author
             .as_deref()
-            .map(|u| parse("user id", u, UserId::parse))
+            .map(|u| parsed("user id", u, UserId::parse))
             .transpose()?,
         git_branch: row.get("git_branch")?,
         cwd_relative: row.get("cwd_relative")?,
@@ -54,11 +43,11 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<SessionDocRecord> {
         sha256: row.get("sha256")?,
         bytes: to_u64(row.get("bytes")?),
         redactions: to_u32(row.get("redactions")?),
-        started_at: row.get::<_, Option<i64>>("started_at")?.map(Timestamp),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        started_at: opt_ts(row, "started_at")?,
+        ended_at: opt_ts(row, "ended_at")?,
         continued_task_id: continued
             .as_deref()
-            .map(|t| parse("task id", t, TaskId::parse))
+            .map(|t| parsed("task id", t, TaskId::parse))
             .transpose()?,
         indexed_bytes: to_u64(row.get("indexed_bytes")?),
         indexed_lines: to_u64(row.get("indexed_lines")?),
@@ -207,14 +196,11 @@ impl SessionDocStore for SqliteStore {
                      ORDER BY p.first_seen",
             )?;
             let rows = stmt.query_map([sandbox], |r| {
-                let sb: String = r.get(1)?;
-                let tk: String = r.get(2)?;
-                let h: String = r.get(3)?;
                 Ok(ProviderSessionRecord {
                     id: r.get(0)?,
-                    sandbox_id: parse("sandbox id", &sb, SandboxId::parse)?,
-                    task_id: parse("task id", &tk, TaskId::parse)?,
-                    harness: Harness::parse(&h).map_err(|_| bad_column("harness", &h))?,
+                    sandbox_id: text_parsed(r, 1, "sandbox id", SandboxId::parse)?,
+                    task_id: text_parsed(r, 2, "task id", TaskId::parse)?,
+                    harness: text_parsed(r, 3, "harness", Harness::parse)?,
                     session_id: r.get(4)?,
                     transcript_ref: r.get(5)?,
                     origin: r.get(6)?,

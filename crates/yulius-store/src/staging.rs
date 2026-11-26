@@ -10,24 +10,22 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::staging::StagingState;
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, to_i64};
+use crate::{SqliteStore, bad_column, text_as, text_parsed, to_i64};
 
 const COLUMNS: &str = "id, sandbox_id, environment, task_id, revision, state, ci_run_id, \
                        cd_run_id, attempts, note, requested_by, told, created_at, updated_at";
 
 fn request_row(row: &Row<'_>) -> rusqlite::Result<StagingRequestRecord> {
-    let sandbox: String = row.get(1)?;
     let task: Option<String> = row.get(3)?;
-    let state: String = row.get(5)?;
     Ok(StagingRequestRecord {
         id: row.get(0)?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, 1, "sandbox id", SandboxId::parse)?,
         environment: row.get(2)?,
         task_id: task
             .map(|id| TaskId::parse(&id).map_err(|_| bad_column("task id", &id)))
             .transpose()?,
         revision: row.get(4)?,
-        state: StagingState::parse(&state).ok_or_else(|| bad_column("staging state", &state))?,
+        state: text_as(row, 5, "staging state", StagingState::parse)?,
         ci_run_id: row.get(6)?,
         cd_run_id: row.get(7)?,
         attempts: row.get(8)?,
@@ -108,8 +106,7 @@ impl StagingStore for SqliteStore {
                          ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 [task],
                 |row| {
-                    let state: String = row.get(0)?;
-                    StagingState::parse(&state).ok_or_else(|| bad_column("staging state", &state))
+                    text_as(row, 0, "staging state", StagingState::parse)
                 },
             )
             .optional()?)
@@ -167,9 +164,8 @@ impl StagingStore for SqliteStore {
                         OR (state = 'deploy_failed' AND updated_at >= ?1) ORDER BY sandbox_id",
             )?;
             let rows = statement.query_map([failed_since.0], |row| {
-                let sandbox: String = row.get(0)?;
                 Ok((
-                    SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+                    text_parsed(row, 0, "sandbox id", SandboxId::parse)?,
                     row.get::<_, String>(1)?,
                 ))
             })?;

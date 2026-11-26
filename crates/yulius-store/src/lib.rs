@@ -511,6 +511,46 @@ pub(crate) fn bad_column(column: &str, value: &str) -> rusqlite::Error {
     )
 }
 
+/// `text` read with `parse`; text it refuses is a bad `label`.
+pub(crate) fn parsed<T, E>(
+    label: &str,
+    text: &str,
+    parse: impl FnOnce(&str) -> Result<T, E>,
+) -> rusqlite::Result<T> {
+    parse(text).map_err(|_| bad_column(label, text))
+}
+
+/// Text column `idx` of `row` read with `parse`; text it refuses is a bad `label`.
+pub(crate) fn text_as<T>(
+    row: &rusqlite::Row<'_>,
+    idx: impl rusqlite::RowIndex,
+    label: &str,
+    parse: impl FnOnce(&str) -> Option<T>,
+) -> rusqlite::Result<T> {
+    let text: String = row.get(idx)?;
+    parse(&text).ok_or_else(|| bad_column(label, &text))
+}
+
+/// [`text_as`] with a parser that answers a `Result`.
+pub(crate) fn text_parsed<T, E>(
+    row: &rusqlite::Row<'_>,
+    idx: impl rusqlite::RowIndex,
+    label: &str,
+    parse: impl FnOnce(&str) -> Result<T, E>,
+) -> rusqlite::Result<T> {
+    text_as(row, idx, label, |text| parse(text).ok())
+}
+
+/// Nullable time column `idx` of `row`.
+pub(crate) fn opt_ts(
+    row: &rusqlite::Row<'_>,
+    idx: impl rusqlite::RowIndex,
+) -> rusqlite::Result<Option<yulius_domain::time::Timestamp>> {
+    Ok(row
+        .get::<_, Option<i64>>(idx)?
+        .map(yulius_domain::time::Timestamp))
+}
+
 /// Converts `u64` ids to SQLite integers.
 pub(crate) fn to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)

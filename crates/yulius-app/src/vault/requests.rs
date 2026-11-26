@@ -162,8 +162,7 @@ impl App {
         user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
-        let args: RequestArgs = serde_json::from_value(args.clone())
-            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let args: RequestArgs = super::parse_args(args)?;
         let asked = parse_hosts(&args.hosts).map_err(invalid)?;
         if asked.is_empty() {
             return Err(AppError::Invalid(
@@ -172,16 +171,8 @@ impl App {
         }
         let store = &self.deps.store;
         let record = self
-            .resolved_agent_secrets(user.sandbox(), user.holder())
-            .await?
-            .into_iter()
-            .find(|r| r.name == args.secret.trim())
-            .ok_or_else(|| {
-                AppError::Invalid(format!(
-                    "no agent secret named {:?} applies to this project (see secrets_list)",
-                    args.secret
-                ))
-            })?;
+            .named_agent_secret(user.sandbox(), user.holder(), &args.secret)
+            .await?;
         if record.cd_prod {
             return Err(AppError::Forbidden(super::PRODUCTION_SECRET.into()));
         }

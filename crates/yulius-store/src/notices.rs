@@ -11,7 +11,7 @@ use yulius_domain::notice::{NoticeKey, NoticeTone};
 use yulius_domain::notify::NoticeKind;
 use yulius_domain::time::Timestamp;
 
-use crate::SqliteStore;
+use crate::{SqliteStore, opt_ts};
 
 const COLS: &str = "id, sandbox_id, user_id, admin_only, notice_key, category, tone, title, \
                     detail, link, decision, created_at, expires_at";
@@ -52,7 +52,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<NoticeRecord> {
         link: row.get(9)?,
         decision: row.get(10)?,
         created_at: Timestamp(row.get(11)?),
-        expires_at: row.get::<_, Option<i64>>(12)?.map(Timestamp),
+        expires_at: opt_ts(row, 12)?,
     })
 }
 
