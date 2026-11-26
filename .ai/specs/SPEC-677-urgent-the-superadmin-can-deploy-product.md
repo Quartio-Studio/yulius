@@ -41,10 +41,13 @@ refused. Every other rule of a production release stays as it is.
 - SAP-003: The run's note says `promoted 'dev' to 'main' at <sha> by the superadmin through the
   GitHub App`. The release's audit entries (`delivery.promote`, `delivery.promotion_pr.open`,
   `delivery.promote.reconciled`) name the actor `superadmin (through the GitHub App)`.
-- SAP-004: When GitHub refuses a write by the App (HTTP 403, 405 or 422, for example a ruleset
-  whose bypass list leaves the App out), the refusal says that GitHub refused the Yulius GitHub App
-  acting for the superadmin, gives GitHub's reason, and says what to do: let the App through the
-  production branch's ruleset, or do it on GitHub. The error keeps its kind.
+- SAP-004: When GitHub refuses the App itself (a missing permission, 403; a ruleset or branch
+  protection blocking the merge, 405, or the ref update, 422), the refusal says that GitHub
+  refused the Yulius GitHub App acting for the superadmin, gives GitHub's reason, and says what to
+  do: a repository admin signed in with GitHub does it, or it is done on GitHub. It never suggests
+  letting the App through the ruleset: agents' tokens are the App's (ADR-0114). The error keeps its
+  kind. GitHub's other refusals (a draft, a conflict) and Yulius's own refusals pass unchanged, and
+  a 401 for the App's token never signs the person out.
 - SAP-005: A person's merge of a task pull request (`POST …/delivery/merge`) by the superadmin
   without a GitHub identity goes through the App too. Its `delivery.merge` audit names the App.
   The same gates apply, and it is the same token the superadmin's agent already merges with.
@@ -91,8 +94,16 @@ refused. Every other rule of a production release stays as it is.
 - **Who acted is read from the account, not passed along.** A superadmin without a GitHub login
   can reach GitHub only through the App, so the audit label follows from the account
   (`App::dlv_github_actor`). Nothing new has to be threaded through `dlv_promote_exactly`.
-- **The App's refusal is recognised from GitHub's HTTP 403, 405 and 422 answers.** Yulius's own
-  refusals ("nothing was promoted: …") carry no HTTP code and pass through unchanged.
+- **The App's refusal is recognised from the GitHub adapter's own words** (`app_refusal`): a
+  403, a rule violation, or "branch protection or a ruleset blocks it". Yulius's own refusals,
+  even those quoting a GitHub code (the merge's retitle), and GitHub's ordinary refusals pass
+  through unchanged (review round 1).
+- **Where production is protected as Yulius asks, the App is refused.** The people-only ruleset
+  (ADR-0114) has the Repository admin role as its only bypass actor, so GitHub refuses the App's
+  promotion there. Letting the App through would let every agent through. On such a repository
+  the superadmin's deploy is refused, saying so, and a repository admin signed in with GitHub
+  deploys. The change unblocks the superadmin where the production branch carries no such
+  ruleset. ADR-0110 and ADR-0114 are refined in place.
 - **Merging is done too (SAP-005).** It is a one-line token change behind the same gates, and the
   superadmin's agent already merges with that token.
 - **Not done: protecting the production branch** (`production_protect.rs`). It first checks that
@@ -120,5 +131,22 @@ refused. Every other rule of a production release stays as it is.
   GitHub's `app_write_refusal`, with GitHub's 405 wording, and the classifier's unit tests cover
   403, 405 and 422. The customer instance's own deploy is the owner's to try once this reaches
   `main`.
+- Review round 1 (request changes) answered:
+  - The refusal no longer suggests adding the App to the ruleset's bypass list (ADR-0114).
+  - The classifier reads only the GitHub adapter's 403 and ruleset refusals; the retitle refusal
+    and GitHub's ordinary 405s pass unchanged.
+  - A 401 says it is the App's.
+  - New tests:
+    - a refused merge and a refused release by the App;
+    - `acts_through_app` for the superadmin, a linked superadmin, a guest and a person;
+    - a person's merge and release with their own token (`standard_flow_…`);
+    - the hand-over merge restored as `a_superadmin_task_handed_over_merges_as_its_new_owner`.
+  - ADR-0110 and ADR-0114 refined in place.
+  - Results:
+    - `cd::`, `delivery::`, `staging::`, `production_prot…`, `task_ownership::` and `yulius-app`:
+      1051 of 1052 passed, then the one strict assertion was fixed (the CD path wraps the refusal
+      in "nothing was deployed: …"), and it passes;
+    - `app_refusal_tests`: 4 of 4;
+    - clippy (`-D warnings`) on `yulius-app` and `yulius`, and `scripts/dev quick`, are clean.
 - Security scan: Vidoc is turned off for this project ("Security scan disabled"), so the scan did
   not run. It neither passed nor failed.

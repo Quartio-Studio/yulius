@@ -684,9 +684,13 @@ async fn the_superadmin_deploys_production_through_the_github_app() -> TestResul
         .as_str()
         .unwrap_or_default();
     assert!(
-        message.contains("GitHub refused the Yulius GitHub App")
+        message.starts_with("nothing was deployed")
+            && message
+                .contains("GitHub refused the Yulius GitHub App, which acts for the superadmin")
             && message.contains("Repository rule violations found")
-            && message.contains("bypass"),
+            && message.contains("keeps the App out of 'main'")
+            && message.contains("repository admin signed in with GitHub")
+            && !message.contains("bypass"),
         "{message}"
     );
     assert_eq!(f.head("main")?, main_before, "nothing was promoted");

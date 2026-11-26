@@ -27,32 +27,46 @@ pub(crate) fn acts_through_app(user: &UserRecord) -> bool {
     user.is_superadmin && user.github_login.is_none()
 }
 
-/// GitHub's answers that refuse a write rather than fail it: a missing permission (403), a merge
-/// it will not make (405), a ref update a rule rejects (422).
-const GITHUB_REFUSALS: [&str; 3] = ["(HTTP 403)", "(HTTP 405)", "(HTTP 422)"];
+/// Whether `message` is GitHub's refusal of the App itself, in the GitHub adapter's own words: a
+/// missing permission (403), or a ruleset or branch protection that blocks the write (a 405 merge
+/// or a 422 ref update). Yulius's own refusals that quote GitHub, and GitHub's other refusals (a
+/// draft, a conflict, a failure that may pass), are not.
+fn refuses_the_app(message: &str) -> bool {
+    let adapter = message.starts_with("GitHub: ")
+        || message.starts_with("pull request is not mergeable (HTTP 405): ");
+    let lower = message.to_ascii_lowercase();
+    adapter
+        && (message.contains("(HTTP 403)")
+            || lower.contains("rule violation")
+            || lower.contains("branch protection or a ruleset blocks it"))
+}
 
 /// `err` of an action the GitHub App took for the superadmin on `branch`, said plainly when
-/// GitHub refused the App (SPEC-677 SAP-004): a ruleset whose bypass list leaves the App out
-/// binds it as it binds anyone. The error keeps its kind, and Yulius's own refusals (no HTTP
-/// code) pass unchanged. A 401 for the App's token is the App's, never the person's session.
+/// GitHub refused the App (SPEC-677 SAP-004). GitHub's rules bind the App as they bind agents,
+/// whose tokens are the App's (ADR-0114), so the refusal never suggests letting the App through.
+/// The error keeps its kind; anything else passes unchanged. A 401 for the App's token is the
+/// App's, never the person's session.
 pub(crate) fn app_refusal(err: AppError, branch: &str) -> AppError {
     let said = |reason: &str| {
         let reason = reason.strip_prefix("GitHub: ").unwrap_or(reason);
         format!(
-            "GitHub refused the Yulius GitHub App, which acts for the superadmin: {reason}. If a \
-             ruleset on '{branch}' leaves the App out of its bypass list, add the App to it, or \
-             do it on GitHub."
+            "GitHub refused the Yulius GitHub App, which acts for the superadmin: {reason}. \
+             GitHub keeps the App out of '{branch}' as it keeps agents out (a ruleset, or the \
+             App's permissions), and Yulius never asks to let it through: a repository admin \
+             signed in with GitHub can do this, or do it on GitHub."
         )
     };
-    let refused = |message: &str| GITHUB_REFUSALS.iter().any(|code| message.contains(code));
     match err {
-        AppError::Unauthenticated => {
-            AppError::Upstream(said("GitHub rejected the App's credentials (HTTP 401)"))
-        }
-        AppError::Upstream(m) if refused(&m) => AppError::Upstream(said(&m)),
-        AppError::Conflict(m) if refused(&m) => AppError::Conflict(said(&m)),
-        AppError::Invalid(m) if refused(&m) => AppError::Invalid(said(&m)),
-        AppError::Forbidden(m) if refused(&m) => AppError::Forbidden(said(&m)),
+        AppError::Unauthenticated => AppError::Upstream(
+            "GitHub rejected the credentials of the Yulius GitHub App, which acts for the \
+             superadmin (HTTP 401); nothing changed on GitHub. Check the App's installation, or \
+             do it on GitHub."
+                .into(),
+        ),
+        AppError::Upstream(m) if refuses_the_app(&m) => AppError::Upstream(said(&m)),
+        AppError::Conflict(m) if refuses_the_app(&m) => AppError::Conflict(said(&m)),
+        AppError::Invalid(m) if refuses_the_app(&m) => AppError::Invalid(said(&m)),
+        AppError::Forbidden(m) if refuses_the_app(&m) => AppError::Forbidden(said(&m)),
         other => other,
     }
 }
@@ -391,10 +405,49 @@ impl App {
 
 #[cfg(test)]
 mod app_refusal_tests {
-    use super::{AppError, app_refusal};
+    use super::{AppError, acts_through_app, app_refusal};
+    use crate::model::UserRecord;
+    use yulius_domain::ids::UserId;
+    use yulius_domain::time::Timestamp;
+
+    const SAID: &str = "GitHub refused the Yulius GitHub App, which acts for the superadmin: ";
+
+    fn account(
+        login: Option<&str>,
+        superadmin: bool,
+    ) -> Result<UserRecord, Box<dyn std::error::Error>> {
+        Ok(UserRecord {
+            id: UserId::parse("u-1")?,
+            github_login: login.map(str::to_owned),
+            github_id: None,
+            display_name: "Someone".into(),
+            avatar_url: None,
+            is_superadmin: superadmin,
+            is_instance_admin: superadmin,
+            password_hash: None,
+            created_at: Timestamp(1),
+            disabled_at: None,
+        })
+    }
 
     #[test]
-    fn a_github_refusal_names_the_app_and_keeps_its_kind() {
+    fn only_the_superadmin_without_a_github_identity_acts_through_the_app()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert!(acts_through_app(&account(None, true)?));
+        assert!(
+            !acts_through_app(&account(Some("root"), true)?),
+            "a linked superadmin keeps their own token"
+        );
+        assert!(
+            !acts_through_app(&account(None, false)?),
+            "a guest stays refused"
+        );
+        assert!(!acts_through_app(&account(Some("bob"), false)?));
+        Ok(())
+    }
+
+    #[test]
+    fn a_ruleset_or_permission_refusal_names_the_app_and_keeps_its_kind() {
         let ruleset = app_refusal(
             AppError::Conflict(
                 "pull request is not mergeable (HTTP 405): Repository rule violations found".into(),
@@ -404,36 +457,55 @@ mod app_refusal_tests {
         let AppError::Conflict(text) = ruleset else {
             panic!("a conflict stays a conflict: {ruleset:?}");
         };
-        assert!(
-            text.starts_with("GitHub refused the Yulius GitHub App, which acts for the superadmin: pull request is not mergeable (HTTP 405): Repository rule violations found.")
-                && text.contains("ruleset on 'main'")
-                && text.contains("bypass list"),
-            "{text}"
+        assert_eq!(
+            text,
+            format!(
+                "{SAID}pull request is not mergeable (HTTP 405): Repository rule violations \
+                 found. GitHub keeps the App out of 'main' as it keeps agents out (a ruleset, or \
+                 the App's permissions), and Yulius never asks to let it through: a repository \
+                 admin signed in with GitHub can do this, or do it on GitHub."
+            )
         );
         for err in [
             AppError::Upstream("GitHub: GitHub refused the request (HTTP 403): no".into()),
             AppError::Upstream(
-                "GitHub: GitHub rejected the request as invalid (HTTP 422): rules".into(),
+                "GitHub: GitHub rejected the request as invalid (HTTP 422): Repository rule \
+                 violations found"
+                    .into(),
+            ),
+            AppError::Conflict(
+                "pull request is not mergeable (HTTP 405): branch protection or a ruleset \
+                 blocks it (required reviews or checks, or restricted updates) (GitHub: x)"
+                    .into(),
             ),
         ] {
-            let AppError::Upstream(text) = app_refusal(err, "main") else {
-                panic!("an upstream failure stays upstream");
-            };
-            assert!(
-                text.starts_with(
-                    "GitHub refused the Yulius GitHub App, which acts for the superadmin: GitHub re"
-                ),
-                "{text}"
-            );
+            let text = app_refusal(err, "main").to_string();
+            assert!(text.starts_with(SAID), "{text}");
+            assert!(!text.contains("GitHub: GitHub"), "{text}");
         }
     }
 
     #[test]
-    fn yulius_own_refusals_and_failures_that_may_pass_are_unchanged() {
+    fn other_refusals_and_failures_that_may_pass_are_unchanged() {
         for err in [
             AppError::Conflict("nothing was promoted: 'dev' moved since it was confirmed".into()),
             AppError::Upstream("GitHub: GitHub upstream error (HTTP 502)".into()),
             AppError::Conflict("the ref update is not a fast-forward".into()),
+            // Yulius's own refusal quoting GitHub's 422 (merge.rs, the pull request's title).
+            AppError::Conflict(
+                "GitHub refused the title `x` Yulius gives pull request #1 before merging it \
+                 (GitHub: GitHub rejected the request as invalid (HTTP 422): title)"
+                    .into(),
+            ),
+            // GitHub's ordinary 405s: the App is not what is refused.
+            AppError::Conflict("pull request is not mergeable (HTTP 405): it is a draft".into()),
+            AppError::Conflict(
+                "pull request is not mergeable (HTTP 405): it conflicts with 'main' (GitHub: x)"
+                    .into(),
+            ),
+            AppError::Invalid(
+                "GitHub: GitHub rejected the request as invalid (HTTP 422): sha".into(),
+            ),
             AppError::NotFound,
         ] {
             assert_eq!(app_refusal(err.clone(), "main"), err);

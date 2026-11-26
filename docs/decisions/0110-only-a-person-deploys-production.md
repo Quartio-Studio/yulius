@@ -24,7 +24,10 @@ authority, and only the tool's description asked it not to unless its task asked
   whatever they pass.
 - With `promote = true`, the production deploy first promotes the integration branch with the
   profile's method, under the person's GitHub identity; a promotion that cannot complete now (its
-  pull request's checks still run or failed) refuses the deploy and says so.
+  pull request's checks still run or failed) refuses the deploy and says so. The superadmin, who
+  has no GitHub identity, promotes through the GitHub App, and the run and the audit say so
+  ([SPEC-677](../../.ai/specs/SPEC-677-urgent-the-superadmin-can-deploy-product.md)); every other
+  rule here still applies.
 - Agents have no promotion tool any more (`delivery_promote` is gone), and `delivery_deploy`
   refuses production-stage environments. An agent that needs production asks a person with
   `needs_you`.
