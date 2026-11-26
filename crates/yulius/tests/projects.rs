@@ -1819,7 +1819,7 @@ async fn onboarding_adds_the_security_scan_when_the_instance_has_a_vidoc_key() -
     let w = World::new("org").await?;
     w.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         std::sync::Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));

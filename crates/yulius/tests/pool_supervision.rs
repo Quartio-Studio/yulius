@@ -2212,7 +2212,7 @@ fn an_agent_run_gets_the_instance_vidoc_key_as_a_placeholder() -> TestResult {
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
         app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
             Arc::new(AnyVidoc),
-            Ok(Some(yulius_app::model::Secret(KEY.into()))),
+            Ok(Some(yulius_app::model::Secret::new(KEY.into()))),
         ));
         app.load_vidoc_key().await;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
@@ -2258,7 +2258,7 @@ fn a_switched_off_project_runs_without_vidoc() -> TestResult {
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
         app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
             Arc::new(AnyVidoc),
-            Ok(Some(yulius_app::model::Secret(
+            Ok(Some(yulius_app::model::Secret::new(
                 "vidoc-instance-key-for-runs-0123456789".into(),
             ))),
         ));
@@ -2310,7 +2310,7 @@ fn a_run_follows_the_instance_vidoc_switch() -> TestResult {
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
         app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
             Arc::new(AnyVidoc),
-            Ok(Some(yulius_app::model::Secret(
+            Ok(Some(yulius_app::model::Secret::new(
                 "vidoc-instance-key-for-runs-0123456789".into(),
             ))),
         ));

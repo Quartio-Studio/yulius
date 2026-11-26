@@ -253,7 +253,7 @@ async fn only_the_superadmin_manages_the_vidoc_key() -> TestResult {
 /// removing it falls back to the file, and adopt moves the file's key into settings.
 #[tokio::test]
 async fn the_vidoc_key_file_is_honoured_as_config_and_can_move_into_settings() -> TestResult {
-    let i = instance(Ok(Some(Secret(CONFIG.into())))).await?;
+    let i = instance(Ok(Some(Secret::new(CONFIG.into())))).await?;
     let view = api(&i, Method::GET, "/api/admin/vidoc", None, &i.admin).await?;
     assert_eq!(view.body["configured"], true);
     assert_eq!(view.body["source"], "config");
@@ -492,7 +492,7 @@ async fn the_instance_key_reaches_vidoc_through_the_proxy_only() -> TestResult {
 /// browser filling, and the Secrets page does not list it.
 #[tokio::test]
 async fn the_instance_key_is_never_handed_out_in_clear() -> TestResult {
-    let i = instance(Ok(Some(Secret(CONFIG.into())))).await?;
+    let i = instance(Ok(Some(Secret::new(CONFIG.into())))).await?;
     proxied(&i).await?;
     let copied = mcp_tool(
         &i.h,

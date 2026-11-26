@@ -6755,7 +6755,7 @@ async fn a_granted_job_gets_the_instance_vidoc_key_without_a_project_secret() ->
     .await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(INSTANCE_KEY.into()))),
+        Ok(Some(yulius_app::model::Secret::new(INSTANCE_KEY.into()))),
     ));
     f.h.app.load_vidoc_key().await;
     f.h.app.enable_egress(Some(
@@ -6802,7 +6802,7 @@ async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> Test
     );
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -6837,7 +6837,7 @@ async fn no_project_scans_in_ci_while_vidoc_is_off_for_the_instance() -> TestRes
     .await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -6906,7 +6906,7 @@ async fn a_switched_off_project_scans_nothing_in_ci() -> TestResult {
     .await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -6994,7 +6994,7 @@ async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> Test
     let f = fixture_with(false, |_| String::new()).await?;
     f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -7856,7 +7856,7 @@ async fn an_outside_opening_passes_a_stalled_inventory_and_survives_its_stale_li
         |_| YULIUS_TOML.to_owned(),
         None,
         move |config| {
-            config.github_webhook_secret = Some(yulius_app::model::Secret(key.into()));
+            config.github_webhook_secret = Some(yulius_app::model::Secret::new(key.into()));
         },
     )
     .await?;
@@ -7909,7 +7909,7 @@ async fn opening_fixture() -> BoxResult<Fixture> {
         |_| YULIUS_TOML.to_owned(),
         None,
         |config| {
-            config.github_webhook_secret = Some(yulius_app::model::Secret(OPENING_KEY.into()));
+            config.github_webhook_secret = Some(yulius_app::model::Secret::new(OPENING_KEY.into()));
         },
     )
     .await?;

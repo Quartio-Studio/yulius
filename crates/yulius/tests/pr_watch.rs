@@ -473,7 +473,7 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
         let pr_head = git(&worktree, &["rev-parse", "HEAD"])?;
         let pull = github
             .create_pull(
-                &Secret("token-admin".into()),
+                &Secret::new("token-admin".into()),
                 "acme",
                 "pool",
                 &NewPull {

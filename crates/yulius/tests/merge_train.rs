@@ -938,7 +938,7 @@ async fn a_train_with_its_own_jobs_keeps_the_security_job() -> TestResult {
     let app = f.h.app.clone();
     app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(
+        Ok(Some(yulius_app::model::Secret::new(
             "vidoc-instance-key-0123456789".into(),
         ))),
     ));
@@ -4585,7 +4585,7 @@ async fn a_green_current_pull_request_merges_on_the_next_pass() -> TestResult {
 async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     let f = fixture().await?;
     let app = f.h.app.clone();
-    let person = yulius_app::model::Secret("person-token".into());
+    let person = yulius_app::model::Secret::new("person-token".into());
     let (worktree, _peer, _) = shared_pull_heads(&f).await?;
     f.arm(1, &worktree).await?;
     let head = git(&worktree, &["rev-parse", "HEAD"])?;
@@ -5586,7 +5586,7 @@ async fn a_merge_github_reports_first_releases_the_finished_tasks_successor() ->
     app.watch_prs(&yulius_app::pr_watch::WatchBounds::default())
         .await;
     // A person merges it on GitHub; the record still says open.
-    let person = yulius_app::model::Secret("person-token".into());
+    let person = yulius_app::model::Secret::new("person-token".into());
     app.deps
         .github
         .merge_pull(&person, "acme", "app", 1, "squash", &head)

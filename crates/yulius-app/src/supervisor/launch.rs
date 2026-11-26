@@ -1162,7 +1162,7 @@ impl App {
             ))
         })?;
         String::from_utf8(self.deps.crypto.open(sealed)?)
-            .map(Secret)
+            .map(Secret::new)
             .map_err(AppError::internal)
     }
 

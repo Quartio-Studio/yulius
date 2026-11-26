@@ -330,7 +330,7 @@ mod tests {
         .await?;
         let source = GitHubReleases::with_api(url, false)?;
         let state = source
-            .compare(Some(&Secret("ghs_synthetic".into())), Some(A))
+            .compare(Some(&Secret::new("ghs_synthetic".into())), Some(A))
             .await
             .map_err(|e| e.to_string())?;
         assert_eq!(state.head, C);

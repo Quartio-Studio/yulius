@@ -20,8 +20,8 @@ before and their existing tests pass unchanged.
 - Paths of this task: `yulius-app/src/vault/**`, `accounts.rs`, `auth.rs`, `scopes.rs`,
   `admin.rs`, `access.rs`, `yulius-egress/**`, `yulius-domain/src/vault/**`,
   `yulius-domain/src/redact.rs`, `yulius-harness/src/scrub_client.rs` and `secret.rs`. Parallel
-  tasks hold `supervisor.rs` (#650), `mcp.rs` and `ports/**` (#656), `yulius-git/**` and
-  `yulius-github/**` (#651), `ci/**` (#652).
+  tasks held `supervisor.rs` (#650), `mcp.rs` and `ports/**` (#656), `yulius-git/**` and
+  `yulius-github/**` (#651), `ci/**` (#652); #650 and #656 have since merged.
 - Out of scope by the request: F1, F4, F9 and Q5.
 
 ## Requirements
@@ -38,16 +38,16 @@ before and their existing tests pass unchanged.
 - [x] F2: one argument parser and one scrub-file planner in the vault tools
 - [x] F2: independent review of the vault-preamble PR
 - [x] F5: Q3 authorisation gaps checked (agent_git_credential, handoffs owner check)
-- [ ] F5: AuthContext is_admin/is_browser helpers and gating sites through require_*
-- [ ] F5: independent review of the auth-helper PR
-- [ ] F6: one zeroizing Secret type in yulius-domain
-- [ ] F6: installation flag on the GitHub bearer, constructor shim removed, call sites moved
-- [ ] F6: independent review of the Secret PR
-- [ ] F7: one JSON string walker for redaction
-- [ ] F7: one redact_for_sandbox and shared credential-shape detectors
-- [ ] F7: independent review of the redaction PR
-- [ ] F8: pure egress decision in yulius-domain with unit tests
-- [ ] F8: egress_apply calls the pure decision
+- [x] F5: one instance-admin rule (UserRecord::is_admin) and one token-scope rule (token_allows)
+- [x] F5: independent review of the auth-helper PR
+- [x] F6: one zeroizing Secret type shared by every crate
+- [x] F6: constructor shim removed, call sites moved to Secret::new
+- [x] F6: independent review of the Secret PR
+- [x] F7: one JSON string walker for redaction
+- [x] F7: one sandbox redaction for texts and records, the withheld text once
+- [x] F7: independent review of the redaction PR
+- [x] F8: pure egress decision with unit tests
+- [x] F8: egress_apply calls the pure decision
 - [ ] F8: independent review of the egress PR
 - [ ] F3: one no-follow bounded reader for login files
 - [ ] F3: provide_cli and the shared credential constants
@@ -75,5 +75,32 @@ before and their existing tests pass unchanged.
   "a token's scope narrows, a session's does not". The disabled-user rechecks after the extractor
   stay: `App` methods are also called with contexts built outside the HTTP extractor, and no test
   proves each of them refuses a disabled person first.
+- F6: the one `Secret` lives in `yulius-contracts`, not `yulius-domain` as the audit proposed:
+  the domain crate may use only `thiserror` and `toml`, and any other dependency (`zeroize`)
+  needs a boundary decision (`scripts/check_repository.py`), which a chore does not take. Every
+  crate that held a copy already depends on `yulius-contracts`. `new` takes `impl Into<String>`
+  as the GitHub and import copies did; a credential file's bytes use `Secret::bytes`.
+- F6: the GitHub installation flag stays on `model::Secret`, which now wraps the shared type.
+  Moving it to a GitHub port bearer type changes the token parameter of 23 port methods: 77
+  compile errors in 28 app files, most held by #651 (delivery) and #652 (ci), plus the wiring
+  adapter and two test fakes. That is beyond this chore's size and lanes.
+- F6: the GitHub copy printed `Secret([redacted])` under `Debug` and had a `Display`; the shared
+  type prints `Secret(<redacted>)` like the other three, and nothing formatted the GitHub one
+  with `Display`. Neither ever printed the value.
+- F7: `redact_json_strings` lives in `yulius-contracts` beside `Secret`, for the same reason
+  (the domain crate has no `serde_json`); transcripts, imports, the scrub client and MCP share it.
+- F7: the URL-userinfo and JWT scrubbers of `yulius-git`, `yulius-import` and `yulius-github`
+  keep their own code: they redact differently from the domain detectors. The domain JWT
+  detector wants segments of 12, 12 and 10 characters and a second `eyJ` segment (the GitHub
+  scrubber's own test token, third segment `c2ln`, would pass unredacted). For URLs, `yulius-git`
+  replaces the whole userinfo, the domain only the password and not a placeholder, and
+  `yulius-import` drops the userinfo. Sharing them changes what is redacted.
+- F7 changes `mcp.rs`, `transcripts.rs` and `yulius-import/src/redact.rs` because the finding
+  names their walkers; no live task held them (#656 had merged).
+- F8: the pure decision (`decide` in `vault/runtime.rs`) stays in the app, not
+  `yulius-domain/src/vault` as the audit proposed: it reads `VaultSecretRecord`, `AgentPayload`,
+  `EgressRequest`, `RuleCheck` and the substitution helpers, all app types, and moving them is
+  no cleanup. The liveness check, Vidoc, the loads, the audits and the control-character log
+  stay in `egress_apply`; the decision has unit tests without an `App`.
 - Helpers stay inside the vault module where the copies are all there (`parse_args`, `named`),
   so the parallel MCP-argument cleanup (#656) is not raced.

@@ -14,7 +14,7 @@ use yulius_app::ports::git::GitPort;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn token() -> Secret {
-    Secret("unused-for-local-remotes".into())
+    Secret::new("unused-for-local-remotes".into())
 }
 
 /// A data folder as a server's: sandbox `s1` (a playground: its origin is the folder
@@ -469,7 +469,7 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
     ] {
         git(&w.repo, &["config", key, value])?;
     }
-    let secret = Secret("the-servers-token-0451".into());
+    let secret = Secret::new("the-servers-token-0451".into());
     let fetched = w.adapter.merge_integration(&w.wt, "main", &secret).await;
     let pushed = w.adapter.push(&w.wt, "feat/1", "feat/1", &secret).await;
     let listed = w.adapter.remote_branch_head(&w.wt, "feat/1", &secret).await;

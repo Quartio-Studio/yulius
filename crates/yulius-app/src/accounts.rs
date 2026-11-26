@@ -532,7 +532,7 @@ struct PastedToken(Secret);
 
 impl PastedToken {
     fn wipe(&mut self) {
-        self.0.0.zeroize();
+        self.0.zeroize();
         #[cfg(test)]
         PASTED_WIPES.with(|wipes| wipes.set(wipes.get() + 1));
     }
@@ -562,7 +562,7 @@ fn pasted_token(token: &str) -> AppResult<PastedToken> {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         });
     if shaped {
-        Ok(PastedToken(Secret(token.to_owned())))
+        Ok(PastedToken(Secret::new(token.to_owned())))
     } else {
         Err(AppError::Invalid(PASTED_TOKEN_SHAPE.into()))
     }
@@ -931,7 +931,7 @@ impl App {
             .open(sealed)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(Secret)
+            .map(Secret::new)
             .ok_or_else(|| UsageFailure::new("the stored credential cannot be read"))
     }
 
@@ -2429,7 +2429,7 @@ impl App {
             Err("the sign-in was replaced by an imported auth.json".to_owned())
         } else {
             self.take_credential(session)
-                .map(Secret)
+                .map(Secret::new)
                 .ok_or_else(|| "the sign-in ended without producing a token".to_owned())
         };
         // A cancel that comes after the token was printed still keeps it: the sign-in had
@@ -2456,7 +2456,7 @@ impl App {
             Some(Ok(mut secret)) => {
                 let stored = self.store_credential(&session.account_id, &secret).await;
                 // The plaintext copy goes once the credential is sealed (or could not be).
-                secret.0.zeroize();
+                secret.zeroize();
                 match stored {
                     Ok(()) => LoginPhase::Succeeded,
                     // The account was removed meanwhile: nothing to sign in.

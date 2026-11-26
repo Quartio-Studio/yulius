@@ -1121,7 +1121,7 @@ fn stalled_armed_green_pr_delivers_live_pty_check_in_then_escalates() -> TestRes
         let head = git(&worktree, &["rev-parse", "HEAD"])?;
         let pull = github
             .create_pull(
-                &Secret("token-admin".into()),
+                &Secret::new("token-admin".into()),
                 "acme",
                 "pool",
                 &NewPull {

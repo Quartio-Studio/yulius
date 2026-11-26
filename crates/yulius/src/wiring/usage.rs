@@ -714,7 +714,7 @@ mod tests {
             probe
                 .model_answer(
                     Provider::Anthropic,
-                    &Secret("synthetic".into()),
+                    &Secret::new("synthetic".into()),
                     PROBE_MODEL,
                 )
                 .await
@@ -797,8 +797,9 @@ mod tests {
             }
         });
         let probe = ProviderUsage::at(base)?;
-        let auth =
-            Secret(r#"{"tokens":{"access_token":"synthetic-access","account_id":"acc-1"}}"#.into());
+        let auth = Secret::new(
+            r#"{"tokens":{"access_token":"synthetic-access","account_id":"acc-1"}}"#.into(),
+        );
         let failure = probe
             .fetch(Provider::OpenAi, &auth)
             .await
@@ -846,13 +847,13 @@ mod tests {
             r#"{{"tokens":{{"access_token":"synthetic-access","account_id":"acc-1","id_token":"h.{claims}.s"}}}}"#
         );
         let usage = probe
-            .fetch(Provider::OpenAi, &Secret(auth.clone()))
+            .fetch(Provider::OpenAi, &Secret::new(auth.clone()))
             .await
             .map_err(|f| f.message)?;
         assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(42.0));
         assert_eq!(
             probe
-                .account_email(Provider::OpenAi, &Secret(auth))
+                .account_email(Provider::OpenAi, &Secret::new(auth))
                 .await
                 .map_err(|f| f.message)?,
             Some("dev@example.com".to_owned())
@@ -860,13 +861,13 @@ mod tests {
         let refused = probe
             .fetch(
                 Provider::OpenAi,
-                &Secret(r#"{"tokens":{"access_token":"other"}}"#.into()),
+                &Secret::new(r#"{"tokens":{"access_token":"other"}}"#.into()),
             )
             .await
             .err()
             .ok_or("refused")?;
         assert_eq!(refused.kind, UsageFailureKind::Rejected);
-        let key = Secret(r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x"}"#.into());
+        let key = Secret::new(r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x"}"#.into());
         let none = probe
             .fetch(Provider::OpenAi, &key)
             .await
@@ -881,7 +882,7 @@ mod tests {
             None
         );
         let broken = probe
-            .fetch(Provider::OpenAi, &Secret("not json".into()))
+            .fetch(Provider::OpenAi, &Secret::new("not json".into()))
             .await
             .err()
             .ok_or("broken")?;
@@ -1208,7 +1209,7 @@ mod tests {
         let mut probe = ProviderUsage::new()?;
         probe.base = base;
         let failure = probe
-            .fetch(Provider::Anthropic, &Secret("token".into()))
+            .fetch(Provider::Anthropic, &Secret::new("token".into()))
             .await
             .err()
             .ok_or("a failure")?;
@@ -1242,7 +1243,7 @@ mod tests {
         let mut probe = ProviderUsage::new()?;
         probe.base = base;
         let usage = probe
-            .fetch(Provider::Anthropic, &Secret("token".into()))
+            .fetch(Provider::Anthropic, &Secret::new("token".into()))
             .await
             .map_err(|f| f.message)?;
         assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(25.0));
@@ -1300,7 +1301,7 @@ mod tests {
         let mut probe = ProviderUsage::new()?;
         probe.base = serve_profile(reply).await?;
         Ok(probe
-            .account_email(Provider::Anthropic, &Secret(" token\n".into()))
+            .account_email(Provider::Anthropic, &Secret::new(" token\n".into()))
             .await)
     }
 

@@ -949,7 +949,7 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         argv,
         cwd: request.worktree.clone(),
         env,
-        secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())],
+        secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().to_owned())],
         files: vec![
             PlannedFile {
                 path: settings_path,
@@ -1193,7 +1193,7 @@ fn plan_codex(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         files: vec![
             PlannedFile {
                 path: codex_home.join("auth.json"),
-                contents: auth.expose().clone(),
+                contents: auth.expose().to_owned(),
                 mode: PRIVATE_FILE_MODE,
             },
             PlannedFile {
@@ -1555,7 +1555,7 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
         argv.extend(["--resume".into(), id.clone()]);
     }
     validate_mcp_servers(&request.mcp_servers)?;
-    let mut secret_env = vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())];
+    let mut secret_env = vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().to_owned())];
     let mut servers = Map::new();
     let mut allowed = None;
     if let Some(yulius) = &request.yulius {
@@ -1589,7 +1589,7 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
                 .collect::<Vec<_>>()
                 .join(","),
         );
-        secret_env.push((COCKPIT_TOKEN_ENV.into(), bearer.clone()));
+        secret_env.push((COCKPIT_TOKEN_ENV.into(), bearer.to_owned()));
     }
     // The sandbox's servers, as a task run gets them (SPEC-147 SAM-001).
     for server in &request.mcp_servers {

@@ -895,7 +895,7 @@ async fn a_playground_with_guests_gets_no_instance_vidoc_key() -> TestResult {
     let w = world().await?;
     w.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         std::sync::Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(INSTANCE_KEY.into()))),
+        Ok(Some(yulius_app::model::Secret::new(INSTANCE_KEY.into()))),
     ));
     w.h.app.load_vidoc_key().await;
     seed_task(&w.h, "t1", "p1", "u-alice", TaskStatus::Running, None).await?;
