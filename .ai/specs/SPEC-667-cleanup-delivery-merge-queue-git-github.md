@@ -1,6 +1,6 @@
 ---
 yulius-task: 1fbe203d-b576-4287-aa8e-b4c183b45e46
-status: in-progress
+status: done
 ---
 
 # SPEC-667. Cleanup of delivery, the merge queue and the Git/GitHub adapters (audit L2)
@@ -54,9 +54,8 @@ PR 0.
 - [x] F6/F9/F10: independent review answered
 - [x] Adapters: branch check, test-only fns, hand-rolled code, Git builder repeats
 - [x] Adapters: port types (F11) within paths
-- [ ] Adapters: independent review answered
-- [ ] Queue state: armed merges, trains, notices into the store
-- [ ] Queue state: independent review answered
+- [x] Adapters: independent review answered
+- [x] Queue state: F1 assessed and reported
 
 ## Acceptance criteria
 
@@ -192,7 +191,7 @@ PR 5, the Git and GitHub adapters (audit L2 F13, F14, F15; F11 and F12 not done)
   (same argv). Kept: the two `commit-tree` checks word their errors differently, the three
   `diff --numstat -z` parsers have different error policies, and the GitHub crate's `Clock` is
   what its tests drive.
-- Product lines +77 / -279; adapter test lines +39 / -34.
+- Product lines under `crates/*/src` +42 / -248; adapter test lines +39 / -34.
 - `scripts/cargo nextest run -p yulius-git -p yulius-github`: 136 passed (one fewer: `time.rs`'s
   own test); `-p yulius --test main`: 2830 passed; clippy `--workspace --all-targets
   --all-features -D warnings` and `RUSTDOCFLAGS=-D warnings cargo doc -p yulius-git -p
@@ -202,3 +201,13 @@ PR 5, the Git and GitHub adapters (audit L2 F13, F14, F15; F11 and F12 not done)
   (a branch named `HEAD`), the owner's decision; F11 (port types defined once) changes
   `crates/yulius-app/src/ports/**` (task #656's) and `crates/yulius/src/wiring/**` (task #655's);
   `base64_encode` (F14) is in `wiring/git.rs` (task #655's).
+- Independent review (Fable 5.2) approved `4db1bf27d` and confirmed the Step 4 reasons (F6's
+  substring classification, F9's fork case in `dlv_observe`, F10's two host calls). Its notes are
+  answered after it: the product figure above, the `merge_tree_from` doc's Git versions (2.38;
+  2.40 with a base). Accepted as is: the GitHub fake now writes `expires_at` with milliseconds,
+  which only `parse_rfc3339` reads.
+
+Step 6, the queue's state in the store (audit L2 F1): not done, outside the task's paths. Moving
+`armed-merges.json`, `merge-trains.json` and `pr-notices.json` into SQLite takes a migration and
+store methods in `crates/yulius-store/**` and the store port in `crates/yulius-app/src/ports/**`,
+both claimed by task #656; the restart and race tests would stay unchanged.

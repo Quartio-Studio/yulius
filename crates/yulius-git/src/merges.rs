@@ -195,8 +195,8 @@ impl Git {
     /// point).
     ///
     /// # Errors
-    /// Invalid or unknown revisions, or Git failures (a Git before 2.40, without `merge-tree
-    /// --write-tree --merge-base`, fails here).
+    /// Invalid or unknown revisions, or Git failures (a Git before 2.38, without `merge-tree
+    /// --write-tree`, fails here; with a `base`, one before 2.40).
     pub fn merge_tree_from(
         &self,
         worktree: &Path,
