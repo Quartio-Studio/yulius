@@ -496,7 +496,9 @@ async fn a_drill_of_another_tree_refuses_production_and_deploys_nothing() -> Tes
     let entries = f.h.store.automation_audit("app/prod", 50).await?;
     assert!(
         entries.iter().any(|e| e.action == "cd.refused"
-            && e.detail.as_deref().is_some_and(|d| d.contains("not proven"))),
+            && e.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("not proven"))),
         "{entries:?}"
     );
 
