@@ -345,7 +345,7 @@ pub struct MergeQueueAnalytics {
     /// See `formed`.
     pub dissolved: u32,
     /// Dissolved candidates by why (`member_left`, `member_failed`, `bisected`, `base_moved`,
-    /// `errored`, `too_long`), over the range.
+    /// `errored`, `too_long`, `gate_red`), over the range.
     pub dissolved_by: std::collections::BTreeMap<String, u32>,
     /// The last ten candidates dissolved in the range, newest first, with why and the whole
     /// reason (SPEC-497 MQW-004).

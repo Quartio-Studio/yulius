@@ -38,17 +38,21 @@ pub enum Dissolved {
     Errored,
     /// It took too long (its run, a member's own run, GitHub).
     TooLong,
+    /// The after-merge gate turned red while it held a pull request that is not the repair
+    /// (SPEC-676 RGS-006).
+    GateRed,
 }
 
 impl Dissolved {
     /// Every kind, in the order the numbers list them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::MemberLeft,
         Self::MemberFailed,
         Self::Bisected,
         Self::BaseMoved,
         Self::Errored,
         Self::TooLong,
+        Self::GateRed,
     ];
 
     /// The kind's name in an audit entry and in the read.
@@ -61,6 +65,7 @@ impl Dissolved {
             Self::BaseMoved => "base_moved",
             Self::Errored => "errored",
             Self::TooLong => "too_long",
+            Self::GateRed => "gate_red",
         }
     }
 

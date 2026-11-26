@@ -754,6 +754,12 @@ impl App {
         state: &mut SandboxTrains,
         train: Train,
     ) -> Option<Train> {
+        // A red after-merge gate holds every merge but its repair (SPEC-676 RGS-006): a
+        // candidate holding another is dissolved, and its members stay armed.
+        if let Some(reason) = self.held_by_red_gate(sandbox, &train).await {
+            self.dissolve(sandbox, &train, &reason).await;
+            return None;
+        }
         // A member whose own run did not pass leaves, whatever the candidate's run says: the
         // others form a candidate again without it (SPEC-493 MQC-002).
         if let Some(reason) = self.member_left(sandbox, &train).await {
@@ -838,6 +844,30 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Why `train` cannot merge while the after-merge gate is red (SPEC-676 RGS-006): a member
+    /// that is not the repair.
+    async fn held_by_red_gate(&self, sandbox: &SandboxRecord, train: &Train) -> Option<String> {
+        let stop = self.merge_stop(sandbox).await?;
+        for member in &train.members {
+            let Ok(id) = TaskId::parse(&member.task) else {
+                continue;
+            };
+            let Ok(Some(task)) = self.deps.store.task(&id).await else {
+                continue;
+            };
+            let marked = matches!(self.armed_now(&id), ArmedNow::Armed(armed) if armed.repair);
+            if !stop.lets_through(task.number, marked) {
+                return Some(format!(
+                    "the after-merge gate of the integration branch is red ({}); #{} is not its \
+                     repair, and only the repair merges until the gate is green",
+                    stop.failures_text(),
+                    member.pr
+                ));
+            }
+        }
+        None
     }
 
     /// Why a member leaves `train` (SPEC-493 MQC-002, SPEC-497 MQW-001): its own run at the head
@@ -1798,11 +1828,19 @@ impl App {
         let tasks = self.deps.store.tasks(&sandbox.id, false).await.ok()?;
         let mut candidates = Vec::new();
         let mut still_armed = Vec::new();
+        let stop = self.merge_stop(sandbox).await;
         for task in tasks {
             let ArmedNow::Armed(armed) = self.armed_now(&task.id) else {
                 continue;
             };
             still_armed.push((task.id.to_string(), armed.armed_at));
+            // A red after-merge gate: a candidate forms only from repairs (SPEC-676 RGS-006).
+            if stop
+                .as_ref()
+                .is_some_and(|stop| !stop.lets_through(task.number, armed.repair))
+            {
+                continue;
+            }
             let Some(pr) = self
                 .deps
                 .store
@@ -2116,7 +2154,9 @@ impl App {
 fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
     use yulius_domain::merge_queue::Dissolved;
     let has = |words: &[&str]| words.iter().any(|w| reason.contains(w));
-    if has(&["too long"]) {
+    if reason.starts_with("the after-merge gate of the integration branch is red") {
+        Dissolved::GateRed
+    } else if has(&["too long"]) {
         Dissolved::TooLong
     } else if has(&["ended failed: it leaves the candidate"])
         || (reason.starts_with("the own run of #") && reason.ends_with("ended failed"))
@@ -2234,6 +2274,12 @@ mod tests {
                 Dissolved::MemberFailed,
             ),
             ("#3 was armed again", Dissolved::MemberLeft),
+            (
+                "the after-merge gate of the integration branch is red (`a` (first at abc, \
+                 task #2)); #3 is not its repair, and only the repair merges until the gate is \
+                 green",
+                Dissolved::GateRed,
+            ),
             ("#3 is no longer armed", Dissolved::MemberLeft),
             ("its CI run failed", Dissolved::Bisected),
             (
