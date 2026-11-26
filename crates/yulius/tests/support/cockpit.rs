@@ -1,4 +1,5 @@
-//! The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and records.
+//! The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and
+//! records.
 
 use crate::support;
 use axum::http::{Method, StatusCode};
@@ -89,7 +90,7 @@ pub(crate) async fn fixture_with(
     fixture_ending(account, data_dir, None).await
 }
 
-/// [`fixture`] with the sandboxes' browsers from `browser` (SPEC-437).
+/// [`fixture`] with the sandboxes' browsers from `browser`.
 pub(crate) async fn fixture_with_browser(
     browser: Arc<dyn yulius_app::ports::browser::BrowserPort>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
@@ -116,13 +117,13 @@ async fn fixture_full(
     let dir = tempfile::Builder::new().prefix("yck").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let gate = Arc::new(GatedHost::new(exe.clone()));
-    // The real `yulius` runs the Superagent's redaction wrapper and hook (SPEC-147).
+    // The real `yulius` runs the Superagent's redaction wrapper and hook.
     let harness = Arc::new(yulius::wiring::harness::HarnessAdapter::new(
         exe.clone(),
         "http://127.0.0.1:1",
     ));
     let h = harness_with(HarnessOptions {
-        // Real Git: the Superagent's `.env` copies ask whether Git ignores the file (SPEC-186).
+        // Real Git: the Superagent's `.env` copies ask whether Git ignores the file.
         git: Some(Arc::new(crate::support::confined_git())),
         session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
         harness: Some(harness),

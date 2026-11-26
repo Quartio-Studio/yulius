@@ -1,4 +1,4 @@
-//! SPEC-444: a live task with an open pull request and no `yulius wait` running is told, by one
+//! A live task with an open pull request and no `yulius wait` running is told, by one
 //! watch pass each, of a red run at its head (jobs, failing tests, where to read the log), of a
 //! conflict with the integration branch and of its merge, each once and with its next step. Real
 //! repositories, the production Git adapter and a fake agent that echoes what it is typed.
@@ -22,7 +22,6 @@ use crate::support::live::pool::{new_task, runtime, screen, seed, stop, temp};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// PRN-001, PRN-002, PRN-004, PRN-005, PRN-007.
 #[test]
 fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
     use yulius_ptyhost::test_support::locate_fake_agent;
@@ -203,7 +202,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         echoed(&app, &id, "Never rebase or force-push").await?;
         assert!(watch(&app, &bounds, &id).await?.is_none(), "told once");
 
-        // Nothing moves while CI is idle: stalled (PRN-009), told once and shown with the task.
+        // Nothing moves while CI is idle: stalled, told once and shown with the task.
         let stalling = WatchBounds {
             stall_after_ms: 0,
             stall_quiet_ms: 0,
@@ -301,7 +300,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-491 DON-003: a pull request that conflicts with the integration branch is not tested,
+/// A pull request that conflicts with the integration branch is not tested,
 /// so its task is not Done, and its agent hears of the conflict also where no run exists at its
 /// head (a project without Yulius CI): the branch's pushed head, the pull request's, is asked.
 /// Told once per head.
@@ -383,7 +382,7 @@ fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
     Ok(())
 }
 
-/// SPEC-553 REP-002, REP-004: with a real live agent PTY and FakeGitHub:
+/// With a real live agent PTY and FakeGitHub:
 /// 1. An actionable failed publication (`DirtyWorktree`) is delivered once by `watch_prs` and not
 ///    repeated on subsequent passes.
 /// 2. Resolving a newer `DirtyWorktree` failure by committing cleanly and pushing `repair2` never
@@ -474,7 +473,7 @@ fn failed_publication_and_superseded_repair_notices_in_pr_watch() -> TestResult 
         let pr_head = git(&worktree, &["rev-parse", "HEAD"])?;
         let pull = github
             .create_pull(
-                &Secret("token-admin".into()),
+                &Secret::new("token-admin".into()),
                 "acme",
                 "pool",
                 &NewPull {

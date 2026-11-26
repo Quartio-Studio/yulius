@@ -1,7 +1,7 @@
 //! The Cockpit end to end with the real detached ptyhost and a fake `claude` that prints what it
 //! was started with: one plain session per user and sandbox on a pool subscription, private,
 //! never listed, renamed or closed as a terminal, resumed with the newest conversation when it
-//! starts again, adopted after a server restart, reaped when unwatched for a day (SPEC-021).
+//! starts again, adopted after a server restart, reaped when unwatched for a day.
 
 use crate::support;
 use crate::support::cockpit::{
@@ -54,7 +54,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     let f = fixture().await?;
     let served = serve(f.h.router.clone()).await?;
 
-    // Two opens at once (a double click, two tabs) start one Cockpit (CKP-001).
+    // Two opens at once (a double click, two tabs) start one Cockpit.
     let (first, second) = tokio::join!(open_cockpit(&f, &f.alice), open_cockpit(&f, &f.alice));
     let (first, second) = (first?, second?);
     assert_eq!(first.status, StatusCode::OK, "{:?}", first.body);
@@ -74,11 +74,11 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     );
 
     // Plain Claude Code on the pool's subscription, in the sandbox repository, its config in
-    // the user's own home (CKP-002).
+    // the user's own home.
     let mut socket = attach(served.addr, &id, &f.alice).await?;
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
-    // The default model and effort (SPEC-023 DEF-004).
+    // The default model and effort.
     assert_eq!(
         printed(&screen, "cockpit-args")?,
         "[--model claude-opus-5-5 --effort high]"
@@ -90,7 +90,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     assert!(config.ends_with("home/.claude"), "{config:?}");
     assert!(config.starts_with(&f.data), "{config:?}");
     // The Yulius MCP server, its bearer only in the environment, accepted by `/mcp` (SPEC-037
-    // MGT-004, AC-MGT-3).
+    // MGT-004).
     let mcp_config: Value =
         serde_json::from_slice(&std::fs::read(config.join("launch-mcp-config"))?)?;
     let yulius = &mcp_config["mcpServers"]["yulius"];
@@ -128,8 +128,8 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     assert!(!record.contains(&bearer));
     assert!(record.contains("\"kind\":\"cockpit\""), "{record}");
 
-    // Not a terminal: never listed, renamed or closed, and not counted against the terminals
-    // (CKP-004). There is no way to delete it.
+    // Not a terminal: never listed, renamed or closed, and not counted against the terminals.
+    // There is no way to delete it.
     let list = call(
         &f.h.router,
         Method::GET,
@@ -179,7 +179,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     }
     assert_eq!(cockpit_id(&f, &f.alice).await?, id, "still there");
 
-    // Private (CKP-005): carol gets her own, cannot attach to alice's; bob only reads.
+    // Private: carol gets her own, cannot attach to alice's; bob only reads.
     let carols = cockpit_id(&f, &f.carol).await?;
     assert_ne!(carols, id);
     let refused = ws_connect(
@@ -245,7 +245,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     let config = PathBuf::from(printed(&screen, "config")?);
     let cwd = printed(&screen, "cwd")?;
 
-    // Two conversations so far, the newest one after a `/clear` (CKP-003).
+    // Two conversations so far, the newest one after a `/clear`.
     let project = yulius_harness::paths::claude_project_dir(&config, Path::new(&cwd));
     conversation(&project, "before-clear", 1_000)?;
     conversation(&project, "after-clear", 2_000)?;
@@ -299,7 +299,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     Ok(())
 }
 
-/// SPEC-206 RMV-003 (#624): removing a sandbox ends its Superagents and terminals. They kept
+/// Removing a sandbox ends its Superagents and terminals. They kept
 /// running, and a person watching one saw the removed sandbox's Superagent go on working.
 #[tokio::test]
 async fn removing_the_sandbox_ends_its_superagent_and_terminals() -> TestResult {
@@ -349,7 +349,7 @@ async fn removing_the_sandbox_ends_its_superagent_and_terminals() -> TestResult 
     Ok(())
 }
 
-/// SPEC-206 RMV-003 (review of #193): a Superagent whose start was under way when its sandbox
+/// A Superagent whose start was under way when its sandbox
 /// was removed ends once it registers; it outlived the removal (the removal ended only the
 /// shells registered by then).
 #[tokio::test]
@@ -448,7 +448,7 @@ async fn without_a_subscription_the_cockpit_says_so_and_nothing_runs() -> TestRe
     let f = fixture_with(false, None).await?;
     let resp = open_cockpit(&f, &f.alice).await?;
     assert_eq!(resp.status, StatusCode::CONFLICT, "{:?}", resp.body);
-    // The account gate's refusal, with where to connect one (SPEC-246 CLA-002).
+    // The account gate's refusal, with where to connect one.
     assert_eq!(resp.body["error"]["code"], "claude_account_required");
     assert!(
         resp.body.to_string().contains("no Claude account"),
@@ -506,7 +506,7 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
     Ok(())
 }
 
-/// SPEC-095 PMC-001/003/004: a repository with a `.mcp.json` (as the onboarded project with
+/// A repository with a `.mcp.json` (as the onboarded project with
 /// supabase, apify and pipedream-gmail): its servers join the sandbox's MCP servers, and the
 /// Cockpit starts with Claude Code rejecting every one of them, so it never asks the person. An
 /// invalid `.mcp.json` still starts the Cockpit, as before.
@@ -585,7 +585,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     Ok(())
 }
 
-/// SPEC-332 MSC-004: a person's Superagent gets their own personal MCP server and the team's;
+/// A person's Superagent gets their own personal MCP server and the team's;
 /// another person's Superagent gets only the team's.
 #[tokio::test]
 async fn a_superagent_gets_its_persons_personal_mcp_servers_only() -> TestResult {
@@ -638,7 +638,7 @@ async fn a_superagent_gets_its_persons_personal_mcp_servers_only() -> TestResult
     Ok(())
 }
 
-/// SPEC-218 MOR-001..003 (#654): agents write `.mcp.json`, so a server imported from it never
+/// Agents write `.mcp.json`, so a server imported from it never
 /// has its command run on the host by the MCP Test, even when an instance administrator presses it
 /// on a contained instance. It stays refused through an enable toggle and through a command change
 /// that keeps the file's (hidden) environment; once a person changed its command and replaced its
@@ -799,7 +799,7 @@ pub(crate) fn run_dirs(f: &Fixture) -> usize {
         .unwrap_or(0)
 }
 
-/// SPEC-077 DRS-001 (#250): the client goes away while its Cockpit's process runs but before it
+/// The client goes away while its Cockpit's process runs but before it
 /// is registered. The start still ends as the one Cockpit: the next open returns it and no second
 /// process or orphan run directory is left.
 #[tokio::test]
@@ -838,9 +838,9 @@ async fn a_cockpit_start_whose_request_is_dropped_still_ends_as_the_one_cockpit(
     Ok(())
 }
 
-/// SPEC-077 DRS-003: a signal ending a resumed Cockpit at once (the host or the machine ended it)
+/// A signal ending a resumed Cockpit at once (the host or the machine ended it)
 /// says nothing about the conversation, which is resumed again next time; only an error exit of
-/// Claude Code itself marks it unresumable (SPEC-021 review round 2).
+/// Claude Code itself marks it unresumable.
 #[tokio::test]
 async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() -> TestResult {
     let f = fixture().await?;
@@ -884,7 +884,7 @@ async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() ->
     Ok(())
 }
 
-/// SPEC-077 DRS-004, DRS-005: Cockpit starts are serialised per user and sandbox, not
+/// Cockpit starts are serialised per user and sandbox, not
 /// instance-wide. While alice's start in `s1` is held, carol's open there and alice's in `s2`
 /// return, and her second open in `s1` waits for her start and gets its Cockpit; the start-lock
 /// map keeps no entry once the starts are over.
@@ -967,7 +967,7 @@ async fn a_blocked_cockpit_start_delays_no_other_user_or_sandbox() -> TestResult
 async fn a_cockpit_that_cannot_start_leaves_nothing_and_starts_once_it_can() -> TestResult {
     let f = fixture().await?;
     // Claude Code's config in the user's home is unreadable: the start fails after the shell was
-    // prepared, and nothing of it is left (CKP-007).
+    // prepared, and nothing of it is left.
     let config = f.data.join("users/u-alice/home/.claude");
     std::fs::create_dir_all(&config)?;
     std::fs::write(config.join(".claude.json"), "[]")?;
@@ -997,7 +997,7 @@ async fn a_cockpit_that_cannot_start_leaves_nothing_and_starts_once_it_can() -> 
     Ok(())
 }
 
-/// SPEC-023 DEF-004, SPEC-493 MDL-001: the Cockpit runs Opus 5.5, which the weekly Opus cap
+/// The Cockpit runs Opus 5.5, which the weekly Opus cap
 /// binds, so a subscription whose Opus cap is spent is not taken though its week has the most
 /// room; one that is only out of Fable's credits is.
 #[tokio::test]
@@ -1051,7 +1051,7 @@ async fn a_spent_opus_cap_keeps_the_cockpit_off_a_subscription() -> TestResult {
 #[tokio::test]
 async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
     let f = fixture_with(false, None).await?;
-    // Signed out: no usable account, so it asks for one to be signed in (SPEC-246 CLA-002).
+    // Signed out: no usable account, so it asks for one to be signed in.
     f.h.store
         .insert_account(&AccountRecord {
             id: AccountId::parse("acc-1")?,
@@ -1307,13 +1307,13 @@ async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult 
     assert_eq!(launch.config_dir_host, home_host.join(".claude"));
     assert_eq!(launch.cwd, repo);
     assert_eq!(launch.resume.as_deref(), Some("earlier"));
-    // A contained server's Superagent bypasses approvals, as its tasks do (SPEC-208 BYP-001).
+    // A contained server's Superagent bypasses approvals, as its tasks do.
     assert!(launch.contained);
     assert!(h.app.sandbox_shells(&sid()).is_empty());
     Ok(())
 }
 
-/// SPEC-208 BYP-001, BYP-002: a contained Superagent starts in bypass-permissions mode as root of
+/// A contained Superagent starts in bypass-permissions mode as root of
 /// its sandbox, its person's Claude config records the bypass accepted; uncontained, neither.
 #[test]
 fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResult {
@@ -1332,7 +1332,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: yulius_app::model::Secret(TOKEN.into()),
+        credential: yulius_app::model::Secret::new(TOKEN.into()),
         yulius: None,
         project_mcp_servers: Vec::new(),
         mcp: Vec::new(),
@@ -1367,7 +1367,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
     Ok(())
 }
 
-/// AC-MGT-2, MGT-005..007: a Cockpit's own token reaches the management tools, which act for
+/// A Cockpit's own token reaches the management tools, which act for
 /// its owner; nothing else is served, and the token ends with the Cockpit and its owner's
 /// access.
 #[tokio::test]
@@ -1393,7 +1393,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     assert_ne!(token, carols, "one token per Cockpit");
 
     // Exactly the management, vault and browser tools (MGT-006, SPEC-186 SAV-002, SAV-003,
-    // SPEC-437 SAB-001), and the person's other sandboxes (SPEC-335).
+    // SPEC-437 SAB-001), and the person's other sandboxes.
     let listed = mcp(&f, &token, "tools/list", json!({})).await?;
     let mut names: Vec<String> = listed["result"]["tools"]
         .as_array()
@@ -1505,7 +1505,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         cockpit_tool(&f, &token, "steps_set", json!({"steps": ["x"]})).await?;
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("unknown tool"), "{refused}");
-    // SPEC-442 AC-XST-4: nothing deletes or archives a task of another sandbox.
+    // Nothing deletes or archives a task of another sandbox.
     for name in ["sandbox_task_delete", "sandbox_task_archive"] {
         let (refused, is_error) =
             cockpit_tool(&f, &token, name, json!({"sandbox": "x", "number": 1})).await?;
@@ -1513,7 +1513,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         assert!(refused.to_string().contains("unknown tool"), "{refused}");
     }
 
-    // A task for alice (MGT-001, MGT-007), on Claude Code by default (SPEC-620).
+    // A task for alice, on Claude Code by default.
     let (created, is_error) = cockpit_tool(
         &f,
         &token,
@@ -1562,7 +1562,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     assert_eq!(entry.actor, "cockpit:alice");
 
     // Runs it now, then deletes it, and archives and deletes the task once it ended (no
-    // repository here): each audited with the Cockpit (SPEC-066 MGT-010, MGT-011).
+    // repository here): each audited with the Cockpit.
     let (ran, is_error) = cockpit_tool(
         &f,
         &token,
@@ -1583,8 +1583,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     // Its start fails in the background, after `task_create` answered (#460: under load the
     // archive came first and was refused while the task was still queued).
     task_rests(&f, &task.id).await?;
-    // A task that ended takes no message, and the Superagent is told what to do instead
-    // (SPEC-230 TMS-004).
+    // A task that ended takes no message, and the Superagent is told what to do instead.
     let (refused, is_error) = cockpit_tool(
         &f,
         &token,
@@ -1634,7 +1633,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             .iter()
             .find(|e| e.action == action && e.actor == "cockpit:alice")
             .ok_or_else(|| format!("{action}: {audit:?}"))?;
-        // The caller's audit detail names the Cockpit (MGT-010).
+        // The caller's audit detail names the Cockpit.
         assert!(
             entry
                 .detail
@@ -1644,7 +1643,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         );
     }
 
-    // Unknown tokens, and the token of a Cockpit that ended, are refused (MGT-005).
+    // Unknown tokens, and the token of a Cockpit that ended, are refused.
     let unknown = mcp(&f, "ck_0000", "tools/list", json!({})).await?;
     assert_eq!(unknown["error"]["code"], -32001, "{unknown}");
     f.h.app.end_all_shells().await;
@@ -1653,7 +1652,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     Ok(())
 }
 
-/// Requests alice's Superagent in `s1` waits on her to answer (SPEC-335).
+/// Requests alice's Superagent in `s1` waits on her to answer.
 async fn waiting_requests(f: &Fixture) -> Result<usize, Box<dyn std::error::Error>> {
     let resp = call(
         &f.h.router,
@@ -1667,7 +1666,7 @@ async fn waiting_requests(f: &Fixture) -> Result<usize, Box<dyn std::error::Erro
     Ok(resp.body.as_array().map_or(0, Vec::len))
 }
 
-/// SPEC-335 XSR-004: interrupting the Superagent (Claude Code sends `notifications/cancelled`
+/// Interrupting the Superagent (Claude Code sends `notifications/cancelled`
 /// and may keep the HTTP request open) ends its request to start a task in another sandbox:
 /// the card goes, a late approval finds nothing, and the call answers at once.
 #[tokio::test]
@@ -1755,7 +1754,7 @@ async fn a_cancelled_cross_sandbox_request_ends_at_once() -> TestResult {
     Ok(())
 }
 
-/// Review of slice 8a, F2: once its call ended (here dropped), a request no longer belongs to
+/// Once its call ended (here dropped), a request no longer belongs to
 /// that call: a `notifications/cancelled` naming the same id later withdraws nothing.
 #[tokio::test]
 async fn a_cancel_after_the_call_ended_withdraws_nothing() -> TestResult {
@@ -1815,7 +1814,7 @@ async fn a_cancel_after_the_call_ended_withdraws_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-442 (review round 1): over the MCP, `sandbox_task_get` reads a task of another sandbox
+/// Over the MCP, `sandbox_task_get` reads a task of another sandbox
 /// at once, `sandbox_task_stop` asks for a stop of that task, and a cancelled call is audited
 /// `cancelled` with its action in both sandboxes.
 #[tokio::test]
@@ -1924,7 +1923,7 @@ async fn the_cross_sandbox_task_tools_over_the_mcp() -> TestResult {
     Ok(())
 }
 
-/// MGT-005: once its owner can no longer work in the project, a Cockpit's token is refused.
+/// Once its owner can no longer work in the project, a Cockpit's token is refused.
 #[tokio::test]
 async fn a_cockpit_whose_owner_lost_access_manages_nothing() -> TestResult {
     use yulius_domain::ids::UserId;
@@ -1947,7 +1946,7 @@ async fn a_cockpit_whose_owner_lost_access_manages_nothing() -> TestResult {
     Ok(())
 }
 
-/// MGT-005: a disabled owner's Cockpit token is refused.
+/// A disabled owner's Cockpit token is refused.
 #[tokio::test]
 async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
     use yulius_app::ports::store::UserStore;
@@ -1966,11 +1965,11 @@ async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
     Ok(())
 }
 
-/// An agent secret's value, referenced by the sandbox's `apify` MCP server (SPEC-147).
+/// An agent secret's value, referenced by the sandbox's `apify` MCP server.
 const SECRET_VALUE: &str = "apify_synthetic_9f3Qz7LmWc2Rk8Tn";
 const SECRET_LABEL: &str = "[secret:APIFY_KEY]";
 
-/// The label as a terminal screen shows it: as wide as the value (SPEC-239 TRM-002).
+/// The label as a terminal screen shows it: as wide as the value.
 fn screen_label() -> String {
     format!(
         "{SECRET_LABEL}{}",
@@ -2014,11 +2013,11 @@ async fn scrub(
     .await
 }
 
-/// SPEC-147 SAM-001/002/004 (#395, ADR-0121): the Superagent gets the sandbox's MCP servers as a
+/// The Superagent gets the sandbox's MCP servers as a
 /// task run does, next to `yulius`, their values only in its secret environment, and the task
 /// runs' redaction: a value a Bash command prints through its wrapper, or a tool result holds,
 /// comes back as `[secret:NAME]`, as does one its screen shows; while Yulius is unreachable its
-/// fingerprint file redacts (SPEC-352 SRF-001); without either a command does not run.
+/// fingerprint file redacts; without either a command does not run.
 #[tokio::test]
 async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted() -> TestResult {
     let f = fixture().await?;
@@ -2067,8 +2066,8 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
     for value in [SECRET_VALUE, LITERAL_BEARER] {
         assert!(!mcp_text.contains(value), "a value in argv: {mcp_text}");
     }
-    // The redaction hook comes first; besides it only the read-only memory's explanation runs
-    // (SPEC-652 MEM-006). The wrapper runs Bash, hooks and stdio servers.
+    // The redaction hook comes first; besides it only the read-only memory's explanation runs.
+    // The wrapper runs Bash, hooks and stdio servers.
     let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
     let hooks = settings["hooks"].as_object().ok_or("hooks")?;
     assert_eq!(
@@ -2091,7 +2090,7 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
             );
         }
     }
-    // One program, as Claude Code spawns the prefix itself for a stdio MCP server (SPEC-358).
+    // One program, as Claude Code spawns the prefix itself for a stdio MCP server.
     let prefix = PathBuf::from(std::fs::read_to_string(config.join("launch-shell-prefix"))?);
     assert!(
         prefix.is_absolute() && prefix.ends_with("scrub-exec"),
@@ -2133,7 +2132,7 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
     let answer = format!("\"updatedToolOutput\":{{\"text\":\"key {SECRET_LABEL}\"}}");
     assert!(screen.contains(&answer), "{screen}");
     // What reaches the screen past the in-session layers (an MCP error Claude Code shows as it
-    // came, a hook that let a result through) is redacted as a task's terminal is (VLT-007).
+    // came, a hook that let a result through) is redacted as a task's terminal is.
     socket
         .send(Message::text(typed(
             "echo \"raw=<$YULIUS_MCP_APIFY_APIFY_TOKEN>\"\r".into(),
@@ -2145,8 +2144,8 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
         &format!("raw=<{}>", screen_label()),
     )
     .await?;
-    // While Yulius restarts (unreachable), its fingerprint file redacts as a task run's does
-    // (SPEC-352 SRF-001): the command runs and the value comes back as the label.
+    // While Yulius restarts (unreachable), its fingerprint file redacts as a task run's does:
+    // the command runs and the value comes back as the label.
     socket
         .send(Message::text(typed(
             "YULIUS_URL=http://127.0.0.1:1 $CLAUDE_CODE_SHELL_PREFIX 'echo \"file=<$YULIUS_MCP_APIFY_APIFY_TOKEN> ran-$((40+2))\"'\r".into(),
@@ -2203,7 +2202,7 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
     Ok(())
 }
 
-/// SPEC-147 SAM-004: a Superagent adopted after a server restart shows its screen redacted, as
+/// A Superagent adopted after a server restart shows its screen redacted, as
 /// it was before the restart.
 #[tokio::test]
 async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
@@ -2313,7 +2312,7 @@ async fn a_superagent_screen_shows_no_output_while_a_secret_cannot_be_opened() -
     Ok(())
 }
 
-/// ADR-0313: a Superagent that was running across the update keeps its old wrapper, which reads
+/// A Superagent that was running across the update keeps its old wrapper, which reads
 /// only the fingerprint file format from before version 2. A starting server rewrites its file
 /// in that format without what told too much, and the old wrapper's request (it cannot read the
 /// answer) brings the file up to date, so a secret added since is redacted there too.
@@ -2379,7 +2378,7 @@ async fn a_superagent_from_before_version_2_keeps_redacting_from_its_file() -> T
     Ok(())
 }
 
-/// SPEC-147 SAM-003: the redaction in a Superagent loads its fingerprints with the person's
+/// The redaction in a Superagent loads its fingerprints with the person's
 /// workspace token, which its environment already holds: answered while the person may work in
 /// the sandbox, refused once they cannot, and a redaction is audited with their login.
 #[tokio::test]
@@ -2430,7 +2429,7 @@ async fn a_persons_workspace_token_reads_the_fingerprints_while_they_may_work() 
     );
     // Every Superagent command and tool result asks, within the client's 2 s: a decision on the
     // person's access within the staleness bound answers without asking GitHub again, even
-    // while GitHub hangs (#395 review).
+    // while GitHub hangs.
     f.h.clock
         .0
         .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
@@ -2465,7 +2464,7 @@ async fn a_persons_workspace_token_reads_the_fingerprints_while_they_may_work() 
     Ok(())
 }
 
-/// SPEC-147 SAM-003: a disabled person's workspace token reads no fingerprints.
+/// A disabled person's workspace token reads no fingerprints.
 #[tokio::test]
 async fn a_disabled_persons_workspace_token_reads_no_fingerprints() -> TestResult {
     use yulius_app::ports::store::UserStore;
@@ -2492,7 +2491,7 @@ async fn a_disabled_persons_workspace_token_reads_no_fingerprints() -> TestResul
     Ok(())
 }
 
-// SPEC-074: a usage limit in the Cockpit moves it to a subscription with capacity, as a task's.
+// A usage limit in the Cockpit moves it to a subscription with capacity, as a task's.
 
 /// The stored usage of `account`.
 async fn usage_of(h: &Harness, account: &str) -> Result<Value, Box<dyn std::error::Error>> {
@@ -2541,18 +2540,18 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(printed(&screen, "token")?, "token-a");
-    // SUP-001: the shell record keeps its subscription (and still no token).
+    // The shell record keeps its subscription (and still no token).
     let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
     assert!(record.contains("\"account\":\"acc-a\""), "{record}");
 
-    // The person asks; acc-a's weekly window is full (SUP-002). The limit of a day ago, before
+    // The person asks; acc-a's weekly window is full. The limit of a day ago, before
     // this process started, is history.
     let project = project_of(&screen)?;
     std::fs::create_dir_all(&project)?;
     let transcript = project.join("conv-1.jsonl");
     std::fs::write(&transcript, limited_conversation(1_791_400_000))?;
 
-    // SUP-004: the viewer is told the session moved, and a Cockpit on acc-b continues the turn.
+    // The viewer is told the session moved, and a Cockpit on acc-b continues the turn.
     let exit = read_message(&mut socket, "exit").await?;
     assert_eq!(exit["status"], "switched", "{exit}");
     let again = other_cockpit(&f, &id).await?;
@@ -2567,14 +2566,14 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     assert_eq!(printed(&screen, "interrupted")?, "1");
     assert_eq!(printed(&screen, "token")?, TOKEN);
     assert_eq!(cockpit_id(&f, &f.alice).await?, again, "the panel finds it");
-    // Stepped back over the new limit only (SPEC-034 LIM-001).
+    // Stepped back over the new limit only.
     let stepped = std::fs::read_to_string(&transcript)?;
     assert!(!stepped.contains("new-limit"), "{stepped}");
     assert!(
         stepped.contains("old-limit") && stepped.contains("\"u1\""),
         "{stepped}"
     );
-    // SUP-003: acc-a is recorded as limited until the new limit's reset, not the old one's.
+    // `acc-a` is recorded as limited until the new limit's reset, not the old one's.
     let usage = usage_of(&f.h, "acc-a").await?;
     assert_eq!(usage["limit_reached"], true, "{usage}");
     assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");
@@ -2584,7 +2583,7 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     Ok(())
 }
 
-/// SPEC-464 UCL-008: the Superagent runs the default model, Opus 5.5 (SPEC-493). Refused for
+/// The Superagent runs the default model, Opus 5.5. Refused for
 /// its model's usage credits (the record of Claude Code 2.1.322, with the allowance's reset), it
 /// moves like at any usage limit, and the limit is kept as the model's on its subscription: the
 /// week keeps its reading and no limit of the whole subscription is recorded.
@@ -2669,7 +2668,7 @@ fn credits_refusal(uuid: &str, parent: &str, secs: i64, resets: i64) -> String {
     )
 }
 
-/// SPEC-493 MDL-002: the Superagent runs the default model, Opus 5.5, which has no fallback.
+/// The Superagent runs the default model, Opus 5.5, which has no fallback.
 /// Refused for its usage credits on the only subscription, it stays at the refusal ("No other
 /// subscription has capacity"), in the same session, and the limit is recorded as Opus's.
 #[tokio::test]
@@ -2714,7 +2713,7 @@ async fn a_superagent_refused_its_model_on_the_only_subscription_stays() -> Test
     Ok(())
 }
 
-/// SPEC-493 MDL-002 (review round 1 of fix 1a): a person switched the Superagent to Fable inside
+/// A person switched the Superagent to Fable inside
 /// it (`/model`), and the only subscription refuses Fable for its usage credits. The record
 /// before the request names the model, so the limit is Fable's, not the limit of Opus 5.5 the
 /// Superagent was started with: the subscription still runs the default model, and the
@@ -2783,7 +2782,7 @@ async fn a_superagent_switched_to_fable_goes_on_with_opus_when_fable_is_refused(
     Ok(())
 }
 
-/// SPEC-146 SHE-002 (#346): a usage limit in a Superagent whose process cannot be ended (the end
+/// A usage limit in a Superagent whose process cannot be ended (the end
 /// request is lost and `terminate` fails) starts no second one on the same conversation: the old
 /// one stays live on its subscription, the panel finds it, and its viewer is told why.
 #[tokio::test]
@@ -2858,7 +2857,7 @@ async fn without_capacity_a_limit_leaves_the_cockpit_where_it_is_and_says_why() 
         limited_conversation(1_791_400_000),
     )?;
 
-    // SUP-005: no other subscription; the Cockpit stays, and its viewers learn why.
+    // No other subscription; the Cockpit stays, and its viewers learn why.
     let notice = read_message(&mut socket, "notice").await?;
     assert!(
         notice["text"]
@@ -2893,7 +2892,7 @@ async fn an_adopted_cockpit_keeps_its_subscription_and_moves_past_a_limit() -> T
     drop(socket);
     f.h.app.stop_workspace_services().await;
 
-    // A server restart (SUP-001): the Cockpit is adopted on acc-a and watched again.
+    // A server restart: the Cockpit is adopted on acc-a and watched again.
     let g = fixture_with(false, Some(f.data.clone())).await?;
     insert_account(&g.h, "acc-a", "token-a", 5.0).await?;
     insert_account(&g.h, "acc-b", TOKEN, 60.0).await?;
@@ -2919,7 +2918,7 @@ async fn an_adopted_cockpit_keeps_its_subscription_and_moves_past_a_limit() -> T
     Ok(())
 }
 
-/// Review round 1 (M1): a limit already handled is never acted on again, after `/clear` and back
+/// A limit already handled is never acted on again, after `/clear` and back
 /// to its conversation (`/resume`), or after a server restart.
 #[tokio::test]
 async fn a_handled_limit_is_not_acted_on_again_after_clear_and_resume() -> TestResult {
@@ -2994,7 +2993,7 @@ async fn a_handled_limit_is_not_acted_on_again_after_a_restart() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 (m3): the start on another subscription failed after the old Cockpit ended;
+/// The start on another subscription failed after the old Cockpit ended;
 /// the next start still continues the cut turn instead of leaving the prompt unanswered.
 #[tokio::test]
 async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestResult {
@@ -3040,8 +3039,8 @@ async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestR
     Ok(())
 }
 
-/// Review round 1 (m5): a resumed Cockpit moved again right after it started is not a failed
-/// resume: its conversation stays the one the next Cockpit resumes (CKP-003).
+/// A resumed Cockpit moved again right after it started is not a failed
+/// resume: its conversation stays the one the next Cockpit resumes.
 #[tokio::test]
 async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
     let f = fixture_with(false, None).await?;
@@ -3105,7 +3104,7 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: several new limits read at once count as one, the newest: its reset is what
+/// Several new limits read at once count as one, the newest: its reset is what
 /// the subscription is recorded with.
 #[tokio::test]
 async fn limits_read_together_count_once_as_the_newest() -> TestResult {
@@ -3128,7 +3127,7 @@ async fn limits_read_together_count_once_as_the_newest() -> TestResult {
     Ok(())
 }
 
-/// SUP-002: a limit recorded before the Cockpit started is history even while its reset is ahead;
+/// A limit recorded before the Cockpit started is history even while its reset is ahead;
 /// only the person's next limit moves it.
 #[tokio::test]
 async fn a_limit_from_before_the_start_does_not_move_the_cockpit() -> TestResult {
@@ -3169,10 +3168,10 @@ async fn a_limit_from_before_the_start_does_not_move_the_cockpit() -> TestResult
     Ok(())
 }
 
-/// SPEC-178 VAU-001 (ADR-0144), SPEC-186 SAV-002..004, SAV-007 (ADR-0150): the Superagent lists
+/// The Superagent lists
 /// its own sandbox's agent secrets, names, hosts and placeholders only, as a task's agent does,
 /// and is told how it uses and checks them; it is served the vault tools a task's agent is, the
-/// project browser's included (SPEC-437 SAB-001).
+/// project browser's included.
 #[tokio::test]
 async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> TestResult {
     use yulius_domain::ids::UserId;
@@ -3205,13 +3204,13 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         Some(1),
         "{listed}"
     );
-    // Behind the proxy as a task run is (SAV-001): the placeholder and what the proxy adds.
+    // Behind the proxy as a task run is: the placeholder and what the proxy adds.
     assert_eq!(
         listed["secrets"][0]["placeholder"],
         "yulius-secret-APIFY_KEY"
     );
     assert!(listed["secrets"][0]["adds"].is_string(), "{listed}");
-    // Its method and path rules (SPEC-627 MPR-007): none here, and how they work.
+    // Its method and path rules: none here, and how they work.
     assert_eq!(listed["secrets"][0]["rules"], json!([]), "{listed}");
     assert!(
         listed["how_to_use"]
@@ -3223,10 +3222,10 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
     for hidden in [SECRET_VALUE, "OTHER_KEY", "other_synthetic_value_4471"] {
         assert!(!raw.contains(hidden), "{hidden} in {raw}");
     }
-    // The Superagent's own guidance (SAV-007): bound hosts through the proxy, `$NAME`, the
+    // The Superagent's own guidance: bound hosts through the proxy, `$NAME`, the
     // repository's `.env`, host requests, `secret_verify`, and the Secrets page.
     let how = listed["how_to_use"].to_string();
-    // SPEC-654 (review): the Superagent is not served `needs_you`, so its advice never names it.
+    // The Superagent is not served `needs_you`, so its advice never names it.
     assert!(!how.contains("needs_you"), "{how}");
     for said in [
         "secret_verify",
@@ -3255,7 +3254,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_request_hosts",
         "secret_request_copy",
         "secret_create_from_file",
-        // The project browser, as a task's agent has it (SPEC-437 SAB-001).
+        // The project browser, as a task's agent has it.
         "browser_fill_secret",
     ] {
         assert!(served.contains(&tool), "{tool}: {served:?}");
@@ -3283,7 +3282,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
 const PEM_KEY: &str =
     "-----BEGIN SYNTHETIC KEY-----\nc3ludGhldGljLWtleS1ib2R5LTQ0MTc=\n-----END SYNTHETIC KEY-----";
 
-/// SPEC-178 VAU-002 (ADR-0144): the Superagent checks a value the person holds against the vault
+/// The Superagent checks a value the person holds against the vault
 /// by its SHA-256, a multi-line key (which the vault holds on one line, with literal `\n`)
 /// included, and learns how a near match differs; it never gets the value or its hash, and each
 /// check is audited with the Superagent as actor.
@@ -3495,7 +3494,7 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         "{refused}"
     );
 
-    // A production secret is refused (SPEC-134).
+    // A production secret is refused.
     let production = call(
         &f.h.router,
         Method::POST,
@@ -3583,7 +3582,7 @@ async fn audited(f: &Fixture, action: &str) -> Result<Vec<Value>, Box<dyn std::e
         .collect())
 }
 
-/// SPEC-186 SAV-002, SAV-003, SAV-005 (ADR-0150): the Superagent verifies a 7-line OpenSSH key
+/// The Superagent verifies a 7-line OpenSSH key
 /// the person holds, copies it into the ignored `.env` of the sandbox repository it works in once
 /// a person allowed it (asked first, as a task's agent is), byte-identical to the key file, and
 /// asks for hosts; production secrets and files Git would commit are refused.
@@ -3617,7 +3616,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     assert_eq!(verified["lines"], 7, "{verified}");
 
     // Not allowed yet: asked for, as alice's Superagent, and nothing is written; the open
-    // Secrets pages hear of it (SPEC-209).
+    // Secrets pages hear of it.
     let mut announced = support::SecretAnnouncements::new(&f.h.app);
     let copy = |secrets: Value, path: Option<&str>| {
         let mut args = json!({"secrets": secrets, "reason": "the deploy script signs in"});
@@ -3698,7 +3697,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     .await?;
     assert!(!is_error, "{requested}");
     assert_eq!(requested["requested"], json!(["deploy.quartio.test"]));
-    // #631: the person's open Secrets page shows the request and its Allow at once.
+    // The person's open Secrets page shows the request and its Allow at once.
     assert_eq!(announced.take(), vec![Some(sid().to_string())]);
     let record = f.h.store.vault_get(&id).await?.ok_or("secret")?;
     assert_eq!(
@@ -3719,7 +3718,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     .await?;
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("production"), "{refused}");
-    // SPEC-440: it asks for a copy of the production secret instead, as alice's Superagent.
+    // It asks for a copy of the production secret instead, as alice's Superagent.
     let (copy_asked, is_error) = cockpit_tool(
         &f,
         &token,
@@ -3741,7 +3740,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     Ok(())
 }
 
-/// #635 (SPEC-254 ACR-001..ACR-003): the Superagent can write its sandbox folder, so it can swap
+/// The Superagent can write its sandbox folder, so it can swap
 /// its repository for a link to another folder (here another ignoring Git repository). Yulius walks
 /// to the `.env` from the canonical sandbox folder without links, so the copy of an allowed secret
 /// is refused and nothing is written, neither in the link's target nor in the moved repository.
@@ -3843,7 +3842,7 @@ fn forwarded(decision: &yulius_app::ports::egress::EgressDecision, name: &str) -
     }
 }
 
-/// SPEC-186 SAV-001, SAV-005 (ADR-0150): the Superagent runs behind the egress proxy as a task
+/// The Superagent runs behind the egress proxy as a task
 /// run does, with its own bearer: the proxy variables, the CA bundle and a placeholder per agent
 /// secret are in its environment, the proxy adds a bound secret to its requests for the bound
 /// host (a multi-line key as stored), never a production secret, audited as the Superagent, and
@@ -3870,7 +3869,7 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
     )
     .await?;
     assert_eq!(deploy.status, StatusCode::CREATED, "{:?}", deploy.body);
-    // A production secret: never used. It lost its host when it became one (ADR-0324), so the
+    // A production secret: never used. It lost its host when it became one, so the
     // requests below show a host no secret is bound to; the proxy's own rule is held by
     // `ports::egress::tests`.
     let prod = call(
@@ -4007,8 +4006,7 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
         .await?;
     assert!(f.h.app.egress_client(&daves).await.is_none(), "disabled");
 
-    // Ended, its bearer is refused at once, and a connection it holds adds nothing more
-    // (SPEC-388 EPL-001).
+    // Ended, its bearer is refused at once, and a connection it holds adds nothing more.
     f.h.app.end_all_shells().await;
     assert!(f.h.app.egress_client(&token).await.is_none());
     let held =
@@ -4031,7 +4029,7 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
     Ok(())
 }
 
-/// SPEC-186 SAV-006 (review round 1): a Superagent started while the egress proxy was not wired
+/// A Superagent started while the egress proxy was not wired
 /// is restarted once it is, so it gets the proxy.
 #[tokio::test]
 async fn a_superagent_started_without_the_proxy_restarts_once_it_is_wired() -> TestResult {
@@ -4067,7 +4065,7 @@ fn alice_project(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(yulius_harness::paths::claude_project_dir(&config, &repo))
 }
 
-/// SPEC-186 SAV-006 (ADR-0150): a Superagent started by a Yulius before an update that changed
+/// A Superagent started by a Yulius before an update that changed
 /// what it is served is adopted, then started again resuming its conversation once it is idle,
 /// and the new one has the new tools and the proxy; its old bearer ends with it.
 #[tokio::test]
@@ -4130,7 +4128,7 @@ async fn a_superagent_started_before_an_update_restarts_resuming_its_conversatio
     Ok(())
 }
 
-/// SPEC-186 SAV-006: a Superagent to restart that is in the middle of a turn waits for it to end.
+/// A Superagent to restart that is in the middle of a turn waits for it to end.
 #[tokio::test]
 async fn a_superagent_mid_turn_restarts_only_once_its_turn_ends() -> TestResult {
     let f = fixture().await?;
@@ -4238,7 +4236,7 @@ async fn an_updates_restart_waits_for_text_left_in_the_prompt_box() -> TestResul
     Ok(())
 }
 
-/// Review of slice 9a, F1: a draft typed before the server restarts for an update is kept with
+/// A draft typed before the server restarts for an update is kept with
 /// the Superagent's record, so the adopted Superagent's restart waits for it too.
 #[tokio::test]
 async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> TestResult {
@@ -4426,7 +4424,7 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         "started for its check"
     );
 
-    // Review of slice 9b, F6: a disabled person's Superagent is not started for a check, and a
+    // A disabled person's Superagent is not started for a check, and a
     // removed sandbox's checks go.
     f.h.app.end_all_shells().await;
     f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
@@ -4478,7 +4476,7 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         "a removed sandbox's checks go"
     );
 
-    // F8: a kept check out of bounds (hand-edited) is not read back.
+    // A kept check out of bounds (hand-edited) is not read back.
     f.h.store
         .execute_for_tests("UPDATE sandboxes SET removed_at = NULL WHERE id = 's1'")
         .await?;
@@ -4500,7 +4498,7 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         .collect();
     assert_eq!(names, ["sound"]);
 
-    // F8: a file that cannot be read is kept as `.bad`, never written over.
+    // A file that cannot be read is kept as `.bad`, never written over.
     let file = f.data.join("superagent-checks.json");
     std::fs::write(&file, b"[not json")?;
     let again = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
@@ -4668,7 +4666,7 @@ async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResul
     assert_eq!(replaced["stored"], "updated", "{replaced}");
     tokio::time::timeout(WAIT, again).await???;
 
-    // Review of slice 10a, M1: the project's DEPLOY_KEY is another secret than alice's own of
+    // The project's DEPLOY_KEY is another secret than alice's own of
     // that name: created beside it, never written over it.
     let internal = f.h.internal.clone();
     let bearer = Creds {
@@ -4767,7 +4765,7 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
         None,
     )
     .await?;
-    // An agent secret the task printed (review of slice 10b, F2): its value never comes back.
+    // An agent secret the task printed (review of slice 10b): its value never comes back.
     let value = "s3cr3t-deploy-token-0123456789";
     {
         use yulius_app::ports::store::UserStore as _;
@@ -4879,7 +4877,7 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
             .is_some_and(|rows| rows.iter().any(|r| r["number"] == task.number)),
         "{usage}"
     );
-    // Review of slice 10b, F1: the default period is the last 7 days, not all time.
+    // The default period is the last 7 days, not all time.
     assert!(usage["period"]["from"].is_string(), "{usage}");
     let other = support::seed_task(
         &f.h,
@@ -4906,7 +4904,7 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
         other.number
     );
 
-    // The project's variables, set and deleted for the person (SPEC-487 VAR-001).
+    // The project's variables, set and deleted for the person.
     let (set, is_error) = cockpit_tool(
         &f,
         &token,
@@ -4969,7 +4967,7 @@ async fn a_missing_ability_is_reported_in_one_call() -> TestResult {
         (json!({"ability": "a\u{202e}b", "case": "c"}), "cannot see"),
         (json!({"ability": "a", "case": "c", "x": 1}), "unknown"),
         (json!({"ability": "a\rb", "case": "c"}), "one line"),
-        // Review of slice 11, M2: nothing of the project leaves in a report.
+        // Nothing of the project leaves in a report.
         (
             json!({"ability": "a", "case": "the CI of acme/fixture failed"}),
             "general terms",
@@ -5058,7 +5056,7 @@ async fn a_missing_ability_is_reported_in_one_call() -> TestResult {
     Ok(())
 }
 
-/// SPEC-211 SCF-001, SCF-002, SCF-004 (AC-7): the Superagent stores a key in its person's home as
+/// The Superagent stores a key in its person's home as
 /// an agent secret without seeing it, created by the person and audited as their Superagent; the
 /// stored value is the key file with literal `\n` (`secret_verify` matches the file's hash).
 #[tokio::test]
@@ -5153,7 +5151,7 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
     Ok(())
 }
 
-/// A job a project's tests leaked into the Superagent's sandbox (SPEC-353): `sh -c …`, `bash …`
+/// A job a project's tests leaked into the Superagent's sandbox: `sh -c …`, `bash …`
 /// and its `sleep`, adopted by the sandbox init.
 fn leaked_job(pid: u32, started: u64) -> yulius_app::ports::session::StrayProcess {
     yulius_app::ports::session::StrayProcess {
@@ -5178,7 +5176,7 @@ fn idle_conversation(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>>
 }
 
 /// Opens the idle session and waits for the watcher to finish its first probe. Its
-/// answer may have been dropped even though the host eventually produced it (#1361).
+/// answer may have been dropped even though the host eventually produced it.
 async fn open_with_stray_sighting(f: &Fixture, transcript: &Path) -> TestResult {
     let (send, receive) = tokio::sync::oneshot::channel();
     let app = Arc::clone(&f.h.app);
@@ -5221,8 +5219,8 @@ async fn an_unanswered_strays_probe_names_the_missing_sighting() -> TestResult {
     Ok(())
 }
 
-/// SPEC-355 SLR-004 (#970): an idle Superagent's strays are reported when first seen and reaped
-/// once seen for the bound, as an idle task's (SPEC-353 LAP-004). On 2026-10-30 the Superagent's
+/// An idle Superagent's strays are reported when first seen and reaped
+/// once seen for the bound, as an idle task's. On 2026-10-30 the Superagent's
 /// sandbox session had lived for days with a project's leaked test jobs.
 #[tokio::test]
 async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
@@ -5243,7 +5241,7 @@ async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
     Ok(())
 }
 
-/// SPEC-501 SDP-001 (#1110): an idle Superagent's strays are first seen when the probe that found
+/// An idle Superagent's strays are first seen when the probe that found
 /// them was asked, so the bound passing while it runs (under load, the test above moved the clock
 /// there) counts and does not start it again.
 #[tokio::test]
@@ -5270,7 +5268,7 @@ async fn an_idle_superagents_strays_are_seen_when_their_probe_was_asked() -> Tes
     Ok(())
 }
 
-/// SPEC-355 SLR-004: a prompt written while the probe runs keeps the strays (the Superagent is in
+/// A prompt written while the probe runs keeps the strays (the Superagent is in
 /// a turn again), and its turn's processes are not probed; once the turn ends they are reaped.
 #[tokio::test]
 async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> TestResult {
@@ -5312,7 +5310,7 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
     Ok(())
 }
 
-/// A sandbox whose link to Yulius the test sets (SPEC-355 SLR-005): `None` cannot be told.
+/// A sandbox whose link to Yulius the test sets: `None` cannot be told.
 /// It counts the tests.
 struct Link(std::sync::Mutex<Option<bool>>, std::sync::atomic::AtomicU32);
 
@@ -5460,7 +5458,7 @@ async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestRe
     Ok(())
 }
 
-/// SPEC-355 SLR-006 (review round 1): a restart whose old process cannot be ended starts no second
+/// A restart whose old process cannot be ended starts no second
 /// Superagent on the same conversation: it answers 409, the running one stays, and its viewers are
 /// told it was not restarted.
 #[tokio::test]
@@ -5765,7 +5763,7 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
         "dev goes to the deploy: {dev}"
     );
     expected.push(("cd_deploy", false));
-    // SPEC-487 REL-003: a dev rollback goes to the CD page's Roll back at once (nothing was
+    // A dev rollback goes to the CD page's Roll back at once (nothing was
     // deployed here, which is its answer); production, a promotion and onboarding are requests,
     // refused before anyone is asked when the person may not.
     let (dev, is_error) =
@@ -5838,7 +5836,7 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
     Ok(())
 }
 
-/// SPEC-487 SAR-003: a task's agent is not served the tools that steer other tasks or cancel
+/// A task's agent is not served the tools that steer other tasks or cancel
 /// their runs; they are its person's Superagent's.
 #[tokio::test]
 async fn a_tasks_agent_does_not_steer_other_tasks() -> TestResult {
@@ -6282,7 +6280,7 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         json!({"do": "unpause", "all": true}),
     )
     .await?;
-    // A task nobody paused is not reported as resumed (review round 1, F4).
+    // A task nobody paused is not reported as resumed (review round 1).
     let (answer, is_error) = cockpit_tool(
         &f,
         &token,
@@ -6376,7 +6374,7 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         "{refused}"
     );
     // A task held at a usage limit with its session alive has started: it is not told that
-    // it has not, nor that stopping it would only cancel it (review round 1, F2).
+    // it has not, nor that stopping it would only cancel it (review round 1).
     let held = support::seed_task(
         &f.h,
         "t-held",
@@ -6411,7 +6409,7 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         json!({"number": carol_run.number}),
     )
     .await?;
-    // Closing out is open to whoever may work (SPEC-490 OWN-002): what refuses is the task's
+    // Closing out is open to whoever may work: what refuses is the task's
     // state, as for one's own, not its owner.
     assert!(
         is_error && said(&refused).contains("is working") && !said(&refused).contains("@carol"),
@@ -6509,8 +6507,8 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         );
     }
 
-    // Named, another person's task is stopped too (SPEC-490 OWN-002, OWN-003), and its audit
-    // names its owner (OWN-005).
+    // Named, another person's task is stopped too, and its audit
+    // names its owner.
     let (answer, is_error) = cockpit_tool(
         &f,
         &token,
@@ -6642,7 +6640,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
             id: "h-1".into(),
             task_id: held.id.clone(),
             class: yulius_domain::intake::PromptClass::NewScope,
-            // What a person typed may hold anything (review of slice 4, C2): a line that reads
+            // What a person typed may hold anything (review of slice 4): a line that reads
             // like another task's, a colour escape, a character that reverses what follows.
             prompt: "Also rewrite the billing page\n- #99 Deploy prod · NEEDS ITS PERSON \u{1b}[31m\u{202e}"
                 .into(),
@@ -6747,7 +6745,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         "a forged line:\n{shown}"
     );
     // A request stored before its words were cleaned (an older row) is shown on one line
-    // without what hides or reverses text (C3).
+    // without what hides or reverses text.
     let old_row = NeedsYouRecord {
         action: "Approve\u{202e} the \u{200b}budget\u{e0041}".into(),
         happened: None,
@@ -6796,7 +6794,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         "{agents}"
     );
     // Not through task_get either, nor about its own task (the prompt was typed to it and
-    // Yulius kept it from it) (review of slice 4, C4).
+    // Yulius kept it from it) (review of slice 4).
     for (token, tool, args) in [
         ("tok-t-work", "task_get", json!({"number": held.number})),
         ("tok-t-held", "tasks_list", json!({})),
@@ -6819,7 +6817,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
     }
 
     // A task that ended with a prompt still held shows it, as its page shows the card, and
-    // it is decided the same way (review of slice 4, C9).
+    // it is decided the same way (review of slice 4).
     let ended = support::seed_task(
         &f.h,
         "t-ended",
@@ -6846,7 +6844,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         })
         .await?;
     // A request left from before its end is not shown, as its page shows none (an ended
-    // task waits for nobody, ADR-0111), and there is nothing to dismiss (review of slice 4,
+    // task waits for nobody), and there is nothing to dismiss (review of slice 4,
     // R2-1).
     store
         .set_task_needs_you(&ended.id, Some(&asked("Approve the old plan")), now)
@@ -7146,7 +7144,7 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
         Timestamp(base - 100)
     );
     // A run never goes before an earlier run of its own commit: which run of a commit is the
-    // latest is read by place (review of slice 5, F4).
+    // latest is read by place (review of slice 5).
     let mut same = run("run-old", "s1", base + 30, RunState::Failed);
     same.sha = "b".repeat(40);
     f.h.store.insert_ci_run(&same, &[]).await?;
@@ -7341,7 +7339,7 @@ async fn the_superagent_reads_subscriptions_and_sets_a_tasks_model() -> TestResu
             .is_some_and(|note| note.contains("when it starts")),
         "{changed}"
     );
-    // A foreign model is refused before either setting is written (SPEC-560).
+    // A foreign model is refused before either setting is written.
     for (model, agent) in [("gpt-6.2-astra", "Codex"), ("gemini-4-neon", "Antigravity")] {
         let (refused, is_error) = cockpit_tool(
             &f,
@@ -7570,7 +7568,7 @@ async fn the_superagent_reads_the_instance_and_a_superadmins_updates_it() -> Tes
             "{action}: {refused:?}"
         );
     }
-    // Through the tool, as the store says she is now a superadmin (review of slice 7, F5): the
+    // Through the tool, as the store says she is now a superadmin (review of slice 7): the
     // person's flag is read at the call, and the restart's own refusal comes back.
     f.h.store
         .execute_for_tests(
@@ -7623,7 +7621,7 @@ async fn the_superagent_reads_the_instance_and_a_superadmins_updates_it() -> Tes
     Ok(())
 }
 
-/// SPEC-487 TCT-005 (review round 1, F5): one call reaches at most 100 tasks. With 101 that
+/// One call reaches at most 100 tasks. With 101 that
 /// `all` applies to, the first hundred by number get the message, the last one does not, and
 /// the answer says that one was not reached.
 #[tokio::test]
@@ -7768,7 +7766,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for RecordingDocker {
     }
 }
 
-/// SPEC-494 DFJ-009: the Superagent restarts its own sandbox's Docker through `docker_restart`;
+/// The Superagent restarts its own sandbox's Docker through `docker_restart`;
 /// a server that runs no sandbox Docker says so.
 #[tokio::test]
 async fn the_superagent_restarts_its_sandboxs_docker_or_hears_why_not() -> TestResult {
@@ -7782,7 +7780,7 @@ async fn the_superagent_restarts_its_sandboxs_docker_or_hears_why_not() -> TestR
         refused.to_string().contains("runs no sandbox Docker"),
         "{refused}"
     );
-    // A task of the sandbox asked a person about its Docker (SPEC-494 DFJ-011): the restart
+    // A task of the sandbox asked a person about its Docker: the restart
     // answers it.
     let task = support::seed_task(
         &f.h,
@@ -7853,9 +7851,8 @@ impl yulius_app::ports::isolation::SandboxIsolation for EventfulDocker {
     }
 }
 
-/// SPEC-494 DFJ-013: front restarts, connections that gave way and Needs you naming the
-/// sandbox's Docker are counted per week and read on the instance; so is what CI jobs left
-/// (SPEC-504 CLB-006).
+/// Front restarts, connections that gave way and Needs you naming the
+/// sandbox's Docker are counted per week and read on the instance; so is what CI jobs left.
 #[tokio::test]
 async fn the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week() -> TestResult {
     use yulius_app::ports::isolation::DockerEvent;
@@ -7874,7 +7871,7 @@ async fn the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week() 
             event(sid().as_str(), "gave_way", 2),
             event(&format!("{}.prod", sid().as_str()), "restarted", 1),
             event("unknown-sandbox", "restarted", 1),
-            // SPEC-504 CLB-006: what CI jobs left, removed at a job's end and by the sweep.
+            // What CI jobs left, removed at a job's end and by the sweep.
             DockerEvent {
                 detail: "2 1 job-end".to_owned(),
                 ..event(sid().as_str(), "ci_leftovers", 2)
@@ -7996,7 +7993,7 @@ async fn interpreter_value_requests_only_rotate_existing_secrets_of_the_requeste
     Ok(())
 }
 
-/// SPEC-626 BRK-004, AC-2 (review round 1): the Superagent lists its project's brokered commands
+/// The Superagent lists its project's brokered commands
 /// as defined, without a value, and is not told whether a task may run one.
 #[tokio::test]
 async fn the_superagent_lists_its_projects_brokered_commands() -> TestResult {
@@ -8061,7 +8058,7 @@ async fn the_superagent_lists_its_projects_brokered_commands() -> TestResult {
     Ok(())
 }
 
-/// SPEC-624 (review round 2): the Superagent reads its person's notices without an audit entry,
+/// The Superagent reads its person's notices without an audit entry,
 /// and a dismissal through it is audited as a change.
 #[tokio::test]
 async fn the_superagents_notice_dismissal_is_audited() -> TestResult {

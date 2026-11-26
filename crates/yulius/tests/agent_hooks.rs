@@ -1,6 +1,6 @@
 //! Internal agent endpoints over HTTP: hook events (briefing, the Stop
 //! discipline gate) and repository-scoped Git credentials, the task creator's own (SPEC-002
-//! §7.5, §8; AC-DSC-3, AC-COM-2, AC-COM-4, AC-GIT-3).
+//! §7.5, §8; AC-DSC-3).
 
 use crate::support;
 use crate::support::git;
@@ -57,7 +57,7 @@ async fn fixture_with_task(
     fixture_of(workflow, tweak, Agent::ClaudeCode).await
 }
 
-/// [`fixture_with_task`] whose task and live run are of `agent` (SPEC-503).
+/// [`fixture_with_task`] whose task and live run are of `agent`.
 async fn fixture_of(
     workflow: Option<(&str, bool)>,
     tweak: impl FnOnce(&mut TaskRecord),
@@ -409,7 +409,7 @@ async fn session_start_returns_the_project_briefing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-363 (task #346): a project whose change notes are a folder, one file per pull request,
+/// A project whose change notes are a folder, one file per pull request,
 /// is told to add one new file there instead of an entry at the top of a shared log, and its
 /// Recent changes quote the newest notes.
 #[tokio::test]
@@ -460,7 +460,7 @@ async fn a_changes_folder_briefs_one_new_file_per_change() -> TestResult {
     Ok(())
 }
 
-/// MSR-004 (SPEC-028): stored messages reach no hook: no digest, no turn-end block.
+/// Stored messages reach no hook: no digest, no turn-end block.
 #[tokio::test]
 async fn stored_messages_reach_no_hook() -> TestResult {
     let f = fixture().await?;
@@ -493,7 +493,7 @@ async fn stored_messages_reach_no_hook() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-006: only an Antigravity run's Stop of a failed turn skips the gate (its
+/// Only an Antigravity run's Stop of a failed turn skips the gate (its
 /// `error`; `antigravity::a_failed_antigravity_turn_leaves_its_task_waiting`): the same field
 /// from another harness's hook changes nothing.
 #[tokio::test]
@@ -660,7 +660,7 @@ async fn gate_gives_up(f: &Fixture) -> TestResult {
     Ok(())
 }
 
-/// SPEC-472 ATN-001..ATN-004 (#1221): a flag the gate raised says why to whoever opens the task
+/// A flag the gate raised says why to whoever opens the task
 /// later, also after a restart of Yulius. Its notice reaches only the viewers connected then.
 #[tokio::test]
 async fn a_flag_the_gate_raised_says_why_to_whoever_comes_later() -> TestResult {
@@ -718,7 +718,7 @@ async fn a_flag_the_gate_raised_says_why_to_whoever_comes_later() -> TestResult 
     Ok(())
 }
 
-/// SPEC-472 ATN-005: a flag raised by a Claude Code notice says the question is in the terminal,
+/// A flag raised by a Claude Code notice says the question is in the terminal,
 /// in Claude Code's own words (one line); a notice without words says only that; the idle
 /// reminder flags nothing and says nothing.
 #[tokio::test]
@@ -799,7 +799,7 @@ async fn a_notices_flag_carries_claude_codes_words() -> TestResult {
     Ok(())
 }
 
-/// SPEC-472 ATN-002: one flag, one reason, the first. A Claude Code notice on a task the gate
+/// One flag, one reason, the first. A Claude Code notice on a task the gate
 /// flagged changes neither the flag nor what it says: the gate's matter still stands once the
 /// notice is answered.
 #[tokio::test]
@@ -819,7 +819,7 @@ async fn a_notice_on_a_flagged_task_keeps_the_flags_reason() -> TestResult {
     Ok(())
 }
 
-/// DSC-013 (#139): features and fixes need a spec; research, questions, docs and chores do not.
+/// Features and fixes need a spec; research, questions, docs and chores do not.
 #[tokio::test]
 async fn stop_gate_asks_for_a_spec_only_where_it_matters() -> TestResult {
     let f = fixture().await?;
@@ -853,7 +853,7 @@ async fn stop_gate_asks_for_a_spec_only_where_it_matters() -> TestResult {
     Ok(())
 }
 
-/// STP-008 (#139): changing the repository while no step of the plan was ever started is
+/// Changing the repository while no step of the plan was ever started is
 /// nudged once at a turn end; the nudge is not a gate block and never repeats.
 #[tokio::test]
 async fn untracked_work_is_nudged_once() -> TestResult {
@@ -1086,7 +1086,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String
     seen
 }
 
-/// ADR-0114 (SPEC-141 AC1): the agent's Git and `gh` hold the App's narrowed agent token, never
+/// The agent's Git and `gh` hold the App's narrowed agent token, never
 /// a person's: not before its owner signs in with GitHub, not after, and not for an owner without
 /// a linked account. A task with an owner who can act says nothing about the App.
 #[tokio::test]
@@ -1226,7 +1226,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for Isolated {
     fn release(&self, _: &SandboxId) {}
 }
 
-/// SPEC-173 CTR-001 (task #163, #550): the briefing says there is no container engine exactly
+/// The briefing says there is no container engine exactly
 /// when the server runs sandboxes isolated (an isolation adapter is installed).
 #[tokio::test]
 async fn an_isolated_sandboxs_briefing_names_the_missing_container_engine() -> TestResult {
@@ -1257,7 +1257,7 @@ impl yulius_app::ports::isolation::SandboxIsolation for IsolatedWithDocker {
     }
 }
 
-/// SPEC-187 DKR-010: with an engine per sandbox the briefing says Docker works, and no longer
+/// With an engine per sandbox the briefing says Docker works, and no longer
 /// that there is no engine.
 #[tokio::test]
 async fn a_sandbox_with_an_engine_is_told_docker_works() -> TestResult {
@@ -1317,7 +1317,7 @@ async fn steps_follow_the_spec_plan_checklist() -> TestResult {
     Ok(())
 }
 
-/// SPEC-484 PLN-004, PLN-005, AC-11: a spec whose Plan lists every slice of a long task, 36 of
+/// A spec whose Plan lists every slice of a long task, 36 of
 /// them with their parts nested, five ticked, gives 36 steps (30 was the bound, and a longer
 /// Plan was cut). What the agent is told about the plan stands before the list in the
 /// briefing, where a long list cannot push it out, and nothing there tells it to merge slices.
@@ -1369,7 +1369,7 @@ async fn a_plan_of_every_slice_becomes_steps_and_is_not_told_to_shrink() -> Test
     Ok(())
 }
 
-/// SPEC-341 LSS-002: the spec sync now also runs while a turn goes on, next to the agent's step
+/// The spec sync now also runs while a turn goes on, next to the agent's step
 /// tools. It waits for the task's steps lock and reads the steps only then, so a status changed
 /// while it waited is kept, never written back to the one before.
 #[tokio::test]
@@ -1512,7 +1512,7 @@ async fn a_spec_among_hundreds_is_found_and_the_slug_named_one_wins() -> TestRes
     Ok(())
 }
 
-/// SPEC-140 HKS-001 (#404): the hook client gives up after `HOOK_TIMEOUT` and lets the agent go on
+/// The hook client gives up after `HOOK_TIMEOUT` and lets the agent go on
 /// (fail-open), closing its connection, and hyper then drops the request's handler. A hook Yulius
 /// received is still applied to its end, whatever becomes of its handler. Here a notice that asks a
 /// person: a layer starts its handler and never drives it further (as a dropped handler), and the
@@ -1622,7 +1622,7 @@ async fn attempt_session(f: &Fixture) -> Result<Option<String>, Box<dyn std::err
         .provider_session_id)
 }
 
-/// SPEC-281 SSN-001: the TUI's `SessionStart` naming another session (`/clear`) makes it the
+/// The TUI's `SessionStart` naming another session (`/clear`) makes it the
 /// attempt's and records it in the lineage at once, so a restart before the supervisor's next
 /// drift check cannot lose it.
 #[tokio::test]
@@ -1646,7 +1646,7 @@ async fn session_start_with_another_session_adopts_it_at_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-281 SSN-001: a session id the hook reports is a path component later; one Yulius does not
+/// A session id the hook reports is a path component later; one Yulius does not
 /// accept (a traversal, an option, too long) changes nothing.
 #[tokio::test]
 async fn session_start_ignores_an_invalid_session_id() -> TestResult {
@@ -1704,7 +1704,7 @@ async fn session_start_refuses_another_tasks_session() -> TestResult {
     Ok(())
 }
 
-/// SPEC-358 MSB-007 (review round 2): an answered Stop is kept in the run directory, so a
+/// An answered Stop is kept in the run directory, so a
 /// restarted server does not wake the turn it settled.
 #[tokio::test]
 async fn an_answered_stop_is_kept_in_the_run_directory() -> TestResult {
@@ -1750,7 +1750,7 @@ async fn pre_tool_use(
     ))
 }
 
-/// SPEC-426 EDG-002/003 (AC1, AC2): a code edit of a task that needs a spec waits until the spec
+/// A code edit of a task that needs a spec waits until the spec
 /// has a Plan; documentation, reads and files outside the worktree are never held.
 #[tokio::test]
 async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
@@ -1820,7 +1820,7 @@ async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
     Ok(())
 }
 
-/// SPEC-426 AC3: a task whose workflow needs no spec (research) and an onboarding task edit code
+/// A task whose workflow needs no spec (research) and an onboarding task edit code
 /// freely.
 #[tokio::test]
 async fn edits_without_a_spec_gate_pass() -> TestResult {
@@ -1836,7 +1836,7 @@ async fn edits_without_a_spec_gate_pass() -> TestResult {
     Ok(())
 }
 
-/// SPEC-426 EDG-002 (review round 1): a relative path is placed from the agent's folder (`cwd`),
+/// A relative path is placed from the agent's folder (`cwd`),
 /// a path through a link to the worktree is the worktree's, a task without a spec path is told
 /// the specs directory, and a Plan of nested items only is no Plan.
 #[tokio::test]
@@ -1893,7 +1893,7 @@ async fn edits_are_placed_from_the_agents_folder_and_through_links() -> TestResu
     Ok(())
 }
 
-/// SPEC-426 EDG-005 (review round 3): the edit gate never gives up. Claude Code runs each edit's
+/// The edit gate never gives up. Claude Code runs each edit's
 /// hook as its block finishes streaming, so neither call counts nor time windows tell one
 /// response from the next; the way through is always open (the spec is documentation), and an
 /// agent that loops meets the Stop gate, which asks a person after three blocks.
@@ -1934,7 +1934,7 @@ async fn the_edit_gate_holds_every_edit_until_the_plan_exists() -> TestResult {
     Ok(())
 }
 
-/// SPEC-426 EDG-002 (review round 4): what the gate cannot decide passes: a spec that exists but
+/// What the gate cannot decide passes: a spec that exists but
 /// cannot be read (a link) and a workflow the store cannot read never hold an edit, which would
 /// otherwise stay held for good.
 #[tokio::test]
@@ -1995,7 +1995,7 @@ async fn an_edit_the_gate_cannot_judge_passes() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-007: a Codex run's hooks reach Yulius as Claude Code's do: SessionStart names the
+/// A Codex run's hooks reach Yulius as Claude Code's do: SessionStart names the
 /// session (Codex has no `--session-id`) and answers the briefing in the shape Codex reads; a hook
 /// of another harness than the run's is refused, and an unknown harness is not a hook.
 #[tokio::test]
@@ -2901,7 +2901,7 @@ async fn goal_stop_restores_working_when_the_turn_was_last_seen_waiting() -> Tes
     Ok(())
 }
 
-/// The PR watcher already pasted run `id`'s failure into the session (SPEC-578): what is
+/// The PR watcher already pasted run `id`'s failure into the session: what is
 /// left after that is the agent's own Stop.
 fn told_red_run(f: &Fixture, id: &str) -> TestResult {
     std::fs::write(
@@ -2930,7 +2930,7 @@ async fn red_ordinary_run(f: &Fixture, id: &str, sha: &str, at: i64) -> TestResu
 
 /// Quartio-v2 #325 stopped after five of seven steps with its pull request red (SPEC-558
 /// AC-3): either unfinished condition alone continues the goal, up to the Stop bound. The
-/// decision reads no GitHub: a held checks lookup cannot delay or change it (ADR-0447).
+/// decision reads no GitHub: a held checks lookup cannot delay or change it.
 #[tokio::test]
 async fn codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone() -> TestResult {
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Step 1").await?;
@@ -3015,11 +3015,11 @@ async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResu
         &[],
     )
     .await?;
-    ends_uncharged(&f, Agent::Codex).await?;
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
-/// A failure the watch has not pasted in is not the gate's to charge (SPEC-578). Here the
+/// A failure the watch has not pasted in is not the gate's to charge. Here the
 /// watch cannot see the run (a busy sandbox pushed it out of its window), so Stop does not
 /// hand over to it, and only the told check keeps the turn from being charged.
 #[tokio::test]
@@ -3028,7 +3028,7 @@ async fn codex_goal_stop_leaves_an_untold_failure_uncharged() -> TestResult {
     told_red_run(&f, "an-older-run")?;
     red_ordinary_run(&f, "untold-red-at-head", head.trim(), 10).await?;
     busy_sandbox(&f).await?;
-    ends_uncharged(&f, Agent::Codex).await?;
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
@@ -3053,9 +3053,9 @@ async fn red_at_head(f: &Fixture, head: &str) -> TestResult {
     red_ordinary_run(f, "red-at-head", head, 10).await
 }
 
-/// `agent`'s Stop ends the turn without spending an attempt.
-async fn ends_uncharged(f: &Fixture, agent: Agent) -> TestResult {
-    let stop = stop_of(f, agent).await?;
+/// Codex's Stop ends the turn without spending an attempt.
+async fn ends_uncharged(f: &Fixture) -> TestResult {
+    let stop = stop_of(f, Agent::Codex).await?;
     assert!(stop["decision"].is_null(), "{stop}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.gate_blocks, 0);
@@ -3111,7 +3111,7 @@ async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResu
         &[],
     )
     .await?;
-    ends_uncharged(&f, Agent::Codex).await?;
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
@@ -3120,9 +3120,7 @@ async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResu
 #[tokio::test]
 async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestResult {
     let (f, ctx, head) = finished_goal(Agent::Codex).await?;
-    let head = head.trim();
-    told_red_run(&f, "red-at-head")?;
-    red_ordinary_run(&f, "red-at-head", head, 10).await?;
+    red_at_head(&f, &head).await?;
     let branch = ctx.task.branch.clone().ok_or("branch")?;
     crate::support::git(
         &f.worktree,
@@ -3137,8 +3135,8 @@ async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestRe
             pushed.trim(),
         ],
     )?;
-    crate::support::git(&f.worktree, &["reset", "-q", "--hard", head])?;
-    ends_uncharged(&f, Agent::Codex).await?;
+    crate::support::git(&f.worktree, &["reset", "-q", "--hard", &head])?;
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
@@ -3162,12 +3160,12 @@ async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
             },
         )
         .await?;
-    ends_uncharged(&f, Agent::Codex).await?;
+    ends_uncharged(&f).await?;
     Ok(())
 }
 
 /// Claude Code's native goal evaluator and Antigravity's own goal end their turns: the red
-/// pull request continues only a Codex goal (SPEC-558 PKR-003).
+/// pull request continues only a Codex goal.
 #[tokio::test]
 async fn a_red_pr_continues_no_other_harnesss_finished_goal() -> TestResult {
     for agent_kind in [Agent::ClaudeCode, Agent::Antigravity] {
@@ -3493,7 +3491,7 @@ async fn task_brief(f: &Fixture) -> Result<serde_json::Value, Box<dyn std::error
     Ok(support::tool_text(&reply))
 }
 
-/// SPEC-528: a background Stop and the agent's wake are both Working.
+/// A background Stop and the agent's wake are both Working.
 #[tokio::test]
 async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
     let f = task_with_open_step(Agent::Antigravity, TaskMode::Goal, "Run the tests").await?;
@@ -3526,7 +3524,7 @@ async fn antigravity_background_stop_and_autonomous_invocation() -> TestResult {
     Ok(())
 }
 
-/// SPEC-528: an idle Stop with open work gives its reason and only a newer wake reopens it.
+/// An idle Stop with open work gives its reason and only a newer wake reopens it.
 #[tokio::test]
 async fn antigravity_prompt_mode_idle_stop_with_an_open_step_explains_the_wait() -> TestResult {
     let f = task_with_open_step(Agent::Antigravity, TaskMode::Prompt, "Run the tests").await?;
@@ -5249,7 +5247,7 @@ async fn released_parked_check_reads_leave_the_next_two_reads_unblocked() -> Tes
     let github = support::FakeGitHub::default();
     let hold = github.hold_checks();
     github.release_checks(&hold);
-    let token = Secret("fixture".into());
+    let token = Secret::new("fixture".into());
     for sha in ["first", "second"] {
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -6873,7 +6871,7 @@ async fn work_reopened_during_a_parked_check_supplies_the_wait_reason() -> TestR
     Ok(())
 }
 
-/// Another test of this process (#1644): its own runtime on its own thread, as libtest runs a
+/// Another test of this process: its own runtime on its own thread, as libtest runs a
 /// second test beside a parked-read case, with its own fixture whose main task is also `t-main`.
 /// Each [`Neighbour::read`] is one parked `task_get` of that task, which reaches
 /// `ParkedStatusRead` with the same key as the case's hook.

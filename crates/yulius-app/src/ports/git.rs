@@ -289,8 +289,13 @@ pub trait GitPort: Send + Sync {
         remote_branch: &str,
     ) -> AppResult<()> {
         let _ = origin;
-        self.push(repo, local_branch, remote_branch, &Secret(String::new()))
-            .await
+        self.push(
+            repo,
+            local_branch,
+            remote_branch,
+            &Secret::new(String::new()),
+        )
+        .await
     }
     /// The commit `branch` points at on origin, as origin answers now with `token` (not a
     /// remote-tracking ref); `None` when origin has no such branch (SPEC-139).

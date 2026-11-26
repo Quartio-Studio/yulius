@@ -1,4 +1,4 @@
-//! Git page and delivery flows end to end (AC-DLV-1..3, AC-GIT-1/2, AC-DSC-2): the HTTP API
+//! Git page and delivery flows end to end: the HTTP API
 //! over the application with a fake GitHub whose pull requests and refs are backed by a real
 //! bare repository, and a test-local `GitPort` over the real `git` command line.
 
@@ -66,11 +66,11 @@ struct RealGit {
     origin: PathBuf,
     /// Pushes, in order: `<local>-><remote> token=<token>`.
     pushes: std::sync::Mutex<Vec<String>>,
-    /// How the next pushes fail, until cleared (SPEC-139).
+    /// How the next pushes fail, until cleared.
     push_failure: std::sync::Mutex<Option<PushFailure>>,
-    /// When set, `ahead_behind` fails with this message (SPEC-139 PSH-003).
+    /// When set, `ahead_behind` fails with this message.
     ahead_behind_error: std::sync::Mutex<Option<String>>,
-    /// While set, the remote's branches cannot be read (`ls-remote` fails, SPEC-139).
+    /// While set, the remote's branches cannot be read (`ls-remote` fails).
     remote_unreadable: std::sync::atomic::AtomicBool,
     /// A dispatched native Git read can outlive its caller.
     parked_git_hold: std::sync::Mutex<Option<Arc<ParkedGitHold>>>,
@@ -78,7 +78,7 @@ struct RealGit {
     checkout_probe: std::sync::Mutex<Option<Arc<CheckoutProbe>>>,
     overview_log_entered: tokio::sync::Notify,
     overview_log_hold: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
-    /// While set, a refresh of a clone fails (SPEC-493 fix 6).
+    /// While set, a refresh of a clone fails.
     fetch_fails: std::sync::atomic::AtomicBool,
     /// Moved right after every refresh of a clone, as an agent racing it would: `(ref, commit)`
     /// (review round 2 of SPEC-493 fix 6).
@@ -98,7 +98,7 @@ struct CheckoutProbe {
     release: tokio::sync::Notify,
 }
 
-/// An injected push failure, as GitHub's `! [remote rejected] … (failed)` (#366).
+/// An injected push failure, as GitHub's `! [remote rejected] … (failed)`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PushFailure {
     /// The remote is left as it was.
@@ -295,7 +295,7 @@ impl GitPort for RealGit {
             .await
     }
 
-    /// The production adapter (SPEC-083): record numbers, review carry-over, merge attributes.
+    /// The production adapter: record numbers, review carry-over, merge attributes.
     async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
         crate::support::confined_git()
             .list_dir(repo, rev, dir)
@@ -538,7 +538,7 @@ impl GitPort for RealGit {
     async fn import_bundle(&self, _: &Path, _: &Path, _: &str) -> AppResult<Vec<String>> {
         Err(AppError::Upstream("not used".into()))
     }
-    /// The branch policy is read from `yulius.toml` at the integration branch (SPEC-069).
+    /// The branch policy is read from `yulius.toml` at the integration branch.
     async fn follow_up_commits(
         &self,
         worktree: &Path,
@@ -587,7 +587,7 @@ impl GitPort for RealGit {
     }
 }
 
-/// #745 (SPEC-409 VTW-001): the spec's folder swapped for a link to a host folder after its path
+/// The spec's folder swapped for a link to a host folder after its path
 /// was found inside the worktree: the read goes through a handle whose real path is outside it,
 /// so the host's file is refused, not read as the spec.
 #[tokio::test]
@@ -626,7 +626,7 @@ async fn a_spec_folder_swapped_for_a_link_after_its_check_is_not_read() -> TestR
     Ok(())
 }
 
-/// #745 (SPEC-409 VTW-001): the spec swapped for a link to a host file after its check: the
+/// The spec swapped for a link to a host file after its check: the
 /// link at the end is not followed, so the host's file is not read as the spec.
 #[tokio::test]
 async fn a_spec_swapped_for_a_link_after_its_check_is_not_read() -> TestResult {
@@ -772,7 +772,7 @@ async fn fixture_with(
         fetch_fails: std::sync::atomic::AtomicBool::default(),
         forged_after_fetch: std::sync::Mutex::default(),
     });
-    // Environment runs go through the real process host, as in production (SPEC-219); its
+    // Environment runs go through the real process host, as in production; its
     // sockets live at <data>/runs/env-<uuid>/pty.sock, so the data directory's path is short.
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let h = support::harness_with(support::HarnessOptions {
@@ -930,7 +930,7 @@ impl Fixture {
         Ok(worktree)
     }
 
-    /// A task given its branch at creation that has not started: no worktree yet (SPEC-343).
+    /// A task given its branch at creation that has not started: no worktree yet.
     async fn add_unstarted_task(&self, id: &str, title: &str, branch: &str) -> BoxResult<()> {
         self.insert_task(id, title, branch, None, "u-bob").await
     }
@@ -1256,7 +1256,7 @@ async fn adds_to_and_preview_merge_differ_with_several_merge_bases() -> TestResu
     Ok(())
 }
 
-/// AC-DSC-2, AC-GIT-1: the PR is refused until the task has a valid committed spec, which is
+/// The PR is refused until the task has a valid committed spec, which is
 /// discovered and registered; the Git page shows the branch facts, the PR and its checks.
 #[tokio::test]
 async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
@@ -1349,7 +1349,7 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
         "branch pushed first"
     );
     let pull = f.h.github.pull(1).ok_or("pull")?;
-    // The branch policy's conventional title from the branch type (SPEC-069 BPL-006).
+    // The branch policy's conventional title from the branch type.
     assert_eq!(pull.title, "feat: checkout API");
     assert_eq!(
         f.h.github.writes(),
@@ -1369,7 +1369,7 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     assert_eq!(task["behind"], 0);
     assert_eq!(task["files_changed"], 2);
     assert_eq!(task["pr"]["number"], 1);
-    // The standard profile requires checks: none reported yet reads as pending (#68).
+    // The standard profile requires checks: none reported yet reads as pending.
     assert_eq!(task["pr"]["checks"], "pending");
     assert_eq!(page.body["pulls"].as_array().map(Vec::len), Some(1));
     assert_eq!(page.body["recent_commits"][0]["subject"], "Initial commit");
@@ -1378,7 +1378,7 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 D5: an automatic promotion (`auto_promote`) is part of the merge it follows. With
+/// An automatic promotion (`auto_promote`) is part of the merge it follows. With
 /// required checks and Yulius CI, the merge needs the pull request's head green; the
 /// integration head that merge makes has no run of its own yet, and the fast-forward goes on
 /// the merge's checks instead of waiting for ever on a run nobody would act on.
@@ -1424,7 +1424,7 @@ async fn an_automatic_promotion_goes_on_the_checks_of_its_merge() -> TestResult 
     Ok(())
 }
 
-/// SPEC-483 D5: an automatic promotion goes while the integration head's checks have not
+/// An automatic promotion goes while the integration head's checks have not
 /// reported, wherever it starts (after a merge, after an integration environment), and is
 /// stopped by a verdict that is there: with a failed run of Yulius CI at that head, the
 /// environment's confirmation promotes nothing and says why; a person promotes once the run
@@ -1576,7 +1576,7 @@ pub(super) async fn insert_ci_attempt(
     Ok(())
 }
 
-/// AC-DLV-1: standard profile — merging waits for green checks and nothing waits for a person
+/// Standard profile — merging waits for green checks and nothing waits for a person
 /// after it; promotion opens a promotion PR dev → main and merges it on a later request.
 #[tokio::test]
 async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult {
@@ -1652,7 +1652,7 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
             .contains(&"merge_pull #1 squash".to_owned())
     );
     assert_eq!(git(&f.origin, &["show", "dev:feature.txt"])?, "hello");
-    // Hygiene (DLV-007): the merged head branch is deleted on GitHub.
+    // Hygiene: the merged head branch is deleted on GitHub.
     assert!(
         f.h.github
             .writes()
@@ -1673,7 +1673,7 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .is_err()
     );
 
-    // DLV-009: nothing between the merge and promotion waits for a person.
+    // Nothing between the merge and promotion waits for a person.
     let d = f.delivery("t1").await?;
     assert_eq!(d["stage"], "merged_integration");
     assert_eq!(actions(&d), ["promote"]);
@@ -1718,7 +1718,7 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         )
         .await?;
     assert_eq!(waiting.status, StatusCode::CONFLICT);
-    // Checks that can't be read never count as passed for the release either (#111).
+    // Checks that can't be read never count as passed for the release either.
     f.h.github.set_checks_report(
         &promotion_head,
         ChecksReport {
@@ -1741,7 +1741,7 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         unknown.body
     );
     f.h.github.set_checks(&promotion_head, ChecksState::Success);
-    // SPEC-483 D5: a promotion asks what every merge asks. With a run of Yulius CI at that
+    // A promotion asks what every merge asks. With a run of Yulius CI at that
     // head, the run alone decides, whatever GitHub shows from elsewhere: failed, the promotion
     // is refused; run again and passed, it goes.
     use yulius_domain::ci::RunState;
@@ -1799,7 +1799,7 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
     Ok(())
 }
 
-/// AC-DLV-2: product profile — PR into quartio, the dev-VM deployment runs only on an explicit
+/// Product profile — PR into quartio, the dev-VM deployment runs only on an explicit
 /// confirmed request and records its output, then main fast-forwards and the rollout step is
 /// confirmed. Only repository admins change the profile.
 #[tokio::test]
@@ -1984,7 +1984,7 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
 
     // Fast-forward main to the integration head, then confirm the rollout step.
     let quartio = f.origin_sha("quartio")?;
-    // SPEC-483 D5: what goes to production is the integration head, and its checks decide
+    // What goes to production is the integration head, and its checks decide
     // for a fast-forward as for a promotion pull request: a failed run of Yulius CI there
     // refuses it, the run passed again lets it go.
     use yulius_domain::ci::RunState;
@@ -2069,7 +2069,7 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
     Ok(())
 }
 
-/// SPEC-348 ERD-001/002 (#952): an environment run whose request is dropped as soon as its run is
+/// An environment run whose request is dropped as soon as its run is
 /// recorded still runs its command, never staying `running` with nothing executing it, and its
 /// permit is let go. Each poll of the request passes at most one store call and the test reads the
 /// store between polls, so the request is dropped at most one store call past its insert, while
@@ -2117,7 +2117,7 @@ async fn an_environment_run_whose_request_is_dropped_after_its_record_still_runs
     Ok(())
 }
 
-/// AC-DLV-3: studio — after a merge into quartio, main fast-forwards automatically even with
+/// Studio — after a merge into quartio, main fast-forwards automatically even with
 /// failing checks (none are required); switching the profile to gated disables it.
 #[tokio::test]
 async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
@@ -2193,7 +2193,7 @@ async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
     assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
     assert_eq!(merged.body["stage"], "merged_integration");
     assert_eq!(actions(&merged.body), ["promote"]);
-    // Only the merge and the merged branch's deletion (DLV-007), no promotion.
+    // Only the merge and the merged branch's deletion, no promotion.
     let after: Vec<String> = f.h.github.writes()[writes_before..].to_vec();
     assert_eq!(after.len(), 2, "{after:?}");
     assert!(after[0].starts_with("merge_pull #"), "{after:?}");
@@ -2214,7 +2214,7 @@ async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
     Ok(())
 }
 
-/// GIT-002: a pull request head that differs from the head that was checked is never merged.
+/// A pull request head that differs from the head that was checked is never merged.
 #[tokio::test]
 async fn stale_heads_are_refused() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
@@ -2283,13 +2283,13 @@ async fn stale_heads_are_refused() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-005, review round 3 of fix 1c: a merge by merge commit judges the merged head
+/// A merge by merge commit judges the merged head
 /// against the integration branch as it was before the merge (the merge commit's first parent),
 /// not after it. A clean merge of the integration branch after the approval keeps it; a merged
 /// side branch nobody reviewed does not, though the merge put that branch into the integration
 /// branch. The same for a merge made on GitHub and found by Yulius afterwards (fix 1d), by the
 /// reconcile loop or by the sandbox's Git page: its merge commit says the base. A follow-up within
-/// the bound after the approval keeps it too (SPEC-493 APR-001, review round 1 of fix 6).
+/// the bound after the approval keeps it too.
 #[tokio::test]
 async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> TestResult {
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2365,7 +2365,7 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
         if on_github {
             yulius_app::ports::github::GitHubPort::merge_pull(
                 f.h.github.as_ref(),
-                &Secret("token-carol".into()),
+                &Secret::new("token-carol".into()),
                 "Quartio-Studio",
                 "shop",
                 1,
@@ -2417,7 +2417,7 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
     Ok(())
 }
 
-/// SPEC-493 CIR-001, CIR-002 (AC-10): a task that starts its review with its work committed and
+/// A task that starts its review with its work committed and
 /// its review step still open gets its head pushed, its pull request opened and a Yulius CI run
 /// for that head queued at once, before any poll; a review started again at a newer head pushes
 /// it and that head's run supersedes the older one. With uncommitted changes, or a spec that is
@@ -2552,7 +2552,7 @@ async fn a_review_start_delivers_the_head_and_queues_its_run() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 of SPEC-493 fix 3: a review's start syncs CI beside the 60 s loop, so two
+/// A review's start syncs CI beside the 60 s loop, so two
 /// syncs of one sandbox may overlap. Each reads the runs before it queues, so both would queue the
 /// same head. One sync of a sandbox runs at a time, and the head is queued once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
@@ -2627,7 +2627,7 @@ async fn start_delivery_attempt(f: &Fixture) -> TestResult {
             exit_reason: None,
         })
         .await?;
-    // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+    // A live run is a running task (an armed merge lives with it).
     f.h.store
         .transition_task(
             &task,
@@ -2713,7 +2713,7 @@ fn assert_follow_up_accepted((refused, said, audited): (bool, String, String), c
     assert!(audited.contains(counted), "the audit entry: {audited}");
 }
 
-/// SPEC-493 APR-001 to APR-004 (AC-17): an approval carries across a follow-up of at most 20
+/// An approval carries across a follow-up of at most 20
 /// product lines, counted commit by commit, with tests and documents not counted; more, a file of
 /// the reviewed change reverted out of it, or a conflicted merge, needs a new review. Accepted
 /// calls say what was counted.
@@ -2994,7 +2994,7 @@ async fn follow_up_approval_counts_files_loaded_by_product_code() -> TestResult 
     Ok(())
 }
 
-/// AC-GIT-2, AC-DLV-8 (#139): agents deliver their own work only through the gated delivery
+/// Agents deliver their own work only through the gated delivery
 /// tools — a merge needs passed checks and an independent review of the exact head — while reads,
 /// task tokens on the REST API and read-only users never merge, promote or deploy.
 #[tokio::test]
@@ -3045,7 +3045,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     ] {
         assert!(names.contains(&tool.to_owned()), "{tool}");
     }
-    // Agents never promote: production is a person's (ADR-0110).
+    // Agents never promote: production is a person's.
     assert!(!names.iter().any(|n| n.contains("promote")), "{names:?}");
     let delivery_tools = names
         .iter()
@@ -3064,7 +3064,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         json!({"name": "delivery_status", "arguments": {}}),
     )
     .await?;
-    // The agent reads a few lines (SPEC-086 TOL-004): the stage, the pull request, what people
+    // The agent reads a few lines: the stage, the pull request, what people
     // do next and the profile.
     let text = status.body["result"]["content"][0]["text"]
         .as_str()
@@ -3110,7 +3110,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         stale.body
     );
     // While the checks still run, the reviewed head's merge is armed, not refused: Yulius
-    // merges it once they pass (SPEC-011); nothing is merged yet.
+    // merges it once they pass; nothing is merged yet.
     let pending = rpc(
         "tools/call",
         json!({"name": "delivery_merge", "arguments": {"reviewed_head": head}}),
@@ -3176,7 +3176,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     assert_eq!(f.origin_sha("main")?, main_before);
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
 
-    // SPEC-493 REV-005: a review round is recorded for the pull request; the delivery view
+    // A review round is recorded for the pull request; the delivery view
     // lists it, and the merge records who wrote and who reviewed.
     {
         use yulius_app::ports::store::CoordinationStore;
@@ -3254,7 +3254,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         assert_eq!(rounds[0]["reported"], true);
         assert!(f.h.store.review_rounds(&task.id, true).await?.is_empty());
     }
-    // F 2026-10-11 (AC-GIT-3): on GitHub the creator merged and promoted, not the App.
+    // F 2026-10-11: on GitHub the creator merged and promoted, not the App.
     assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
     assert_eq!(f.h.github.actors_of("fast_forward"), ["bob"]);
 
@@ -3312,7 +3312,7 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         1,
@@ -3380,7 +3380,7 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
     let head = f.h.github.pull(2).ok_or("pull 2")?.head_sha;
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         2,
@@ -3426,7 +3426,7 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
     Ok(())
 }
 
-/// #35: a task ready for delivery opens its pull request by itself — with its creator's GitHub
+/// A task ready for delivery opens its pull request by itself — with its creator's GitHub
 /// account, after the branch is pushed — while open steps or uncommitted work keep it waiting;
 /// a merge on GitHub then moves the stage in the background without anyone reading the task.
 #[tokio::test]
@@ -3464,18 +3464,18 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     assert_eq!(d["pr"]["head"], "feat/1-checkout-api");
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     assert_eq!(f.origin_sha("feat/1-checkout-api")?, head, "pushed first");
-    // F 2026-10-11 (AC-GIT-3): the task's creator pushes and opens it, never the App.
+    // F 2026-10-11: the task's creator pushes and opens it, never the App.
     assert_eq!(
         f.pushes(),
         ["feat/1-checkout-api->feat/1-checkout-api token=token-bob"]
     );
     assert_eq!(f.h.github.actors_of("create_pull"), ["bob"]);
-    // MSR-002 (SPEC-028): the opened pull request is said in the terminal, not by message.
+    // The opened pull request is said in the terminal, not by message.
     assert!(f.h.store.task_messages(&t1, 10).await?.is_empty());
     f.h.app.auto_open_pr(&t1).await;
     assert_eq!(pulls_opened(), 1, "one pull request per task");
 
-    // #68: commits made after the pull request opened are pushed to it at the next clean Stop.
+    // Commits made after the pull request opened are pushed to it at the next clean Stop.
     commit_file(&wt, "follow-up.txt", "more", "Follow-up")?;
     let follow_up = git(&wt, &["rev-parse", "HEAD"])?;
     f.h.app.auto_open_pr(&t1).await;
@@ -3491,7 +3491,7 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
         "the creator pushes the follow-up too"
     );
 
-    // MSR-002 (SPEC-028): a conflict, red checks and green ones message nobody; `yulius wait`
+    // A conflict, red checks and green ones message nobody; `yulius wait`
     // and `delivery_status` say them.
     let set_mergeable = |mergeable: Option<bool>| {
         if let Ok(mut pulls) = f.h.github.pulls.lock()
@@ -3512,7 +3512,7 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     // Merged on GitHub: the background round follows it; nobody read the task meanwhile.
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         1,
@@ -3523,7 +3523,7 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     f.h.app.reconcile_deliveries().await;
     let record = f.h.store.delivery(&t1).await?.ok_or("delivery row")?;
     assert_eq!(record.stage, DeliveryStage::MergedIntegration);
-    // #68: the merged pull request stays on its task, so the task stays "Done · merged".
+    // The merged pull request stays on its task, so the task stays "Done · merged".
     let page = f
         .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
         .await?;
@@ -3533,7 +3533,7 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     Ok(())
 }
 
-/// DSC-013 (#139): features and fixes need a spec, documentation does not. A task without a
+/// Features and fixes need a spec, documentation does not. A task without a
 /// workflow that only changed documents opens its pull request with no spec and no plan; once it
 /// changes code, it needs the spec again.
 #[tokio::test]
@@ -3582,7 +3582,7 @@ async fn a_docs_only_task_needs_no_spec_to_deliver() -> TestResult {
     Ok(())
 }
 
-// ---------------------------------------------------------------- merge conflicts (SPEC-083)
+// ---------------------------------------------------------------- merge conflicts
 
 /// A live run of `task` whose agent calls the internal endpoints with the returned credentials.
 async fn live_agent(f: &Fixture, task: &str, token: &str) -> BoxResult<Creds> {
@@ -3608,7 +3608,7 @@ async fn live_agent(f: &Fixture, task: &str, token: &str) -> BoxResult<Creds> {
             exit_reason: None,
         })
         .await?;
-    // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+    // A live run is a running task (an armed merge lives with it).
     f.h.store
         .transition_task(
             &TaskId::parse(task)?,
@@ -3772,7 +3772,7 @@ async fn parallel_tasks_get_their_own_record_numbers() -> TestResult {
     Ok(())
 }
 
-/// SPEC-083 NUM-004: a task's spec number is given out like any record number, so it never takes
+/// A task's spec number is given out like any record number, so it never takes
 /// a number another task reserved (SPEC-020 SPC-001 counted only its own checkout and the spec
 /// paths of other tasks).
 #[tokio::test]
@@ -3799,7 +3799,7 @@ async fn a_spec_number_is_never_one_another_task_reserved() -> TestResult {
 
 /// SPEC-083 REV-001 (33 of 57 merges spent a review round on dev merges or renumbering,
 /// F 2026-10-13): the review of a head carries over Git's own merges of the integration branch
-/// into it; new work after it past 20 product lines (SPEC-493 APR-001) needs a new review.
+/// into it; new work after it past 20 product lines needs a new review.
 #[tokio::test]
 async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestResult {
     let t = ArmedTask::new().await?;
@@ -3809,7 +3809,7 @@ async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestR
     git(&t.wt, &["merge", "--quiet", "--no-edit", "origin/quartio"])?;
     let merged = git(&t.wt, &["rev-parse", "HEAD"])?;
     assert_ne!(merged, t.head);
-    // `delivery_merge` pushes the merge (DMG-001); its checks still run, so the merge arms.
+    // `delivery_merge` pushes the merge; its checks still run, so the merge arms.
     f.h.github.set_checks(&merged, ChecksState::Pending);
     let armed = t.merge_at(&t.head).await?;
     assert_eq!(
@@ -3848,8 +3848,8 @@ async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestR
     Ok(())
 }
 
-/// SPEC-083 MRG-001: in a repository that commits no `.gitattributes`, the changes log every task
-/// adds an entry to conflicts when Yulius brings an armed branch up to date (DLV-203), and its
+/// In a repository that commits no `.gitattributes`, the changes log every task
+/// adds an entry to conflicts when Yulius brings an armed branch up to date, and its
 /// merge is put on hold for the agent. Once Yulius keeps the union merge for the shared logs (at
 /// every task start), the same update merges both entries.
 #[tokio::test]
@@ -3899,7 +3899,7 @@ async fn the_changes_log_merges_by_union_in_any_repository() -> TestResult {
 
     // Without the attribute: on hold, the worktree left as it was.
     assert_eq!(arm_merge(&f, &agent, &head).await?["armed"], true);
-    // Brought up to date once its own checks passed (SPEC-441 MQ-001).
+    // Brought up to date once its own checks passed.
     f.h.github.set_checks(&head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     assert_eq!(git(&wt, &["rev-parse", "HEAD"])?, head, "aborted");
@@ -3930,7 +3930,7 @@ async fn the_changes_log_merges_by_union_in_any_repository() -> TestResult {
     Ok(())
 }
 
-/// #28 (UI-031): the task review reads the worktree's committed, uncommitted and untracked
+/// The task review reads the worktree's committed, uncommitted and untracked
 /// changes against the merge base with `origin/dev`, and the branch's commits, with read access;
 /// a symbolic link is listed but never followed.
 #[tokio::test]
@@ -4007,7 +4007,7 @@ async fn task_review_shows_changes_and_commits() -> TestResult {
     Ok(())
 }
 
-/// #943 (SPEC-343 WTG-001): the Git overview says whether each task's worktree is on disk,
+/// The Git overview says whether each task's worktree is on disk,
 /// was never created (a task not started yet) or is gone, exactly as its changes can or cannot
 /// be read, so the Git page offers them only while they can be.
 #[tokio::test]
@@ -4224,7 +4224,7 @@ async fn unreadable_check_sources_are_said_once_and_never_count_as_passed() -> T
     Ok(())
 }
 
-/// The password superadmin: no GitHub identity, admin on every sandbox (ACC-012).
+/// The password superadmin: no GitHub identity, admin on every sandbox.
 async fn superadmin(h: &support::Harness) -> BoxResult<Creds> {
     let user = UserRecord {
         id: UserId::parse("u-root")?,
@@ -4257,7 +4257,7 @@ async fn superadmin(h: &support::Harness) -> BoxResult<Creds> {
 async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
     let owner = superadmin(&f.h).await?;
-    // The superadmin's own task: only a task's owner delivers it (SPEC-070).
+    // The superadmin's own task: only a task's owner delivers it.
     let wt = f
         .add_task_by("t1", "Checkout API", "feat/1-checkout-api", "dev", "u-root")
         .await?;
@@ -4321,7 +4321,7 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert_eq!(page.body["tasks"][0]["pr"]["number"], 1);
 
-    // Bob may not merge the superadmin's task; once it is handed to him (SPEC-070), he merges
+    // Bob may not merge the superadmin's task; once it is handed to him, he merges
     // the App's pull request as before.
     let refused = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
@@ -4350,7 +4350,7 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
     Ok(())
 }
 
-/// F 2026-10-11 (AC-GIT-3): a task whose creator has no usable GitHub token — here the
+/// F 2026-10-11: a task whose creator has no usable GitHub token — here the
 /// superadmin, with no GitHub identity — still delivers: Yulius pushes and opens its pull request
 /// as the App, and its agent merges as the App instead of being refused; the task's terminal
 /// says once why the App appears.
@@ -4435,10 +4435,10 @@ async fn a_task_without_a_github_creator_delivers_as_the_app() -> TestResult {
     Ok(())
 }
 
-/// #147: Home's cards and the sandbox tabs count "needs you" with the sidebar's rule (`taskInfo`
+/// Home's cards and the sandbox tabs count "needs you" with the sidebar's rule (`taskInfo`
 /// in the web UI): Your turn (stopped with steps open), held prompts, blocked chains and failing
-/// checks count; a paused or ended task, or an idle one with nothing open (answered, SPEC-429),
-/// does not; a tested pull request answers for a finished task once its plan is complete (#139).
+/// checks count; a paused or ended task, or an idle one with nothing open (answered),
+/// does not; a tested pull request answers for a finished task once its plan is complete.
 /// The pull request facts are what the Git overview last read.
 #[tokio::test]
 async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
@@ -4530,7 +4530,7 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     f.h.store.insert_hold(&hold("t6")?).await?;
 
     // Before any Git overview read, t1's pull request is not known; with its plan complete and
-    // nothing asked, it answered (SPEC-429).
+    // nothing asked, it answered.
     assert_eq!(needs().await?, 3);
 
     // Green checks, read by the Git overview: t1 is Done.
@@ -4558,7 +4558,7 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     Ok(())
 }
 
-/// #170: a sandbox's counters split the sidebar's groups with its rule (`taskInfo`): "working"
+/// A sandbox's counters split the sidebar's groups with its rule (`taskInfo`): "working"
 /// plus "queued" is the Working group, "queued" its queued and chained tasks, and "needs you" the
 /// Needs you group. A Done task, a task being stopped and an ended one count nowhere.
 #[tokio::test]
@@ -4622,7 +4622,7 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
     set_steps(&f, "t8", &["done", "pending"]).await?;
 
     // Before any Git overview read, t1's pull request is not known; its plan is complete and
-    // nothing asks: it answered, counted nowhere (SPEC-429).
+    // nothing asks: it answered, counted nowhere.
     assert_eq!(counts().await?, (1, 4, 2));
 
     // Checks running, read by the Git overview: t1 is In review, in the Working group.
@@ -4639,7 +4639,7 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
         .await?;
     assert_eq!(counts().await?, (1, 4, 2));
 
-    // Yulius CI could not run at the head (SPEC-050 STA-101): In review, Working, even with a
+    // Yulius CI could not run at the head: In review, Working, even with a
     // step open again, where its own state would be Your turn.
     use yulius_app::ci::CiRunRecord;
     use yulius_app::ports::store_ext::CiStore;
@@ -4721,7 +4721,7 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
     // Once the same predecessor's PR has merged, the chain can start.
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         1,
@@ -5663,7 +5663,7 @@ impl ArmedTask {
         assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
         let head = git(&wt, &["rev-parse", "HEAD"])?;
         f.h.github.set_checks(&head, ChecksState::Pending);
-        // Its plan is finished, as `delivery_merge` needs to deliver a later head (DMG-001).
+        // Its plan is finished, as `delivery_merge` needs to deliver a later head.
         set_steps(&f, "t1", &["done", "done"]).await?;
         start_delivery_attempt(&f).await?;
         let internal = yulius_server::internal_router(f.h.app.clone())
@@ -5762,9 +5762,9 @@ impl ArmedTask {
     }
 }
 
-/// SPEC-011: `delivery_merge` while the checks of the reviewed head still run arms the merge;
+/// `delivery_merge` while the checks of the reviewed head still run arms the merge;
 /// Yulius merges exactly that head once they pass, and `yulius wait` (the internal wait endpoint)
-/// sees each step and how the merge ended (MSR-003) without any polling by the agent.
+/// sees each step and how the merge ended without any polling by the agent.
 #[tokio::test]
 async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     let t = ArmedTask::new().await?;
@@ -5779,7 +5779,7 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     f.h.app.merge_armed(&sandbox).await;
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
 
-    // MSR-003: while Yulius decides (GitHub is slow), the merge still reads as armed, so a wait
+    // While Yulius decides (GitHub is slow), the merge still reads as armed, so a wait
     // never ends on a decision that was not made.
     let hold = f.h.github.hold_checks();
     let app = f.h.app.clone();
@@ -5837,7 +5837,7 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 D3: a task's change merges into the integration branch only. An agent's own token
+/// A task's change merges into the integration branch only. An agent's own token
 /// may change its pull request's base; a pull request pointed at another branch (production)
 /// is not merged by the armed merge, cannot be armed, and is refused to a person too, until it
 /// goes into the integration branch again.
@@ -5904,7 +5904,7 @@ async fn a_pull_request_pointed_at_another_branch_is_never_merged() -> TestResul
     Ok(())
 }
 
-/// SPEC-206 RMV-001 (#624): nothing armed in a removed sandbox is merged. A CI run that ends
+/// Nothing armed in a removed sandbox is merged. A CI run that ends
 /// after the removal (green) calls `merge_armed`; the removed sandbox's pull request stays open.
 #[tokio::test]
 async fn a_removed_sandbox_merges_nothing_it_had_armed() -> TestResult {
@@ -5946,7 +5946,7 @@ fn settled(now: &Value, before: Option<&Value>) -> BoxResult<Option<String>> {
     Ok(yulius::wait_cli::settled(&now, before.as_ref()))
 }
 
-/// #249 (SPEC-064 WAI-001): with a merge armed and its checks pending, `yulius wait` keeps
+/// With a merge armed and its checks pending, `yulius wait` keeps
 /// waiting, and ends with the merge's outcome once Yulius decides it.
 #[tokio::test]
 async fn a_wait_on_an_armed_merge_with_pending_checks_keeps_waiting() -> TestResult {
@@ -5979,7 +5979,7 @@ async fn a_wait_on_an_armed_merge_with_pending_checks_keeps_waiting() -> TestRes
     Ok(())
 }
 
-/// #248 (SPEC-064 WAI-002): the agent arms a new head while Yulius still decides the merge it
+/// The agent arms a new head while Yulius still decides the merge it
 /// armed before (GitHub is slow). That earlier decision neither puts the old merge back over the
 /// new one nor ends the wait on the new one with the old one's outcome.
 #[tokio::test]
@@ -6034,7 +6034,7 @@ async fn a_merge_armed_while_an_earlier_one_is_decided_supersedes_it() -> TestRe
     Ok(())
 }
 
-/// #251 (SPEC-064 WAI-004, SPEC-020): `reconcile_deliveries` queues an errored Yulius CI run at
+/// `reconcile_deliveries` queues an errored Yulius CI run at
 /// an open pull request's head again once by itself (it could not run: not the code), never a
 /// third time, and never for a pull request that conflicts with its base.
 #[tokio::test]
@@ -6138,7 +6138,7 @@ fn advance_base(f: &Fixture, base: &str, file: &str, content: &str) -> TestResul
     Ok(())
 }
 
-/// DLV-203: an armed merge whose branch fell behind its base is brought up to date by Yulius (a
+/// An armed merge whose branch fell behind its base is brought up to date by Yulius (a
 /// merge in the task's worktree, pushed as a fast-forward) and stays armed for the new head,
 /// which is merged once its checks pass; a real conflict is aborted, leaves the worktree as it
 /// was and tells the agent what to resolve.
@@ -6162,7 +6162,7 @@ async fn an_armed_merge_behind_its_base_is_brought_up_to_date() -> TestResult {
     git(&t.wt, &["config", "user.email", "bob@yulius.test"])?;
 
     // A real conflict first: the base adds the same file differently. The head's own checks
-    // finish first (SPEC-441 MQ-001).
+    // finish first.
     t.arm().await?;
     advance_base(f, "quartio", "landing.txt", "base version")?;
     f.h.app.merge_armed(&sandbox).await;
@@ -6204,7 +6204,7 @@ async fn an_armed_merge_is_kept_current_and_merged_on_green() -> TestResult {
     git(&t.wt, &["config", "user.email", "bob@yulius.test"])?;
     t.arm().await?;
     advance_base(f, "quartio", "other.txt", "unrelated")?;
-    // Not while the head's own checks run (SPEC-441 MQ-001): only once they passed.
+    // Not while the head's own checks run: only once they passed.
     f.h.app.merge_armed(&sandbox).await;
     assert_eq!(
         git(&t.wt, &["rev-parse", "HEAD"])?,
@@ -6233,7 +6233,7 @@ async fn an_armed_merge_is_kept_current_and_merged_on_green() -> TestResult {
     Ok(())
 }
 
-/// DLV-205: an armed merge survives a restart. It is saved when armed and put back for a running
+/// An armed merge survives a restart. It is saved when armed and put back for a running
 /// task at startup (a deploy dropped them all, and agents waited for merges that no longer
 /// existed).
 #[tokio::test]
@@ -6274,7 +6274,7 @@ async fn an_armed_merge_survives_a_restart() -> TestResult {
     Ok(())
 }
 
-/// SPEC-358 MSB-008: a merge armed before a restart whose checks passed while Yulius was down
+/// A merge armed before a restart whose checks passed while Yulius was down
 /// merges as the new server starts, not at its delivery loop's first round minutes later.
 #[tokio::test]
 async fn an_armed_merge_green_during_a_restart_merges_at_the_start() -> TestResult {
@@ -6302,7 +6302,7 @@ async fn an_armed_merge_green_during_a_restart_merges_at_the_start() -> TestResu
     Ok(())
 }
 
-/// SPEC-483 D6: an armed merge lives with the run that armed it, by one rule with and without
+/// An armed merge lives with the run that armed it, by one rule with and without
 /// a restart. A task whose run only waits (no capacity, a subscription switch) keeps its armed
 /// merge across a restart. A task that was closed loses it: the next pass says so instead of
 /// merging the pull request behind the person's back once its checks pass, and a new server
@@ -6514,7 +6514,7 @@ fn saved_arms(path: &Path) -> BoxResult<Value> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
-/// SPEC-615 CMA-001 (issue #1564): a fresh server reading the entry of an activation the ordinary
+/// A fresh server reading the entry of an activation the ordinary
 /// queue already decided does not arm it again; the restore clears it.
 #[tokio::test]
 async fn an_ordinary_verdict_consumes_its_saved_arm_when_the_clear_failed() -> TestResult {
@@ -6531,7 +6531,7 @@ async fn an_ordinary_verdict_consumes_its_saved_arm_when_the_clear_failed() -> T
     Ok(())
 }
 
-/// SPEC-615 CMA-002: a re-arm of the same head after that verdict is a new activation; a fresh
+/// A re-arm of the same head after that verdict is a new activation; a fresh
 /// server restores it with the place it was saved with.
 #[tokio::test]
 async fn a_later_rearm_of_the_same_head_keeps_its_place_across_a_restart() -> TestResult {
@@ -6557,7 +6557,7 @@ async fn a_later_rearm_of_the_same_head_keeps_its_place_across_a_restart() -> Te
     Ok(())
 }
 
-/// SPEC-615 CMA-003: while the verdict cannot be read (the read fails, or its detail is damaged),
+/// While the verdict cannot be read (the read fails, or its detail is damaged),
 /// the saved activation stays on disk and cannot be replaced; the restore that reads it again
 /// consumes it, and a re-arm then takes a new place.
 #[tokio::test]
@@ -6652,7 +6652,7 @@ async fn a_newly_reviewed_head_gets_a_new_place_and_an_immediate_merge_clears_it
     Ok(())
 }
 
-/// SPEC-116 DMG-001 (task #101): a goal task whose evaluator keeps its turn going never reaches
+/// A goal task whose evaluator keeps its turn going never reaches
 /// the clean end of turn that opens its pull request, so `delivery_merge` delivers the head
 /// itself: pushed, the pull request opened by the task's creator, then the merge armed. A head
 /// that cannot be delivered yet is refused with why, and nothing opens or arms.
@@ -6974,7 +6974,7 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
     assert_eq!(progress().await?, (2, 3));
     assert_eq!(successor().await?, "chained", "two of three slices");
 
-    // Work found later adds steps, and the task says what its plan had at first (PLN-010).
+    // Work found later adds steps, and the task says what its plan had at first.
     let task = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
     assert_eq!(
         task.body["steps"]["first_total"],
@@ -7000,7 +7000,7 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
     );
 
     // Every step finished on the merged head, and the spec still says in-progress: the task has
-    // not said that nothing is left (SPEC-491 DON-004), so the one chained after it waits.
+    // not said that nothing is left, so the one chained after it waits.
     set_steps(&f, "t1", &["done", "done", "done", "skipped", "skipped"]).await?;
     assert_eq!(successor().await?, "chained", "its spec says in-progress");
     // Its spec says done, read at the turn's end: the task is Done, and the one chained after
@@ -7012,7 +7012,7 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
     Ok(())
 }
 
-/// SPEC-484 PLN-002: the hold of a step in progress belongs to delivering a head. A head the
+/// The hold of a step in progress belongs to delivering a head. A head the
 /// open pull request already has is merged whatever step was started since, by the agent's call
 /// and by a person's merge alike, and the delivery view offers the merge it will get.
 #[tokio::test]
@@ -7064,7 +7064,7 @@ async fn a_head_the_pull_request_already_has_merges_whatever_step_was_started_si
     Ok(())
 }
 
-/// SPEC-484 PLN-002: a plan none of whose steps is finished has no finished part to deliver.
+/// A plan none of whose steps is finished has no finished part to deliver.
 #[tokio::test]
 async fn a_merge_call_delivers_nothing_while_no_step_is_finished() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
@@ -7094,7 +7094,7 @@ async fn a_merge_call_delivers_nothing_while_no_step_is_finished() -> TestResult
     Ok(())
 }
 
-/// SPEC-425 FUP-001 to FUP-003 (#1074): work committed on a task's branch after its pull request
+/// Work committed on a task's branch after its pull request
 /// merged is delivered again, as a new pull request of the same task, at the end of a turn and
 /// on `delivery_merge`; a head that adds nothing to the merged one (Git's own merges of the
 /// integration branch) keeps the task merged, and `delivery_merge` never arms a merge of a pull
@@ -7167,7 +7167,7 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
     );
 
     // How #2's armed merge ended belongs to #2: a follow-up opened at the end of a turn starts
-    // without it, so nothing tells #3 that #2 merged (SPEC-444 live check, #1135).
+    // without it, so nothing tells #3 that #2 merged (SPEC-444 live check).
     let merged = wait_state(&f, &agent, &fix).await?;
     assert!(
         merged["merge_outcome"]
@@ -7197,7 +7197,7 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
     Ok(())
 }
 
-/// SPEC-532 (#1299): dev and the task append to the same list since the first PR.
+/// Dev and the task append to the same list since the first PR.
 #[tokio::test]
 async fn a_follow_up_containing_dev_is_judged_by_its_tree() -> TestResult {
     let (f, wt, _) = merged_task().await?;
@@ -7325,7 +7325,7 @@ async fn successor_after_the_turn(f: &Fixture) -> BoxResult<String> {
     Ok(task.body["status"].as_str().unwrap_or_default().to_owned())
 }
 
-/// SPEC-491 DON-002: "no check reported" is "none required" only where the project requires
+/// "no check reported" is "none required" only where the project requires
 /// none. With a profile that requires checks, a pull request nothing reported on is not tested
 /// (as the Git overview reads it since #68), so its task is not Done and the task chained after
 /// it waits; once its checks pass it starts.
@@ -7343,7 +7343,7 @@ async fn a_pull_request_nothing_reported_on_is_not_done_where_checks_are_require
     Ok(())
 }
 
-/// SPEC-491 DON-002: a project whose profile requires no checks has "none required": a pull
+/// A project whose profile requires no checks has "none required": a pull
 /// request without any is tested, as before.
 #[tokio::test]
 async fn a_pull_request_without_checks_is_done_where_none_are_required() -> TestResult {
@@ -7355,7 +7355,7 @@ async fn a_pull_request_without_checks_is_done_where_none_are_required() -> Test
     Ok(())
 }
 
-/// SPEC-491 DON-001: where Yulius's clone cannot answer whether a pull request merges (this
+/// Where Yulius's clone cannot answer whether a pull request merges (this
 /// fixture's Git has no merge check), GitHub's flag decides: a pull request GitHub cannot merge
 /// is not tested, whatever its checks say. Its task is not Done and the task chained after it
 /// waits; it starts once the pull request can merge again. (Where the clone answers, it decides:
@@ -7413,7 +7413,7 @@ async fn a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished
     );
     let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
     assert_eq!(shown.body["spec_unfinished"], true, "{}", shown.body);
-    // Its agent is told what keeps it from Done (DON-007).
+    // Its agent is told what keeps it from Done.
     let agent = live_agent(&f, "t1", "tok-agent").await?;
     let told = "Every step is finished and the spec says `status: in-progress`, so the task is \
                 not Done and tasks waiting for it do not start.";
@@ -7471,7 +7471,7 @@ async fn a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished
     Ok(())
 }
 
-/// SPEC-491 DON-005: a task closed with its pull request merged and every step finished, whose
+/// A task closed with its pull request merged and every step finished, whose
 /// spec says its work is not finished, did not end Done: the task chained after it needs a
 /// person, as after a task closed with steps open. With a spec that says done it starts.
 #[tokio::test]
@@ -7512,7 +7512,7 @@ async fn a_closed_task_whose_spec_says_in_progress_did_not_end_done() -> TestRes
     Ok(())
 }
 
-/// SPEC-491 DON-004 (review of SPEC-491, m2): a task whose spec said in-progress and was then
+/// A task whose spec said in-progress and was then
 /// deleted (the task turned out to need none) has no spec left to say its work is unfinished:
 /// it is decided by its steps alone, Done with its tested pull request, and the chained task
 /// starts.
@@ -7539,7 +7539,7 @@ async fn a_task_whose_spec_was_deleted_is_decided_by_its_steps() -> TestResult {
     Ok(())
 }
 
-/// SPEC-491 DON-004 (review of SPEC-491, round 2): the live sync runs every few seconds, and
+/// The live sync runs every few seconds, and
 /// every task is given a spec path at its start whether or not it ever writes one. With no
 /// status kept there is nothing a moved or deleted spec could leave stale, so the sync does not
 /// look through the specs folder for one: a spec written under another name is found by the
@@ -7594,7 +7594,7 @@ async fn merge_on_github(f: &Fixture, number: u64, head: &str) -> TestResult {
     f.h.github.set_checks(head, ChecksState::Success);
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         number,
@@ -7607,7 +7607,7 @@ async fn merge_on_github(f: &Fixture, number: u64, head: &str) -> TestResult {
     Ok(())
 }
 
-/// SPEC-425 FUP-002 and FUP-003 (review of #407): what is not new work after the merge opens
+/// What is not new work after the merge opens
 /// nothing, and what Yulius cannot judge is said to `delivery_merge`, never "already merged" nor
 /// armed: a follow-up merged outside Yulius, an open step, a rewritten branch, GitHub not
 /// answering for the merged pull request.
@@ -7661,7 +7661,7 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     )?;
     let manual = yulius_app::ports::github::GitHubPort::create_pull(
         f.h.github.as_ref(),
-        &Secret("token-bob".into()),
+        &Secret::new("token-bob".into()),
         "Quartio-Studio",
         "shop",
         &yulius_app::ports::github::NewPull {
@@ -7675,7 +7675,7 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     f.h.github.set_checks(&fix, ChecksState::Success);
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         manual.number,
@@ -7750,7 +7750,7 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     Ok(())
 }
 
-/// SPEC-425 (review of #407, rounds 2 and 3): a follow-up merged by hand from a branch that
+/// A follow-up merged by hand from a branch that
 /// never merged `dev` stays covered once `dev` changes a file of the merged pull request (what
 /// the head changed is read since the merged head, not since the old fork point); a head whose
 /// change conflicts with `dev` is unknown and noted for `yulius wait`, the note goes once the
@@ -7790,7 +7790,7 @@ async fn a_follow_up_merged_by_hand_is_judged_since_the_merged_head() -> TestRes
     )?;
     let manual = yulius_app::ports::github::GitHubPort::create_pull(
         f.h.github.as_ref(),
-        &Secret("token-bob".into()),
+        &Secret::new("token-bob".into()),
         "Quartio-Studio",
         "shop",
         &yulius_app::ports::github::NewPull {
@@ -7804,7 +7804,7 @@ async fn a_follow_up_merged_by_hand_is_judged_since_the_merged_head() -> TestRes
     f.h.github.set_checks(&by_hand, ChecksState::Success);
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         manual.number,
@@ -7903,7 +7903,7 @@ async fn a_follow_up_merged_by_hand_is_judged_since_the_merged_head() -> TestRes
     Ok(())
 }
 
-/// SPEC-425 (review of #407, finding 4): a merged task that is a member of a live merge train
+/// A merged task that is a member of a live merge train
 /// is not delivered anew while the train counts on its stage, once the train ends it is; a head
 /// with nothing new reads "already merged" during the train too (round 4).
 #[tokio::test]
@@ -7971,7 +7971,7 @@ async fn work_after_the_merge_waits_for_a_live_merge_train() -> TestResult {
     Ok(())
 }
 
-/// SPEC-425 (review of #407, round 5): without CI no train advances or ends, so a merge-trains
+/// Without CI no train advances or ends, so a merge-trains
 /// file left over from when it ran holds nothing: the follow-up opens.
 #[tokio::test]
 async fn a_leftover_train_holds_nothing_without_ci() -> TestResult {
@@ -7992,7 +7992,7 @@ async fn a_leftover_train_holds_nothing_without_ci() -> TestResult {
     Ok(())
 }
 
-/// DLV-204: when the end of a turn delivers nothing because a step is still open, `yulius wait`
+/// When the end of a turn delivers nothing because a step is still open, `yulius wait`
 /// says so instead of waiting for a push that never comes (#34 waited 42 minutes).
 #[tokio::test]
 async fn an_undelivered_head_says_what_blocks_it() -> TestResult {
@@ -8017,7 +8017,7 @@ async fn an_undelivered_head_says_what_blocks_it() -> TestResult {
     Ok(())
 }
 
-/// SPEC-139 PSH-001 (#366): a push Git reports failed while GitHub's branch is at the head counts
+/// A push Git reports failed while GitHub's branch is at the head counts
 /// as done, and clears the note an earlier failed push of that head left.
 #[tokio::test]
 async fn a_push_github_already_has_counts_as_done() -> TestResult {
@@ -8044,7 +8044,7 @@ async fn a_push_github_already_has_counts_as_done() -> TestResult {
     Ok(())
 }
 
-/// SPEC-139 PSH-002 (#366): after Yulius's push failed and the agent pushed the head itself,
+/// After Yulius's push failed and the agent pushed the head itself,
 /// `yulius wait` at that head waits for its checks instead of ending on the old note.
 #[tokio::test]
 async fn a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head() -> TestResult {
@@ -8082,9 +8082,9 @@ async fn a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head(
     Ok(())
 }
 
-/// SPEC-139 PSH-001/002: at the end of a turn, a push that lands while Git reports a failure
+/// At the end of a turn, a push that lands while Git reports a failure
 /// opens the pull request. When the pull request then fails to open, the note says so and is no
-/// push failure: GitHub's branch at the head does not make the wait skip it (#34).
+/// push failure: GitHub's branch at the head does not make the wait skip it.
 #[tokio::test]
 async fn a_pull_request_that_fails_to_open_after_its_push_keeps_its_note() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
@@ -8125,7 +8125,7 @@ async fn a_pull_request_that_fails_to_open_after_its_push_keeps_its_note() -> Te
     Ok(())
 }
 
-/// SPEC-139 PSH-001: a push clears only the note about the head it pushed; a failed push of
+/// A push clears only the note about the head it pushed; a failed push of
 /// another head keeps its note.
 #[tokio::test]
 async fn a_push_clears_only_the_note_about_its_own_head() -> TestResult {
@@ -8148,7 +8148,7 @@ async fn a_push_clears_only_the_note_about_its_own_head() -> TestResult {
     Ok(())
 }
 
-/// SPEC-139 PSH-001: Deliver… opens the pull request when its push lands while Git reports a
+/// Deliver… opens the pull request when its push lands while Git reports a
 /// failure.
 #[tokio::test]
 async fn deliver_opens_the_pull_request_after_a_push_that_landed() -> TestResult {
@@ -8193,7 +8193,7 @@ async fn deliver_opens_the_pull_request_after_a_push_that_landed() -> TestResult
     Ok(())
 }
 
-/// SPEC-139 PSH-002: when the agent pushed a head whose push Yulius could not make and no pull
+/// When the agent pushed a head whose push Yulius could not make and no pull
 /// request is open yet, the wait ends on how to open it instead of waiting for nothing.
 #[tokio::test]
 async fn a_pushed_head_without_a_pull_request_says_how_to_open_it() -> TestResult {
@@ -8227,7 +8227,7 @@ async fn a_pushed_head_without_a_pull_request_says_how_to_open_it() -> TestResul
     Ok(())
 }
 
-/// SPEC-139 PSH-003 (#448): a `delivery_merge` that fails for a reason unrelated to pushing,
+/// A `delivery_merge` that fails for a reason unrelated to pushing,
 /// after an earlier call was refused for an open step since resolved, answers with its own
 /// failure, not the older "not delivered" note about the same head.
 #[tokio::test]
@@ -8267,7 +8267,7 @@ async fn a_merge_call_answers_its_own_failure_not_an_older_note() -> TestResult 
     Ok(())
 }
 
-/// MSR-003: an armed merge whose checks fail or that GitHub refuses ends the wait with why; a
+/// An armed merge whose checks fail or that GitHub refuses ends the wait with why; a
 /// merge made at once afterwards leaves no stale outcome behind.
 #[tokio::test]
 async fn an_armed_merge_says_why_it_was_dropped_or_refused() -> TestResult {
@@ -8320,7 +8320,7 @@ fn edit_pull(f: &Fixture, number: u64, edit: impl FnOnce(&mut GhPull)) {
     }
 }
 
-/// SPEC-069 BPL-003/004/005 (#223): the merge gate checks every pull request against the branch
+/// The merge gate checks every pull request against the branch
 /// policy of the integration branch's `yulius.toml` — the standard preset by default — refuses a
 /// violation with the rule in words and merges once it is fixed; promotion pull requests are
 /// titled and checked too, and a fork's is never taken.
@@ -8500,7 +8500,7 @@ async fn the_branch_policy_gates_every_merge() -> TestResult {
     Ok(())
 }
 
-/// SPEC-069 BPL-004: `delivery_merge` refuses a pull request the policy does not accept before
+/// `delivery_merge` refuses a pull request the policy does not accept before
 /// it arms anything, and an armed merge whose title is changed afterwards is refused, not merged.
 #[tokio::test]
 async fn agents_cannot_arm_or_land_a_merge_the_policy_refuses() -> TestResult {
@@ -8581,7 +8581,7 @@ fn fail_retitles(f: &Fixture, errors: Vec<AppError>) {
     }
 }
 
-/// SPEC-484 PLN-003: the merge call whose merge GitHub cannot take just now (its new title, a
+/// The merge call whose merge GitHub cannot take just now (its new title, a
 /// 502) arms it for the next pass, and with a step of the plan still ahead says that the step
 /// waits for the merge, as every armed answer does.
 #[tokio::test]
@@ -8623,7 +8623,7 @@ async fn a_merge_left_for_the_next_pass_says_the_step_ahead_waits() -> TestResul
     Ok(())
 }
 
-/// SPEC-069 BPL-008 (#381, #382): a pull request Yulius opened after the spec commit alone reads
+/// A pull request Yulius opened after the spec commit alone reads
 /// `docs(spec): …`. Before Yulius merges it, by the armed merge and on the Git page alike, it
 /// takes the type of its most significant commit on GitHub, so the squash commit names the
 /// change; a title a person wrote stays. A title GitHub cannot take for now (a 5xx) keeps the
@@ -8783,7 +8783,7 @@ async fn a_merge_names_the_change_by_its_most_significant_commit() -> TestResult
     Ok(())
 }
 
-/// SPEC-108 PRL-002 (task #93): a moved delivery stage tells the sandbox's browsers to read its
+/// A moved delivery stage tells the sandbox's browsers to read its
 /// pull requests again, whoever moved it; a read that moves nothing announces nothing.
 #[tokio::test]
 async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {
@@ -8829,7 +8829,7 @@ async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         number,
@@ -8915,7 +8915,7 @@ async fn cancelling_an_overview_at_the_final_git_log_admits_a_replacement() -> T
     Ok(())
 }
 
-/// SPEC-108 PRL-007: the read a merge's announcement brings may reach GitHub before its list of
+/// The read a merge's announcement brings may reach GitHub before its list of
 /// open pull requests caught up; a pull request Yulius recorded as merged reads merged anyway.
 #[tokio::test]
 async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> TestResult {
@@ -9028,7 +9028,7 @@ async fn agent_deploys(f: &Fixture) -> BoxResult<Value> {
     f.wait_run(run_id).await
 }
 
-/// #656 (SPEC-219 AC-1): a filter driver an agent plants in the sandbox clone's own configuration
+/// A filter driver an agent plants in the sandbox clone's own configuration
 /// never runs on the host when its agent deploys an environment: the run takes origin's commit
 /// into Yulius's own mirror and writes its files from there.
 #[tokio::test]
@@ -9081,7 +9081,7 @@ async fn an_agent_planted_git_filter_never_runs_on_the_host() -> TestResult {
     Ok(())
 }
 
-/// #656 (SPEC-219 AC-3): an environment run never fetches with the token in the sandbox clone,
+/// An environment run never fetches with the token in the sandbox clone,
 /// whose configuration its agents write: a planted `url.insteadOf` and `http.proxy` change
 /// nothing, and the run deploys origin's head although the clone never saw it.
 #[tokio::test]
@@ -9118,7 +9118,7 @@ async fn an_environment_run_never_fetches_in_the_sandbox_clone() -> TestResult {
     Ok(())
 }
 
-/// #656 (SPEC-219 AC-2): with containment on, an environment command runs in the sandbox's
+/// With containment on, an environment command runs in the sandbox's
 /// containment: a file of the host outside the sandbox and the run is not there, and `HOME` is the
 /// run's own.
 #[cfg(target_os = "linux")]
@@ -9184,7 +9184,7 @@ fn contained() -> support::ConfigureFn {
     Box::new(|config| config.contained = true)
 }
 
-/// SPEC-219 ENV-004: an environment command past the CI job timeout (as CD runs) is killed with
+/// An environment command past the CI job timeout (as CD runs) is killed with
 /// the processes it started, and the run fails saying so.
 #[tokio::test]
 async fn an_environment_command_past_its_timeout_is_killed() -> TestResult {
@@ -9237,7 +9237,7 @@ async fn an_environment_command_past_its_timeout_is_killed() -> TestResult {
     Err(format!("the background child {pid} of the timed-out command was not killed").into())
 }
 
-/// SPEC-300 RDB-002 (#664): an environment command whose files grow past the bound for a run is
+/// An environment command whose files grow past the bound for a run is
 /// stopped before its timeout, and the run is an `error` that says why.
 #[tokio::test]
 async fn an_environment_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
@@ -9276,7 +9276,7 @@ async fn an_environment_run_writing_past_its_disk_bound_is_stopped() -> TestResu
     Ok(())
 }
 
-/// SPEC-219 ENV-004: the process host of a run that a restart left `running` keeps no command
+/// The process host of a run that a restart left `running` keeps no command
 /// going: the startup reconciliation records the run as `error`, then terminates it and removes
 /// the run's directory.
 #[tokio::test]
@@ -9348,7 +9348,7 @@ async fn a_restart_ends_a_running_environment_command() -> TestResult {
     Err(format!("the command {pid} still runs").into())
 }
 
-/// SPEC-219 AC-2 (review of 5d72af32): a command that replaces its run's log with a link to a host
+/// A command that replaces its run's log with a link to a host
 /// file does not get Yulius to read that file into the run's output: the log is read through the
 /// handle Yulius opened before the command started, never by its path again.
 #[tokio::test]
@@ -9444,9 +9444,9 @@ async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> Test
     Ok(())
 }
 
-/// SPEC-219 ENV-003: a production environment's run, which only a person starts, runs as a CD
+/// A production environment's run, which only a person starts, runs as a CD
 /// production run: rooted at its own directory, not the sandbox, with a fresh `HOME` there. Its
-/// files are a production run's, in `<data>/cd/<sandbox>/runs` (SPEC-279 PDE-004).
+/// files are a production run's, in `<data>/cd/<sandbox>/runs`.
 #[tokio::test]
 async fn a_production_environment_run_starts_in_production_containment() -> TestResult {
     let host = Arc::new(crate::support::ScriptedHost::default());
@@ -9522,7 +9522,7 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
     Ok(())
 }
 
-/// SPEC-553 REP-001, REP-002, REP-004: reproduces and verifies the fix for the circular wait
+/// Reproduces and verifies the fix for the circular wait
 /// (`quartio-v2` #322/#323/#324) where an open task-owned PR on a failing previous head waited for
 /// CI on an unpublished clean committed repair while the final verification step remained open.
 #[tokio::test]
@@ -9599,7 +9599,7 @@ async fn a_clean_committed_ci_repair_publishes_to_failing_open_pr_with_verificat
     Ok(())
 }
 
-/// SPEC-553 REP-001, REP-003, REP-004: preserves safeguards for new PRs, non-failing/armed open
+/// Preserves safeguards for new PRs, non-failing/armed open
 /// PRs, dirty worktrees, divergent branches, detached HEAD, human decisions (`needs_you` and
 /// `Blocked` steps), fork/mismatched PRs, and surfaces failed publication in `yulius wait` and
 /// `delivery_status`.
@@ -9788,7 +9788,7 @@ async fn open_pr_ci_repair_preserves_safeguards_and_surfaces_actionable_failures
     Ok(())
 }
 
-/// SPEC-553 REP-002, REP-004: publishing an eligible open-PR CI repair immediately queues
+/// Publishing an eligible open-PR CI repair immediately queues
 /// exact-head Yulius CI; `watch_prs` recovers an unpublished repair for a live task without
 /// emitting a stale failed-run notice across passes, and failed publications surface cleanly in
 /// `yulius wait` and `delivery_status` (live PTY `pr_watch` delivery is tested in `pr_watch.rs`).
@@ -10633,7 +10633,7 @@ async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_b
                 git(&wt, &["push", "--quiet", "origin", "HEAD:docs/1-guide"])?;
                 yulius_app::ports::github::GitHubPort::create_pull(
                     f.h.github.as_ref(),
-                    &Secret("token-carol".into()),
+                    &Secret::new("token-carol".into()),
                     "Quartio-Studio",
                     "shop",
                     &yulius_app::ports::github::NewPull {
@@ -10662,7 +10662,7 @@ async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_b
             f.h.github.set_checks(&head, ChecksState::Success);
             let sha = yulius_app::ports::github::GitHubPort::merge_pull(
                 f.h.github.as_ref(),
-                &Secret("token-carol".into()),
+                &Secret::new("token-carol".into()),
                 "Quartio-Studio",
                 "shop",
                 1,
@@ -10754,7 +10754,7 @@ async fn post_merge_evidence_checks_the_pr_number_on_the_git_page() -> TestResul
     f.h.github.set_checks(&head, ChecksState::Success);
     let sha = yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         1,

@@ -1,4 +1,4 @@
-//! The built-in editor's file API (SPEC-001 EDT-001..004, AC-EDT-1): write users list, read and
+//! The built-in editor's file API: write users list, read and
 //! change files of the sandbox repository or a task worktree; paths never leave the folder;
 //! `.git` stays hidden; a file changed on disk is not overwritten silently.
 
@@ -140,7 +140,7 @@ async fn write_users_edit_files_inside_the_folder_only() -> TestResult {
     assert_eq!(through_link.status, StatusCode::FORBIDDEN);
     assert_eq!(std::fs::read_to_string(data.join("secret.txt"))?, "outside");
 
-    // A link to the Git directory inside the folder does not open it either (#59).
+    // A link to the Git directory inside the folder does not open it either.
     std::fs::write(repo.join(".git/config"), "[core]\n")?;
     std::os::unix::fs::symlink(".git", repo.join("meta"))?;
     for path in [
@@ -310,7 +310,7 @@ async fn a_save_never_writes_through_a_planted_temporary_link() -> TestResult {
     Ok(())
 }
 
-/// The Editor looks at the file in front every 2 s with the `sha256` it has (SPEC-181 EDT-014): an
+/// The Editor looks at the file in front every 2 s with the `sha256` it has: an
 /// unchanged file answers 204 with no body, a changed one answers the file, with a read's rules.
 #[tokio::test]
 async fn a_read_with_the_known_sha256_answers_no_content_while_unchanged() -> TestResult {
@@ -395,7 +395,7 @@ fn published(
 
 const SHA: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 
-/// SPEC-127 EDT-008: a writer's selection in a file is relayed, with the path as the files API
+/// A writer's selection in a file is relayed, with the path as the files API
 /// reads it, to the sandbox's writers only; readers may neither send nor receive it.
 #[tokio::test]
 async fn presence_is_relayed_to_writers_only() -> TestResult {
@@ -570,7 +570,7 @@ async fn presence_is_relayed_to_writers_only() -> TestResult {
     Ok(())
 }
 
-/// SPEC-127 EDT-008: malformed updates are refused and relay nothing.
+/// Malformed updates are refused and relay nothing.
 #[tokio::test]
 async fn presence_is_refused_when_malformed() -> TestResult {
     let (h, alice, _, _) = presence_fixture().await?;
@@ -645,7 +645,7 @@ async fn presence_is_refused_when_malformed() -> TestResult {
     .await?;
     assert_eq!(missing.status, StatusCode::NOT_FOUND, "{:?}", missing.body);
     // A link to a folder is not followed to tell what it is (it may lead outside): leaving it is
-    // relayed like leaving a file that is gone (#477).
+    // relayed like leaving a file that is gone.
     let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
     std::os::unix::fs::symlink(repo.join("src"), repo.join("src-link"))?;
     for path in ["src", "src/nothing.rs", "src-link"] {
@@ -679,7 +679,7 @@ async fn presence_is_refused_when_malformed() -> TestResult {
     Ok(())
 }
 
-/// SPEC-127 EDT-009: the notepads' limit, per person and file.
+/// The notepads' limit, per person and file.
 #[tokio::test]
 async fn presence_is_rate_limited() -> TestResult {
     let (h, alice, _, _) = presence_fixture().await?;
@@ -715,7 +715,7 @@ async fn presence_is_rate_limited() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: one person's many files cannot use up the counters everyone shares.
+/// One person's many files cannot use up the counters everyone shares.
 #[tokio::test]
 async fn presence_counters_are_bounded_per_person() -> TestResult {
     let (h, alice, bob, _) = presence_fixture().await?;
@@ -815,7 +815,7 @@ async fn a_read_refuses_a_folder_swapped_for_a_link_after_the_check() -> TestRes
     let outside = data.join("host");
     std::fs::create_dir_all(&outside)?;
     std::fs::write(outside.join("notes.txt"), "host secret\n")?;
-    // Between the check of the resolved path and the read (#657).
+    // Between the check of the resolved path and the read.
     let (folder, target) = (repo.join("docs"), outside.clone());
     yulius_app::race::on(yulius_app::race::Point::FileRead, &repo, move || {
         swap_for_link(&folder, &target).ok();
@@ -859,7 +859,7 @@ async fn a_save_never_lands_in_a_folder_swapped_for_a_link_after_the_check() -> 
     )
     .await?;
     let sha = read.body["sha256"].as_str().ok_or("sha")?.to_owned();
-    // Between the check of the parent folder and the write (#657).
+    // Between the check of the parent folder and the write.
     let (folder, target) = (repo.join("docs"), outside.clone());
     yulius_app::race::on(yulius_app::race::Point::FileWrite, &repo, move || {
         swap_for_link(&folder, &target).ok();
@@ -885,7 +885,7 @@ async fn a_save_never_lands_in_a_folder_swapped_for_a_link_after_the_check() -> 
 }
 
 /// A sandbox `s1` whose `repo/docs` holds `a.txt` and `sub/b.txt`, a host folder `host` holding
-/// the same names, and a hook swapping `repo/docs` for a link to `host` at `point` (#660).
+/// the same names, and a hook swapping `repo/docs` for a link to `host` at `point`.
 async fn docs_swapped_at(
     point: yulius_app::race::Point,
 ) -> Result<(support::Harness, support::Creds, std::path::PathBuf), Box<dyn std::error::Error>> {
@@ -1035,7 +1035,7 @@ async fn a_file_on_the_way_is_not_a_folder_to_create_in_or_delete_from() -> Test
     Ok(())
 }
 
-/// SPEC-340 EWT-001: the folders the editor can open, each with its branch: the sandbox
+/// The folders the editor can open, each with its branch: the sandbox
 /// repository first, then every task worktree on disk, newest first, writable for its owner only.
 #[tokio::test]
 async fn the_folder_list_names_every_worktree_by_branch() -> TestResult {
@@ -1159,7 +1159,7 @@ async fn the_folder_list_names_every_worktree_by_branch() -> TestResult {
     Ok(())
 }
 
-/// SPEC-340 EWT-001: a `HEAD` or `.git` replaced by a link (a contained shell is root in its
+/// A `HEAD` or `.git` replaced by a link (a contained shell is root in its
 /// sandbox) names no branch: the server reads nothing outside the sandbox for it.
 #[tokio::test]
 async fn the_folder_list_reads_no_branch_through_a_planted_link() -> TestResult {
@@ -1224,7 +1224,7 @@ async fn the_folder_list_reads_no_branch_through_a_planted_link() -> TestResult 
     Ok(())
 }
 
-/// SPEC-340 review: `.git` swapped for a link to another folder after the repository was found
+/// `.git` swapped for a link to another folder after the repository was found
 /// still names no branch from there (ADR-0174: the handle, not the path, is read).
 #[tokio::test]
 async fn the_folder_list_reads_no_branch_through_a_git_folder_swapped_after_the_check() -> TestResult
@@ -1266,7 +1266,7 @@ async fn the_folder_list_reads_no_branch_through_a_git_folder_swapped_after_the_
     Ok(())
 }
 
-/// SPEC-340 review: a pipe planted as `HEAD` blocks nothing; the list answers without a branch.
+/// A pipe planted as `HEAD` blocks nothing; the list answers without a branch.
 #[tokio::test]
 async fn the_folder_list_is_not_held_by_a_pipe_planted_as_head() -> TestResult {
     let h = harness()?;

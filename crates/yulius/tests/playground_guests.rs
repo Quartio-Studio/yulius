@@ -1,4 +1,4 @@
-//! A playground's guests (SPEC-410, ADR-0260): a playground's admin creates an expiring link, a
+//! A playground's guests: a playground's admin creates an expiring link, a
 //! teammate without GitHub joins with a name and works in that playground only, and revoking the
 //! link or its expiry ends it. The fake GitHub, a real store and the harness clock.
 
@@ -42,7 +42,7 @@ struct World {
     owner: Creds,
 }
 
-/// A playground as the server records one (SPEC-099): no GitHub owner, its name as the repository.
+/// A playground as the server records one: no GitHub owner, its name as the repository.
 async fn seed_playground(h: &Harness, id: &str, slug: &str, by: &str) -> BoxResult<SandboxRecord> {
     let sandbox = SandboxRecord {
         id: SandboxId::parse(id)?,
@@ -435,7 +435,7 @@ async fn joining_is_rate_limited_per_client() -> TestResult {
     Ok(())
 }
 
-/// SPEC-490 review round 1: a guest has write access to the playground, yet stops, archives and
+/// A guest has write access to the playground, yet stops, archives and
 /// deletes only their own tasks there; the maker's are refused with why, and stay as they were.
 /// The maker tidies the guest's tasks as anyone who may work there does.
 #[tokio::test]
@@ -457,7 +457,7 @@ async fn a_guest_tidies_only_their_own_tasks() -> TestResult {
         (Method::POST, "/stop"),
         (Method::POST, "/archive"),
         (Method::DELETE, ""),
-        // Nor does a guest take control of the maker's task (SPEC-510 TKC-007).
+        // Nor does a guest take control of the maker's task.
         (Method::POST, "/control/take"),
     ] {
         let path = format!("/api/tasks/{}{rest}", makers.id);
@@ -476,7 +476,7 @@ async fn a_guest_tidies_only_their_own_tasks() -> TestResult {
             "{message}"
         );
     }
-    // Nor does a guest answer what the maker's task asks (SPEC-516 NYA-001).
+    // Nor does a guest answer what the maker's task asks.
     let path = format!("/api/tasks/{}/needs-you/answer", makers.id);
     let refused = call(
         &w.h.router,
@@ -495,7 +495,7 @@ async fn a_guest_tidies_only_their_own_tasks() -> TestResult {
         "{message}"
     );
     // Steering the maker's task, a guest is told to ask: never to take control, which they
-    // cannot, nor that they may put it away (SPEC-510 review round 1).
+    // cannot, nor that they may put it away.
     let path = format!("/api/tasks/{}/continue", makers.id);
     let refused = call(&w.h.router, Method::POST, &path, Some(json!({})), &guest).await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
@@ -749,7 +749,7 @@ async fn sent_naming(w: &World, token: &str, host: &str, name: &str) -> Option<S
     }
 }
 
-/// GST-004: a guest shares the playground's sandbox with its maker's runs, so once a guest has
+/// A guest shares the playground's sandbox with its maker's runs, so once a guest has
 /// joined, no run of the playground gets an agent secret: not the guest's, not the maker's, not a
 /// CI job's that the integration branch (which a guest's merge changes) grants one.
 #[tokio::test]
@@ -887,7 +887,7 @@ impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
     }
 }
 
-/// GST-004: the instance's Vidoc key, which the proxy adds to a project's runs as a virtual
+/// The instance's Vidoc key, which the proxy adds to a project's runs as a virtual
 /// secret, is not added to a playground's runs once a guest joined either.
 #[tokio::test]
 async fn a_playground_with_guests_gets_no_instance_vidoc_key() -> TestResult {
@@ -895,7 +895,7 @@ async fn a_playground_with_guests_gets_no_instance_vidoc_key() -> TestResult {
     let w = world().await?;
     w.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
         std::sync::Arc::new(AnyVidoc),
-        Ok(Some(yulius_app::model::Secret(INSTANCE_KEY.into()))),
+        Ok(Some(yulius_app::model::Secret::new(INSTANCE_KEY.into()))),
     ));
     w.h.app.load_vidoc_key().await;
     seed_task(&w.h, "t1", "p1", "u-alice", TaskStatus::Running, None).await?;
@@ -918,7 +918,7 @@ async fn a_playground_with_guests_gets_no_instance_vidoc_key() -> TestResult {
     Ok(())
 }
 
-/// GST-004: saved agent states (a login kept in the vault) are not restored into a playground a
+/// Saved agent states (a login kept in the vault) are not restored into a playground a
 /// guest shares, or saved from it, whoever's task asks.
 #[tokio::test]
 async fn a_playground_with_guests_keeps_saved_agent_states_out() -> TestResult {
@@ -948,7 +948,7 @@ async fn a_playground_with_guests_keeps_saved_agent_states_out() -> TestResult {
     Ok(())
 }
 
-/// GST-003: a guest's agent configures nothing either: its automation tools are refused, as the
+/// A guest's agent configures nothing either: its automation tools are refused, as the
 /// guest's own requests are.
 #[tokio::test]
 async fn a_guests_task_gets_no_configuring_tool() -> TestResult {
@@ -1000,7 +1000,7 @@ async fn a_guests_task_gets_no_configuring_tool() -> TestResult {
     Ok(())
 }
 
-/// GST-005: revoking a link, or its expiry, also stops what its guests still run: their live and
+/// Revoking a link, or its expiry, also stops what its guests still run: their live and
 /// queued tasks end, so a leaked link keeps nothing working.
 #[tokio::test]
 async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {

@@ -1,4 +1,4 @@
-//! Playgrounds (SPEC-099): a team tries Yulius on its own code without GitHub. A playground's Git
+//! Playgrounds: a team tries Yulius on its own code without GitHub. A playground's Git
 //! lives in a bare repository on the server, outside its sandbox; nothing reaches GitHub. Real Git, a real
 //! store, the fake GitHub (which records every state-changing call) and no GitHub App.
 
@@ -35,7 +35,7 @@ async fn from_template(h: &Harness, creds: &Creds, name: &str) -> BoxResult<supp
     .await
 }
 
-/// A playground's `origin`: a bare repository of the server, outside the sandbox (ADR-0081).
+/// A playground's `origin`: a bare repository of the server, outside the sandbox.
 fn origin_of(h: &Harness, body: &Value) -> PathBuf {
     h.app
         .config
@@ -69,7 +69,7 @@ fn no_github_writes(h: &Harness) -> BoxResult<()> {
     Ok(())
 }
 
-/// PLY-001, PLY-002: without any GitHub App, a template becomes a playground whose Git is a bare
+/// Without any GitHub App, a template becomes a playground whose Git is a bare
 /// repository in its sandbox directory, with `main` and `dev`; tasks may start at once.
 #[tokio::test]
 async fn a_playground_starts_from_a_template_without_github() -> TestResult {
@@ -138,7 +138,7 @@ async fn a_playground_starts_from_a_template_without_github() -> TestResult {
     Ok(())
 }
 
-/// PLY-005: a playground is its maker's and the superadmin's; nobody else sees it.
+/// A playground is its maker's and the superadmin's; nobody else sees it.
 #[tokio::test]
 async fn only_its_maker_and_the_superadmin_see_a_playground() -> TestResult {
     let (h, owner) = world().await?;
@@ -229,7 +229,7 @@ fn file_at(repo: &Path, rev: &str, path: &str) -> BoxResult<String> {
     git_stdout(repo, &["show", &format!("{rev}:{path}")])
 }
 
-/// PLY-001, PLY-003: a folder with `.git` keeps its branches, tags and history; its uncommitted
+/// A folder with `.git` keeps its branches, tags and history; its uncommitted
 /// and untracked work lands as one commit on its own branch, which `dev` starts from; ignored
 /// files stay out.
 #[tokio::test]
@@ -294,7 +294,7 @@ async fn a_folder_with_history_keeps_it_and_its_uncommitted_work() -> TestResult
     Ok(())
 }
 
-/// PLY-003: a folder without `.git` becomes one commit on `main`, and `dev` starts there.
+/// A folder without `.git` becomes one commit on `main`, and `dev` starts there.
 #[tokio::test]
 async fn a_folder_without_git_becomes_one_commit() -> TestResult {
     let (h, owner) = world().await?;
@@ -318,7 +318,7 @@ async fn a_folder_without_git_becomes_one_commit() -> TestResult {
     Ok(())
 }
 
-/// PLY-003: of an uploaded `.git` only the history is taken: its configuration, hooks and
+/// Of an uploaded `.git` only the history is taken: its configuration, hooks and
 /// attributes never reach the server's Git.
 #[tokio::test]
 async fn a_git_config_or_hook_in_the_upload_is_never_taken() -> TestResult {
@@ -383,7 +383,7 @@ async fn a_git_config_or_hook_in_the_upload_is_never_taken() -> TestResult {
     Ok(())
 }
 
-/// PLY-004: an unreadable or oversized upload is refused with its reason and leaves no sandbox
+/// An unreadable or oversized upload is refused with its reason and leaves no sandbox
 /// and no directory behind.
 #[tokio::test]
 async fn an_archive_over_the_bounds_is_refused_and_leaves_nothing() -> TestResult {
@@ -540,7 +540,7 @@ async fn merge(h: &Harness, creds: &Creds, task: &str) -> BoxResult<support::Res
     .await
 }
 
-/// PLY-007: in a playground, the task's merge action and the agent's `delivery_merge` squash
+/// In a playground, the task's merge action and the agent's `delivery_merge` squash
 /// the branch onto the playground's `dev` as one commit with a conventional title, and the task
 /// is merged; no GitHub call.
 #[tokio::test]
@@ -619,10 +619,10 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 REV-005 (review round 2 of fix 1c): a playground merge records whether a review
-/// round approved the head it merged: a commit of the task's own after the approval past the
-/// follow-up bound (SPEC-493 APR-001) is not covered; a clean merge of the integration branch after it is, judged against the integration
-/// branch as it was before this merge.
+/// A playground merge records whether a review round approved the head it merged: a commit of
+/// the task's own after the approval past the follow-up bound is not covered; a clean merge of
+/// the integration branch after it is, judged against the integration branch as it was before
+/// this merge.
 #[tokio::test]
 async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> TestResult {
     use yulius_app::model::ReviewRoundRecord;
@@ -805,7 +805,7 @@ async fn a_playground_delivery_requires_both_branch_and_worktree() -> TestResult
     Ok(())
 }
 
-/// PLY-007: an unfinished task is refused with what to do, and nothing lands.
+/// An unfinished task is refused with what to do, and nothing lands.
 #[tokio::test]
 async fn an_unfinished_task_is_not_merged() -> TestResult {
     let (h, owner) = world().await?;
@@ -846,7 +846,7 @@ async fn an_unfinished_task_is_not_merged() -> TestResult {
     assert_eq!(dirty.status, StatusCode::CONFLICT, "{:?}", dirty.body);
     assert!(text(&dirty).contains("uncommitted"), "{:?}", dirty.body);
 
-    // A playground squashes a task once, with its whole plan (SPEC-484 PLN-001): steps still
+    // A playground squashes a task once, with its whole plan: steps still
     // ahead hold it, whether or not a part is finished.
     for (id, file, steps, open, next) in [
         ("t3", "c.txt", &["pending", "blocked"][..], 2, "Step 0"),
@@ -886,7 +886,7 @@ fn text(resp: &support::Resp) -> String {
         .to_owned()
 }
 
-/// #1258: every local prerequisite can be met while the branch has nothing to deliver.
+/// Every local prerequisite can be met while the branch has nothing to deliver.
 #[tokio::test]
 async fn a_playground_task_level_with_dev_offers_no_squash() -> TestResult {
     let (h, owner) = world().await?;
@@ -1052,7 +1052,7 @@ async fn a_merge_attribute_on_the_task_does_not_override_the_clone_after_dev_rem
     changed_merge_attribute(AttributeFixtureChecks::RemovedOnDev, true).await
 }
 
-/// PLY-007: a branch that conflicts with the playground's `dev` is refused naming the files and
+/// A branch that conflicts with the playground's `dev` is refused naming the files and
 /// the remedy.
 #[tokio::test]
 async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
@@ -1099,7 +1099,7 @@ async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
     Ok(())
 }
 
-/// PLY-008: with a GitHub App configured, a ready playground task still opens no pull request at
+/// With a GitHub App configured, a ready playground task still opens no pull request at
 /// the end of its turn, and its delivery view and Git page carry the playground note instead of
 /// a GitHub error.
 #[tokio::test]
@@ -1145,7 +1145,7 @@ async fn a_playground_never_calls_github() -> TestResult {
     Ok(())
 }
 
-/// PLY-003: an uploaded `.git/objects/info/alternates` is never taken, so an upload cannot make
+/// An uploaded `.git/objects/info/alternates` is never taken, so an upload cannot make
 /// the server's Git read another repository on the server (here: a commit only it has).
 #[tokio::test]
 async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
@@ -1216,7 +1216,7 @@ async fn agent_tool(h: &Harness, token: &str, name: &str, arguments: Value) -> B
     Ok(called.body["result"].clone())
 }
 
-/// Review B1 (PLY-005, PLY-006): a playground has no deploy, so its maker — anyone signed in —
+/// A playground has no deploy, so its maker — anyone signed in —
 /// can never make the server run a command: not through the profile, not through an uploaded
 /// `yulius.toml`, not through an environment run.
 #[tokio::test]
@@ -1280,7 +1280,7 @@ async fn a_playground_runs_no_environment_command() -> TestResult {
     Ok(())
 }
 
-/// Review B2, M4 (PLY-002): a playground's agent gets no GitHub credential, and its GitHub tools
+/// Review B2, M4: a playground's agent gets no GitHub credential, and its GitHub tools
 /// (issues, promotion) answer with the playground note instead of calling GitHub.
 #[tokio::test]
 async fn a_playgrounds_agent_gets_no_github_token_or_tool() -> TestResult {
@@ -1338,7 +1338,7 @@ async fn a_playgrounds_agent_gets_no_github_token_or_tool() -> TestResult {
     Ok(())
 }
 
-/// Review M1 (PLY-003): a browser cannot read file modes or links, so a repository's executable
+/// A browser cannot read file modes or links, so a repository's executable
 /// files and links stay as committed when only that differs in the upload.
 #[tokio::test]
 async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestResult {
@@ -1386,7 +1386,7 @@ async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestRe
     Ok(())
 }
 
-/// Review M2 (PLY-003): a shallow repository keeps its branches and history.
+/// A shallow repository keeps its branches and history.
 #[tokio::test]
 async fn a_shallow_repository_keeps_its_branches() -> TestResult {
     let (h, owner) = world().await?;
@@ -1466,7 +1466,7 @@ async fn a_person_makes_at_most_ten_playgrounds() -> TestResult {
     Ok(())
 }
 
-/// Review M3 (PLY-004): a client that goes away while the playground is being set up (a closed
+/// A client that goes away while the playground is being set up (a closed
 /// tab) leaves no directory without its playground: the setup ends on its own.
 #[tokio::test]
 async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
@@ -1530,7 +1530,7 @@ async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
     Ok(())
 }
 
-/// Review round 2 (PLY-002): the clone's `origin` URL is the sandbox's to write, so the server
+/// The clone's `origin` URL is the sandbox's to write, so the server
 /// fetches and lands a playground's merges by the playground's own path, never by that URL: a
 /// clone pointed at another playground neither reads it nor changes its `dev`.
 #[tokio::test]
@@ -1563,7 +1563,7 @@ async fn a_rewritten_origin_url_is_never_followed() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a removed playground keeps its repository on the server's disk, so it still
+/// A removed playground keeps its repository on the server's disk, so it still
 /// counts toward its maker's ten.
 #[tokio::test]
 async fn a_removed_playground_still_counts_toward_the_ten() -> TestResult {
@@ -1591,7 +1591,7 @@ async fn a_removed_playground_still_counts_toward_the_ten() -> TestResult {
     Ok(())
 }
 
-/// Review round 2 (PLY-005, PLY-008): a playground's profile has no environment and no
+/// A playground's profile has no environment and no
 /// automatic promotion, whose confirmation would promote through GitHub.
 #[tokio::test]
 async fn a_playground_profile_has_no_environment_or_automatic_promotion() -> TestResult {
@@ -1627,7 +1627,7 @@ async fn a_playground_profile_has_no_environment_or_automatic_promotion() -> Tes
     Ok(())
 }
 
-/// Review round 3 (PLY-002): `yulius onboard`'s import is for GitHub repositories; an import or a
+/// `yulius onboard`'s import is for GitHub repositories; an import or a
 /// plan naming a playground (its empty owner) is refused before anything asks GitHub.
 #[tokio::test]
 async fn the_cli_import_never_reaches_a_playground() -> TestResult {
@@ -1662,7 +1662,7 @@ async fn the_cli_import_never_reaches_a_playground() -> TestResult {
     Ok(())
 }
 
-/// Review round 3: a long path holding ` size=` is a name, not a PAX size override.
+/// A long path holding ` size=` is a name, not a PAX size override.
 #[tokio::test]
 async fn a_long_path_with_size_in_its_name_is_uploaded() -> TestResult {
     let (h, owner) = world().await?;
@@ -1682,7 +1682,7 @@ async fn a_long_path_with_size_in_its_name_is_uploaded() -> TestResult {
     Ok(())
 }
 
-// ------------------------------------------------------------------ Yulius CI (SPEC-163)
+// ------------------------------------------------------------------ Yulius CI
 
 /// The CI of [`ci_playground`]: one job that fails when the commit has a file named `broken`.
 const CI_JOBS: &str =
@@ -1798,7 +1798,7 @@ fn nothing_on_github(h: &Harness) -> BoxResult<()> {
     Ok(())
 }
 
-/// PCI-001, PCI-005 (#411): a playground's `dev` is tested once per commit with its
+/// A playground's `dev` is tested once per commit with its
 /// `[[ci.jobs]]`, without any GitHub call; its run publishes no commit status and says why.
 #[tokio::test]
 async fn a_playgrounds_dev_is_tested_without_github() -> TestResult {
@@ -1902,7 +1902,7 @@ async fn dev_moves(h: &Harness, body: &Value, from: &str) -> BoxResult<String> {
     }
 }
 
-/// PCI-002, PCI-003, PCI-006 (#411): the agent's `delivery_merge` in a playground with CI tests
+/// The agent's `delivery_merge` in a playground with CI tests
 /// its head merged into `dev` as `dev` is now, arms the merge and leaves `dev` alone while the run
 /// goes; `yulius wait` follows that run; once it passed Yulius squashes the head, and the new
 /// `dev` head reuses the result instead of running again. GitHub hears nothing.
@@ -1988,7 +1988,7 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
             .is_some_and(|r| r.contains("same tree")),
         "the merged dev reuses the task's run: {overview}"
     );
-    // `ci_status` lists the task's own run first, before newer runs of dev (PCI-006).
+    // `ci_status` lists the task's own run first, before newer runs of dev.
     let status = answer(&agent_tool(&h, "tok-t1", "ci_status", json!({})).await?);
     let first = status
         .lines()
@@ -2060,7 +2060,7 @@ async fn a_task_that_changes_the_jobs_is_judged_by_devs() -> TestResult {
     Ok(())
 }
 
-/// SPEC-504 CFG-002 (review round 1): a playground task whose `yulius.toml` is invalid has the
+/// A playground task whose `yulius.toml` is invalid has the
 /// run of its merge fail at once, with a failed job `yulius.toml` naming the parser's message:
 /// it never lands.
 #[tokio::test]
@@ -2083,7 +2083,7 @@ async fn a_task_with_an_invalid_yulius_toml_fails_its_merges_run() -> TestResult
     Ok(())
 }
 
-/// SPEC-483 D4 (review of slice 13), SPEC-504 CFG-003: a playground whose `dev` has a
+/// A playground whose `dev` has a
 /// `yulius.toml` nobody can read, and no earlier valid gate, is repaired by a task, and that
 /// task's merge is tested with the configuration it brings: a broken file never blocks its own
 /// repair.
@@ -2180,7 +2180,7 @@ async fn assert_delivery_ci(
     Ok(())
 }
 
-/// PCI-003 (#411): a head whose merge into `dev` fails its checks never lands: the armed merge is
+/// A head whose merge into `dev` fails its checks never lands: the armed merge is
 /// dropped with why when the run ends, and the next `delivery_merge` is refused (merge on green
 /// only).
 #[tokio::test]
@@ -2313,7 +2313,7 @@ async fn a_playground_squashes_a_task_once_with_its_whole_plan() -> TestResult {
     Ok(())
 }
 
-/// PCI-003 (#411): when `dev` moves while a merge is armed, the next decision tests the head
+/// When `dev` moves while a merge is armed, the next decision tests the head
 /// merged into the new `dev` (the older run is cancelled as superseded) and lands that.
 #[tokio::test]
 async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
@@ -2372,7 +2372,7 @@ async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
     Ok(())
 }
 
-/// PCI-004 (#411): a person's merge in a playground with CI never arms: while Yulius CI tests the
+/// A person's merge in a playground with CI never arms: while Yulius CI tests the
 /// head merged into `dev` it is a 409 saying so, and once that run passed it squashes.
 #[tokio::test]
 async fn a_persons_merge_waits_for_green() -> TestResult {
@@ -2449,7 +2449,7 @@ async fn a_playground_delivery_explains_an_errored_check() -> TestResult {
     assert_delivery_ci(&h, &owner, &body, Some(reason)).await
 }
 
-/// Review round 1, major 1 (PCI-002): where both sides changed a `merge=union` file, the squash
+/// Review round 1, major 1: where both sides changed a `merge=union` file, the squash
 /// lands exactly the tree Yulius CI tested (Git orders a union by which side is "ours").
 #[tokio::test]
 async fn a_union_merged_file_lands_the_tested_tree() -> TestResult {
@@ -2511,7 +2511,7 @@ fn commit_in(worktree: &Path, files: &[(&str, Option<&str>)]) -> BoxResult<Strin
         .to_owned())
 }
 
-/// Review round 1, major 2 (PCI-002): a head reset to an older commit never takes the verdict of
+/// Review round 1, major 2: a head reset to an older commit never takes the verdict of
 /// the head it came from. A passed run of a later commit that removed `broken` does not let the
 /// older commit with `broken` land, and a failed run of a later commit does not refuse the older
 /// one that passes.
@@ -2574,7 +2574,7 @@ async fn a_reset_head_never_takes_a_later_heads_verdict() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 (PCI-004): a person's merge follows the profile's `require_checks` as on
+/// A person's merge follows the profile's `require_checks` as on
 /// GitHub: without required checks it squashes at once.
 #[tokio::test]
 async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
@@ -2612,7 +2612,7 @@ async fn a_persons_merge_without_required_checks_lands_at_once() -> TestResult {
     Ok(())
 }
 
-// ------------------------------------------------- `yulius onboard --playground` (SPEC-171)
+// ------------------------------------------------- `yulius onboard --playground`
 
 /// The router served on a loopback port as `yulius serve` serves it, for the real CLI client.
 async fn serve(h: &Harness) -> BoxResult<(yulius_import::Url, tokio::task::JoinHandle<()>)> {
@@ -2776,7 +2776,7 @@ async fn playgrounds_named(
         .collect())
 }
 
-/// SPEC-171 PGL-001, PGL-003, PGL-004: the real `yulius onboard --playground` on a checkout whose
+/// The real `yulius onboard --playground` on a checkout whose
 /// only remote is not GitHub makes a playground with every branch and tag, the uncommitted work as
 /// one commit on the checked-out branch, `dev`, and the session on its Sessions page. Nothing is
 /// pushed to the checkout's remote, and GitHub is never written to while its permission lookups
@@ -2859,7 +2859,7 @@ async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
     let again = again.map_err(|err| format!("{err}\n{output}"))?;
     assert_eq!(again.sessions_sent, 0, "{output}");
     assert_eq!(playgrounds_named(&h, "shop").await?.len(), 1);
-    // Review round 1: branches it already has are not imported again under `import/`.
+    // Branches it already has are not imported again under `import/`.
     let clone = sandbox_dir(&h, &sandbox).join("repo");
     let local = branches(&clone)?;
     assert!(!local.iter().any(|b| b.starts_with("import/")), "{local:?}");
@@ -2867,7 +2867,7 @@ async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
     Ok(())
 }
 
-/// SPEC-171 PGL-002: without the playground flag an empty owner is still refused, and a new
+/// Without the playground flag an empty owner is still refused, and a new
 /// playground from the CLI needs the checkout's branches.
 #[tokio::test]
 async fn a_cli_playground_needs_the_flag_and_a_bundle() -> TestResult {
@@ -2911,7 +2911,7 @@ async fn a_cli_playground_needs_the_flag_and_a_bundle() -> TestResult {
     Ok(())
 }
 
-/// SPEC-171 PGL-002, PGL-004: into the person's existing playground of that name the CLI upload
+/// Into the person's existing playground of that name the CLI upload
 /// lands as an import does (branches under `import/<login>/`, the uncommitted work on a snapshot
 /// branch, in the sandbox clone): the playground's own branches are untouched, no other is made.
 #[tokio::test]
@@ -2964,7 +2964,7 @@ async fn onboard_cli_uploads_into_an_existing_playground() -> TestResult {
     Ok(())
 }
 
-/// SPEC-171 PGL-002: a CLI upload makes a playground only within the person's limit of 10; their
+/// A CLI upload makes a playground only within the person's limit of 10; their
 /// existing playground of that name still receives it.
 #[tokio::test]
 async fn a_cli_playground_counts_toward_the_ten() -> TestResult {
@@ -3035,7 +3035,7 @@ async fn a_cli_playground_counts_toward_the_ten() -> TestResult {
     Ok(())
 }
 
-// ------------------------------------------------- purging a removed playground (SPEC-171)
+// ------------------------------------------------- purging a removed playground
 
 async fn purge(h: &Harness, creds: &Creds, sid: &str) -> BoxResult<support::Resp> {
     call(
@@ -3056,7 +3056,7 @@ async fn audit_actions(h: &Harness, sid: &str) -> BoxResult<Vec<String>> {
     Ok(entries.into_iter().map(|e| e.action).collect())
 }
 
-/// SPEC-171 PGL-006: the purge of a removed playground deletes nothing while a process of its
+/// The purge of a removed playground deletes nothing while a process of its
 /// sandbox runs (here: an agent run still ending after the removal stopped its task), and
 /// deletes `origin` and the sandbox directory on the first round after it ended.
 #[tokio::test]
@@ -3250,7 +3250,7 @@ async fn reusing_a_purged_playgrounds_ports_leaves_both_holder_trees_absent() ->
     Ok(())
 }
 
-/// SPEC-171 PGL-005, PGL-007: purging on removal deletes the code at once when nothing runs, and
+/// Purging on removal deletes the code at once when nothing runs, and
 /// its maker may make another playground at the limit of 10.
 #[tokio::test]
 async fn purging_a_playground_deletes_its_code_once_nothing_runs() -> TestResult {
@@ -3271,7 +3271,7 @@ async fn purging_a_playground_deletes_its_code_once_nothing_runs() -> TestResult
     assert!(!sandbox_dir(&h, &last).exists());
     let again = from_template(&h, &alice, "lab again").await?;
     assert_eq!(again.status, StatusCode::CREATED, "{:?}", again.body);
-    // The removal's export of its tasks goes with it (SPEC-276 RDA-011).
+    // The removal's export of its tasks goes with it.
     let exports = std::fs::read_dir(h.app.config.data_dir.join("exports"))?.count();
     assert_eq!(exports, 0);
     no_github_writes(&h)?;
@@ -3306,7 +3306,7 @@ async fn a_github_sandbox_s_files_are_purged_and_its_repository_stays() -> TestR
     Ok(())
 }
 
-/// SPEC-652 MEM-007: a sandbox whose homes hold harness memory and instructions, prepared for a
+/// A sandbox whose homes hold harness memory and instructions, prepared for a
 /// guarded session as a launch prepares it, is purged with all of it: the guard leaves nothing
 /// immutable on the host.
 #[tokio::test]
@@ -3336,7 +3336,7 @@ async fn a_sandbox_with_memory_notes_is_purged() -> TestResult {
     Ok(())
 }
 
-/// SPEC-171 PGL-005: only an admin of the playground purges it; a removed playground is purged by
+/// Only an admin of the playground purges it; a removed playground is purged by
 /// the superadmin only (it is invisible to everyone else).
 #[tokio::test]
 async fn only_an_admin_purges_and_the_superadmin_purges_a_removed_one() -> TestResult {
@@ -3366,7 +3366,7 @@ async fn only_an_admin_purges_and_the_superadmin_purges_a_removed_one() -> TestR
     Ok(())
 }
 
-// ------------------------------------------------- review round 1 (SPEC-171)
+// ------------------------------------------------- review round 1
 
 /// A CLI upload of `checkout` into a new playground `name` as the CLI makes it, through the HTTP
 /// API: the job is created and every file uploaded, not completed. Returns the job id.
@@ -3436,9 +3436,9 @@ async fn complete_job(h: &Harness, creds: &Creds, job: &str) -> BoxResult<suppor
     .await
 }
 
-/// Review round 1 (major): a new playground that cannot be made when its upload completes (here:
+/// A new playground that cannot be made when its upload completes (here:
 /// another playground took the person's tenth place meanwhile) keeps the uploaded files, so
-/// completing again once there is room makes it (PGL-003).
+/// completing again once there is room makes it.
 #[tokio::test]
 async fn a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later() -> TestResult {
     use yulius_app::ports::store::UserStore;
@@ -3490,7 +3490,7 @@ async fn a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later(
     Ok(())
 }
 
-/// Review round 1: a person has one new-playground upload open at a time; starting another
+/// A person has one new-playground upload open at a time; starting another
 /// supersedes the earlier one, whose files go, so abandoned uploads cannot pile up on the disk.
 #[tokio::test]
 async fn a_new_playground_upload_supersedes_an_unfinished_one() -> TestResult {
@@ -3539,7 +3539,7 @@ async fn a_new_playground_upload_supersedes_an_unfinished_one() -> TestResult {
     Ok(())
 }
 
-/// Review round 1 (PGL-006): the purge waits for a CI run of the sandbox too (its checkouts are
+/// The purge waits for a CI run of the sandbox too (its checkouts are
 /// claimed while a run executes), and an already purged playground is not purged or audited again.
 #[tokio::test]
 async fn a_purge_waits_for_a_ci_run_and_is_done_once() -> TestResult {

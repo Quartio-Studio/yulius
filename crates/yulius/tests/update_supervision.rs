@@ -150,7 +150,7 @@ fn screen(app: &App, id: &TaskId) -> String {
     app.runtime(id).hub.screen_text()
 }
 
-/// AC-OPS-8: the prompt typed while tasks pause for an update waits, through the restart, and
+/// The prompt typed while tasks pause for an update waits, through the restart, and
 /// then reaches the same agent process exactly as typed; nothing else is typed into it.
 #[test]
 fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() -> TestResult {

@@ -1,4 +1,4 @@
-//! Agent states (SPEC-271, ADR-0200): a folder of operator state a person sends is checked,
+//! Agent states: a folder of operator state a person sends is checked,
 //! sealed in the vault and restored by a task into the sandbox home; the sandbox's copy is then
 //! the only writer, saved back as new versions and downloadable, never forked by a second send.
 
@@ -125,7 +125,7 @@ fn unpacked(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Error> {
     Ok(out)
 }
 
-/// SPEC-271 AC2..AC4 (OPS-002..OPS-007): a 50 MiB state is sent, restored with its modes into
+/// SPEC-271 AC2..AC4: a 50 MiB state is sent, restored with its modes into
 /// the home, refused a second time once restored, saved back as a new version, downloaded,
 /// replaced only on purpose; every step is audited and no answer holds content.
 #[tokio::test]
@@ -346,7 +346,7 @@ async fn download_bytes(w: &World) -> Result<Vec<u8>, Error> {
     Ok(resp.into_body().collect().await?.to_bytes().to_vec())
 }
 
-/// SPEC-271 AC5, AC6: unusable states are refused before anything is stored, and a restore goes
+/// Unusable states are refused before anything is stored, and a restore goes
 /// only into the home, never through a link.
 #[tokio::test]
 async fn unusable_states_and_paths_are_refused() -> TestResult {
@@ -469,7 +469,7 @@ async fn unusable_states_and_paths_are_refused() -> TestResult {
     Ok(())
 }
 
-/// SPEC-271 OPS-008 (review m5): while two states move, a third is refused with 429 before its
+/// While two states move, a third is refused with 429 before its
 /// body is read, and a task's restore waits for none of them: it is refused too.
 #[tokio::test]
 async fn a_third_state_at_once_is_refused() -> TestResult {

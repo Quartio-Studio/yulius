@@ -104,7 +104,7 @@ const TEST_DEADLINE: Duration = Duration::from_secs(12);
 fn valid_key(key: &str) -> Result<Secret, AppError> {
     let key = key.trim();
     if (8..=4096).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_graphic()) {
-        Ok(Secret(key.to_owned()))
+        Ok(Secret::new(key.to_owned()))
     } else {
         Err(AppError::Invalid(
             "the Vidoc key must be 8-4096 printable characters without spaces".into(),
@@ -226,7 +226,7 @@ impl App {
             if opened.is_none() {
                 tracing::warn!("the saved Vidoc key cannot be opened with this master key");
             }
-            opened.map(|key| (Secret(key), VidocSource::Settings))
+            opened.map(|key| (Secret::new(key), VidocSource::Settings))
         });
         let active = from_settings.or_else(|| self.config_vidoc());
         let off = match self.deps.store.vidoc_off().await {

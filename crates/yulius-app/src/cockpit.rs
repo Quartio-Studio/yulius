@@ -1343,7 +1343,7 @@ impl App {
             credential,
             yulius: Some((
                 self.config.internal_url.clone(),
-                crate::model::Secret(bearer.clone()),
+                crate::model::Secret::new(bearer.clone()),
             )),
             project_mcp_servers,
             mcp,

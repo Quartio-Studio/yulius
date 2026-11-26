@@ -1,4 +1,4 @@
-//! A project's production protection requirement (SPEC-423, ADR-0267): a sandbox admin turns it
+//! A project's production protection requirement: a sandbox admin turns it
 //! off when the GitHub plan cannot have rulesets, through the sandbox API; it is kept across
 //! profile updates, audited, and silences the onboarding warning about the production branch.
 
@@ -83,7 +83,7 @@ async fn warnings(i: &Instance) -> Result<Vec<String>, Box<dyn std::error::Error
     Ok(i.h.app.onboarding_status(&record).await?.warnings)
 }
 
-/// PPR-001/002 (AC1): required by default; a writer cannot change it; an admin turns it off, a
+/// Required by default; a writer cannot change it; an admin turns it off, a
 /// profile update keeps it, a superadmin turns it on again; each change is audited.
 #[tokio::test]
 async fn an_admin_turns_the_production_protection_requirement_off_and_on() -> TestResult {
@@ -136,7 +136,7 @@ async fn an_admin_turns_the_production_protection_requirement_off_and_on() -> Te
     Ok(())
 }
 
-/// PPR-003 (AC2): while the requirement is off, onboarding no longer warns about the unprotected
+/// While the requirement is off, onboarding no longer warns about the unprotected
 /// production branch; on again, it does.
 #[tokio::test]
 async fn switched_off_the_unprotected_production_branch_is_not_warned_about() -> TestResult {
@@ -154,7 +154,7 @@ async fn switched_off_the_unprotected_production_branch_is_not_warned_about() ->
     Ok(())
 }
 
-/// PPR-004 (AC3): the warning says exactly where the requirement is turned off.
+/// The warning says exactly where the requirement is turned off.
 #[tokio::test]
 async fn the_warning_names_the_git_page_switch() -> TestResult {
     let i = instance().await?;
@@ -168,7 +168,7 @@ async fn the_warning_names_the_git_page_switch() -> TestResult {
     Ok(())
 }
 
-/// PPR-002 (review round 1): waiving the protection is a person's decision, so a `yulius login`
+/// Waiving the protection is a person's decision, so a `yulius login`
 /// token, which an agent may hold, cannot turn it off; it can turn it on again.
 #[tokio::test]
 async fn a_cli_token_cannot_waive_the_protection() -> TestResult {
@@ -199,7 +199,7 @@ async fn a_cli_token_cannot_waive_the_protection() -> TestResult {
     Ok(())
 }
 
-/// PPR-002 (review round 1): a refused profile changes nothing, the switch included; both switches
+/// A refused profile changes nothing, the switch included; both switches
 /// sent without a profile are written together.
 #[tokio::test]
 async fn a_refused_profile_leaves_the_switch_alone() -> TestResult {
@@ -241,7 +241,7 @@ async fn a_refused_profile_leaves_the_switch_alone() -> TestResult {
     Ok(())
 }
 
-/// PPR-002: a playground has no GitHub branch to protect, so it has no switch to turn.
+/// A playground has no GitHub branch to protect, so it has no switch to turn.
 #[tokio::test]
 async fn a_playground_refuses_the_switch() -> TestResult {
     let i = instance().await?;

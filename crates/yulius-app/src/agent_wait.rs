@@ -1608,7 +1608,7 @@ impl App {
         task: &TaskId,
         worktree: &std::path::Path,
         integration: &str,
-        token: &crate::model::PlaintextSecret,
+        token: &crate::model::Secret,
     ) -> AppResult<crate::ports::git::MergeIntegration> {
         use crate::ports::git::MergeIntegration;
         let updating = self.now();

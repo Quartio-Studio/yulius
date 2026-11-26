@@ -135,7 +135,7 @@ impl App {
                 .open(&stored.sealed)
                 .ok()
                 .and_then(|bytes| String::from_utf8(bytes).ok())
-                .map(Secret);
+                .map(Secret::new);
             let Some(key) = opened else {
                 tracing::warn!("the saved Jev key cannot be opened with this master key");
                 return None;
@@ -198,7 +198,7 @@ impl App {
     pub async fn set_jev_key(&self, ctx: &AuthContext, key: &Secret) -> AppResult<JevKeyView> {
         self.require_superadmin(ctx)?;
         let connector = self.connector()?;
-        let key = Secret(key.expose().trim().to_owned());
+        let key = Secret::new(key.expose().trim().to_owned());
         let evaluator = connector.connect(&key).map_err(AppError::Invalid)?;
         let sealed = self.deps.crypto.seal(key.expose().as_bytes())?;
         let login = self.login_of(&ctx.user.id).await;

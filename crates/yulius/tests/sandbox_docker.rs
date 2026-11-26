@@ -1,4 +1,4 @@
-//! Settings → Instance, "Sandbox Docker" through the API (SPEC-203 HST-014, HST-015): the
+//! Settings → Instance, "Sandbox Docker" through the API: the
 //! verdict for superadmins only, a server without isolation, the base's rebuild and its
 //! estimate, the sandboxes on their own Docker, the last update's re-check, and the smoke test
 //! started from the page with each check as it ends.
@@ -117,7 +117,7 @@ async fn until(
     Err("the view never reached the expected state".into())
 }
 
-/// HST-014: superadmins only; without isolation sandboxes get no Docker, and the view says how
+/// Superadmins only; without isolation sandboxes get no Docker, and the view says how
 /// to change that.
 #[tokio::test]
 async fn only_superadmins_see_it_and_no_isolation_says_why() -> TestResult {
@@ -147,7 +147,7 @@ async fn only_superadmins_see_it_and_no_isolation_says_why() -> TestResult {
     Ok(())
 }
 
-/// HST-014/HST-017/HST-012: the verdict's words, the rebuild with its estimate (started + the
+/// The verdict's words, the rebuild with its estimate (started + the
 /// last build's duration), a sandbox on its own Docker by name with the way back, and the last
 /// update's re-check.
 #[tokio::test]
@@ -209,7 +209,7 @@ async fn the_view_has_the_verdict_rebuild_own_engines_and_re_check() -> TestResu
     Ok(())
 }
 
-/// HST-015: the smoke runs in the background, one at a time; each check is in the view as it
+/// The smoke runs in the background, one at a time; each check is in the view as it
 /// ends, then the outcome.
 #[tokio::test]
 async fn the_smoke_test_reports_each_check_as_it_ends() -> TestResult {

@@ -51,8 +51,8 @@ pub async fn setup(
     let session = app
         .complete_setup(
             &req.token,
-            &Secret(req.password),
-            &Secret(req.password_confirm),
+            &Secret::new(req.password),
+            &Secret::new(req.password_confirm),
             req.confirm_saved,
         )
         .await?;
@@ -67,7 +67,7 @@ pub async fn password_login(
     Json(req): Json<PasswordLogin>,
 ) -> ApiResult<Response> {
     let session = app
-        .password_login(&Secret(req.password), &client.limit_key())
+        .password_login(&Secret::new(req.password), &client.limit_key())
         .await?;
     Ok(with_cookie(&app, session, StatusCode::OK))
 }
@@ -343,8 +343,8 @@ pub async fn recover(
     let code = app
         .recover_password(
             &req.code,
-            &Secret(req.password),
-            &Secret(req.password_confirm),
+            &Secret::new(req.password),
+            &Secret::new(req.password_confirm),
         )
         .await?;
     Ok(Json(RecoveryCode {
@@ -358,7 +358,7 @@ pub async fn regenerate_recovery(
     Json(req): Json<RegenerateRecovery>,
 ) -> ApiResult<Json<RecoveryCode>> {
     let code = app
-        .regenerate_recovery_code(&ctx, &Secret(req.password))
+        .regenerate_recovery_code(&ctx, &Secret::new(req.password))
         .await?;
     Ok(Json(RecoveryCode {
         recovery_code: code.expose().to_owned(),

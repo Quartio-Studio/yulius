@@ -38,10 +38,10 @@ before and their existing tests pass unchanged.
 - [x] F2: one argument parser and one scrub-file planner in the vault tools
 - [x] F2: independent review of the vault-preamble PR
 - [x] F5: Q3 authorisation gaps checked (agent_git_credential, handoffs owner check)
-- [ ] F5: AuthContext is_admin/is_browser helpers and gating sites through require_*
-- [ ] F5: independent review of the auth-helper PR
-- [ ] F6: one zeroizing Secret type in yulius-domain
-- [ ] F6: installation flag on the GitHub bearer, constructor shim removed, call sites moved
+- [x] F5: one instance-admin rule (UserRecord::is_admin) and one token-scope rule (token_allows)
+- [x] F5: independent review of the auth-helper PR
+- [x] F6: one zeroizing Secret type shared by every crate
+- [x] F6: constructor shim removed, call sites moved to Secret::new
 - [ ] F6: independent review of the Secret PR
 - [ ] F7: one JSON string walker for redaction
 - [ ] F7: one redact_for_sandbox and shared credential-shape detectors
@@ -75,5 +75,17 @@ before and their existing tests pass unchanged.
   "a token's scope narrows, a session's does not". The disabled-user rechecks after the extractor
   stay: `App` methods are also called with contexts built outside the HTTP extractor, and no test
   proves each of them refuses a disabled person first.
+- F6: the one `Secret` lives in `yulius-contracts`, not `yulius-domain` as the audit proposed:
+  the domain crate may use only `thiserror` and `toml`, and any other dependency (`zeroize`)
+  needs a boundary decision (`scripts/check_repository.py`), which a chore does not take. Every
+  crate that held a copy already depends on `yulius-contracts`. `new` takes `impl Into<String>`
+  as the GitHub and import copies did; a credential file's bytes use `Secret::bytes`.
+- F6: the GitHub installation flag stays on `model::Secret`, which now wraps the shared type.
+  Moving it to a GitHub port bearer type changes the token parameter of 23 port methods: 77
+  compile errors in 28 app files, most held by #651 (delivery) and #652 (ci), plus the wiring
+  adapter and two test fakes. That is beyond this chore's size and lanes.
+- F6: the GitHub copy printed `Secret([redacted])` under `Debug` and had a `Display`; the shared
+  type prints `Secret(<redacted>)` like the other three, and nothing formatted the GitHub one
+  with `Display`. Neither ever printed the value.
 - Helpers stay inside the vault module where the copies are all there (`parse_args`, `named`),
   so the parallel MCP-argument cleanup (#656) is not raced.

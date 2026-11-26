@@ -1,4 +1,4 @@
-//! `reference_repo` (SPEC-267, ADR-0197): a task reads another repository of its project's owner
+//! `reference_repo`: a task reads another repository of its project's owner
 //! through a bundle Yulius fetches as the task's owner, instead of asking a person for access.
 
 use crate::support;
@@ -83,7 +83,7 @@ fn clone_bundle(record: &Value, into: &Path) -> Result<PathBuf, BoxError> {
     Ok(dest)
 }
 
-/// AC1, AC2, AC4: the owner's read access is enough; the agent gets a bundle among its
+/// The owner's read access is enough; the agent gets a bundle among its
 /// attachments that clones to the repository's files, fetched with the owner's token, and a
 /// later call brings the repository's new commit. Nothing stays in the server's own folder.
 #[tokio::test]
@@ -134,7 +134,7 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
     );
     assert_eq!(tmp_entries(&w), 0, "the fetch folder is removed");
 
-    // AC2: the repository moved; a second call brings its new commit.
+    // The repository moved; a second call brings its new commit.
     let seed = w.scratch.path().join("seed/acme/lib");
     std::fs::write(seed.join("README.md"), "# Lib v2\n")?;
     git_stdout(&seed, &["commit", "--quiet", "-am", "v2"])?;
@@ -192,7 +192,7 @@ fn add_dev_and_tag(w: &World, lib: &Path) -> Result<String, BoxError> {
         .to_owned())
 }
 
-/// SPEC-330 AC1, AC2 (#915): the task's owner can read every branch, so the task gets every
+/// The task's owner can read every branch, so the task gets every
 /// branch and tag: it asks for `dev` and clones `dev`, and the default copy also carries `dev`
 /// and the tags.
 #[tokio::test]
@@ -278,7 +278,7 @@ fn run_answered(record: &Value, command: &str, cwd: &Path) -> Result<(), BoxErro
     Ok(())
 }
 
-/// SPEC-330 REF-103 (review round 1): the answered commands work as given: clone a branch whose
+/// The answered commands work as given: clone a branch whose
 /// name the shell would expand, then update that copy after the branch moved, a tag was re-pointed
 /// and another was added.
 #[tokio::test]
@@ -367,7 +367,7 @@ async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
     Ok(())
 }
 
-/// SPEC-330 REF-103 (review round 2): an answer lists at most 100 branches by name and counts
+/// An answer lists at most 100 branches by name and counts
 /// them all; a missing branch's error says how many it left out.
 #[tokio::test]
 async fn an_answer_lists_at_most_a_hundred_branches_and_counts_them_all() -> TestResult {
@@ -413,7 +413,7 @@ async fn an_answer_lists_at_most_a_hundred_branches_and_counts_them_all() -> Tes
     Ok(())
 }
 
-/// SPEC-330 AC3: a branch the repository lacks is the agent's own mistake: invalid, naming the
+/// A branch the repository lacks is the agent's own mistake: invalid, naming the
 /// branches, with no person to ask and nothing left behind; a branch Git could read as an option
 /// is refused before anything is fetched.
 #[tokio::test]
@@ -457,7 +457,7 @@ async fn a_branch_the_repository_lacks_is_invalid_and_names_the_branches() -> Te
     Ok(())
 }
 
-/// AC3: another owner's repository, the sandbox's own, one the owner cannot read and a disabled
+/// Another owner's repository, the sandbox's own, one the owner cannot read and a disabled
 /// owner are refused and sent to `needs_you`; a malformed name is invalid; nothing is written.
 #[tokio::test]
 async fn reading_beyond_the_owner_s_reach_is_refused() -> TestResult {
@@ -513,7 +513,7 @@ async fn reading_beyond_the_owner_s_reach_is_refused() -> TestResult {
     .await?;
     refused(&moved, "other-org")?;
 
-    // AC4: a fetch that fails leaves no folder of the server's behind.
+    // A fetch that fails leaves no folder of the server's behind.
     w.grant("alice", "acme/ghost", "pull");
     let failed = support::mcp_tool(
         &w.h,
@@ -558,7 +558,7 @@ async fn reading_beyond_the_owner_s_reach_is_refused() -> TestResult {
     Ok(())
 }
 
-/// AC5: agents are sent to the tool before a person.
+/// Agents are sent to the tool before a person.
 #[tokio::test]
 async fn needs_you_sends_agents_to_reference_repo_first() -> TestResult {
     let (w, _alice, _lib) = world().await?;
@@ -594,7 +594,7 @@ async fn needs_you_sends_agents_to_reference_repo_first() -> TestResult {
     Ok(())
 }
 
-/// REF-003: a playground has no GitHub owner, and an owner without a usable GitHub sign-in cannot
+/// A playground has no GitHub owner, and an owner without a usable GitHub sign-in cannot
 /// be acted for; both are refused before anything is fetched.
 #[tokio::test]
 async fn a_playground_and_an_owner_without_github_are_refused() -> TestResult {
@@ -679,7 +679,7 @@ async fn a_playground_and_an_owner_without_github_are_refused() -> TestResult {
     Ok(())
 }
 
-/// REF-001: a fetch folder left by a restart in the middle of a fetch is swept by the next call;
+/// A fetch folder left by a restart in the middle of a fetch is swept by the next call;
 /// a recent one, maybe still in use, stays.
 #[tokio::test]
 async fn an_old_fetch_folder_is_swept() -> TestResult {
@@ -723,7 +723,7 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     git_stdout(&lib, &["update-ref", &format!("refs/heads/{long}"), &main])?;
     let adapter =
         crate::support::confined_git().with_github_base(&w.scratch.path().join("remotes"));
-    let token = yulius_app::model::Secret("token-alice".into());
+    let token = yulius_app::model::Secret::new("token-alice".into());
     let out = w.scratch.path().join("out");
     std::fs::create_dir_all(&out)?;
     let (work, bundle) = (out.join("repo.git"), out.join("repo.bundle"));
@@ -775,7 +775,7 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
         git_stdout(&clone, &["rev-parse", "origin/dev"])?.trim(),
         dev
     );
-    // SPEC-349 AC3: past its byte limit the fetch is stopped as a capacity bound.
+    // Past its byte limit the fetch is stopped as a capacity bound.
     let small = out.join("small");
     std::fs::create_dir_all(&small)?;
     let bounded = adapter
@@ -856,7 +856,7 @@ fn fetched(w: &World, repo: &str) -> bool {
         .any(|c| c.starts_with("bundle ") && c.contains(repo))
 }
 
-/// SPEC-349 AC1 (#920): a repository GitHub reports above the 1 GiB cap is refused before any
+/// A repository GitHub reports above the 1 GiB cap is refused before any
 /// fetch, saying its size and the cap; one GitHub reports under it is fetched.
 #[tokio::test]
 async fn a_repository_github_reports_above_the_cap_is_refused_before_any_fetch() -> TestResult {
@@ -895,7 +895,7 @@ async fn a_repository_github_reports_above_the_cap_is_refused_before_any_fetch()
     Ok(())
 }
 
-/// SPEC-349 AC2 (#920): a fetch that would bring the data disk to its critical level (95 %) is
+/// A fetch that would bring the data disk to its critical level (95 %) is
 /// refused before it starts, counting three times GitHub's size (the fetched copy, its bundle and
 /// the attached bundle), or three times the cap when GitHub gives none; an unknown disk or one
 /// with room refuses nothing.
@@ -948,7 +948,7 @@ async fn a_fetch_the_data_disk_has_no_room_for_is_refused_before_it_starts() -> 
     Ok(())
 }
 
-/// SPEC-349 AC3 (#920): a fetch that grows past the cap while it runs (GitHub reported less) is
+/// A fetch that grows past the cap while it runs (GitHub reported less) is
 /// stopped; the tool says the repository is too large, nothing is attached and the fetch folder
 /// is removed.
 #[tokio::test]

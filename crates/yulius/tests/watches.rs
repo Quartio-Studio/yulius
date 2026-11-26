@@ -1,4 +1,4 @@
-//! Script watches (SPEC-630, ADR-0465): a project's shell script on a schedule, run by Yulius in
+//! Script watches: a project's shell script on a schedule, run by Yulius in
 //! the sandbox without an agent, whose output becomes a notice keyed `watch:<name>` for its owner.
 //! The scripts run for real through the detached process host, uncontained (as CI jobs do in
 //! tests), on the test clock.
@@ -158,7 +158,7 @@ fn keys(notices: &[(String, String, String)]) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// AC-1 (WCH-009): an interval watch runs at the first tick, not again before its interval, and
+/// An interval watch runs at the first tick, not again before its interval, and
 /// again after it; a cron watch runs once its slot passed, once a day.
 #[tokio::test]
 async fn the_schedule_fires() -> TestResult {
@@ -206,7 +206,7 @@ async fn the_schedule_fires() -> TestResult {
     Ok(())
 }
 
-/// AC-2 (WCH-005, WCH-006): exit 0 posts and replaces the previous post, no output posts nothing,
+/// Exit 0 posts and replaces the previous post, no output posts nothing,
 /// exit 3 posts and ends the watch.
 #[tokio::test]
 async fn exit_codes_post_replace_skip_and_end() -> TestResult {
@@ -266,7 +266,7 @@ async fn exit_codes_post_replace_skip_and_end() -> TestResult {
     Ok(())
 }
 
-/// AC-3 (WCH-007): three failures in a row post one warning, a fourth adds nothing, a success
+/// Three failures in a row post one warning, a fourth adds nothing, a success
 /// removes it.
 #[tokio::test]
 async fn three_failures_make_one_warning() -> TestResult {
@@ -333,7 +333,7 @@ async fn the_warning_says_why() -> TestResult {
     Ok(())
 }
 
-/// AC-4 (WCH-008): while the store refuses notices, a run's post stays pending; once it accepts
+/// While the store refuses notices, a run's post stays pending; once it accepts
 /// them again, the next tick posts it, once.
 #[tokio::test]
 async fn a_post_is_retried_after_an_outage() -> TestResult {
@@ -371,7 +371,7 @@ async fn a_post_is_retried_after_an_outage() -> TestResult {
     Ok(())
 }
 
-/// AC-5 (WCH-010): a new server process on the same store lists the watch with its state,
+/// A new server process on the same store lists the watch with its state,
 /// records the run the old one left going as lost, and runs it again.
 #[tokio::test]
 async fn watches_survive_a_restart() -> TestResult {
@@ -452,7 +452,7 @@ async fn watches_survive_a_restart() -> TestResult {
     Ok(())
 }
 
-/// AC-6 (WCH-003): each bound stops a run that goes past it, with a reason that names it, and a
+/// Each bound stops a run that goes past it, with a reason that names it, and a
 /// script cannot raise its own limits.
 #[tokio::test]
 async fn run_bounds_are_enforced() -> TestResult {
@@ -548,7 +548,7 @@ async fn run_bounds_are_enforced() -> TestResult {
     Ok(())
 }
 
-/// AC-7 (WCH-002, WCH-004): a contained run joins the sandbox's holder in CI's group on the
+/// A contained run joins the sandbox's holder in CI's group on the
 /// sandbox root, with only its watch directories writable; a named agent secret reaches it as a
 /// placeholder, never its value.
 #[tokio::test]
@@ -620,7 +620,7 @@ async fn a_contained_run_uses_the_sandbox_and_secret_placeholders() -> TestResul
     Ok(())
 }
 
-/// WCH-001: what a watch may be.
+/// What a watch may be.
 #[tokio::test]
 async fn a_bad_watch_is_refused() -> TestResult {
     let w = world().await?;
@@ -648,7 +648,7 @@ async fn a_bad_watch_is_refused() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: a removed project's watches neither run nor post, and its going run ends.
+/// A removed project's watches neither run nor post, and its going run ends.
 #[tokio::test]
 async fn a_removed_projects_watches_stop() -> TestResult {
     let w = world().await?;
@@ -717,7 +717,7 @@ async fn a_removed_projects_watches_stop() -> TestResult {
     Ok(())
 }
 
-/// WCH-004 (review round 1): a run's named secret reaches it only through its own egress
+/// A run's named secret reaches it only through its own egress
 /// credential, which intercepts that secret's host alone and ends with the run.
 #[tokio::test]
 async fn a_runs_secrets_reach_it_only_through_its_proxy_credential() -> TestResult {
@@ -800,7 +800,7 @@ async fn a_runs_secrets_reach_it_only_through_its_proxy_credential() -> TestResu
     Ok(())
 }
 
-/// WCH-008 (review round 1): a run's end the store refused is kept in memory and written, with
+/// A run's end the store refused is kept in memory and written, with
 /// its post, by the next tick.
 #[tokio::test]
 async fn a_run_end_the_store_refused_is_written_by_the_next_tick() -> TestResult {
@@ -841,7 +841,7 @@ async fn a_run_end_the_store_refused_is_written_by_the_next_tick() -> TestResult
     Ok(())
 }
 
-/// WCH-003 (review round 1): the instance runs at most its bound of runs at once, the longest
+/// The instance runs at most its bound of runs at once, the longest
 /// overdue watch first.
 #[tokio::test]
 async fn runs_at_once_are_bounded_and_the_longest_overdue_goes_first() -> TestResult {
@@ -866,7 +866,7 @@ async fn runs_at_once_are_bounded_and_the_longest_overdue_goes_first() -> TestRe
     Ok(())
 }
 
-/// WCH-006 (review round 1): a report the title cannot hold keeps its whole text as detail; the
+/// A report the title cannot hold keeps its whole text as detail; the
 /// project's agent secrets are redacted from what is kept and posted; a script starting with
 /// `-` is a script, not bash's options.
 #[tokio::test]
@@ -918,7 +918,7 @@ async fn reports_keep_their_text_redacted_and_scripts_are_never_options() -> Tes
     Ok(())
 }
 
-/// Review round 1: a project's watch files, outside the sandbox's quota, are bounded: a run that
+/// A project's watch files, outside the sandbox's quota, are bounded: a run that
 /// grows them past the bound is stopped.
 #[tokio::test]
 async fn a_run_that_fills_the_watch_files_is_stopped() -> TestResult {
@@ -944,7 +944,7 @@ async fn a_run_that_fills_the_watch_files_is_stopped() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a run that was going when its project was removed is still recovered at the
+/// A run that was going when its project was removed is still recovered at the
 /// next start, and runs write no core file.
 #[tokio::test]
 async fn a_removed_projects_lost_run_is_recovered_and_runs_write_no_core() -> TestResult {
@@ -993,7 +993,7 @@ async fn http(
     call(&w.h.router, method, path, body, who).await
 }
 
-/// WCH-011: people list, create, edit, run, pause, resume and remove watches over HTTP, each by
+/// People list, create, edit, run, pause, resume and remove watches over HTTP, each by
 /// their rights, and each change is audited.
 #[tokio::test]
 async fn people_manage_watches_over_http() -> TestResult {
@@ -1335,7 +1335,7 @@ async fn token(w: &World, scope: &str) -> Result<Creds, Error> {
     })
 }
 
-/// WCH-012: the person tools (the Superagent's, and a person's own agent's over the remote MCP)
+/// The person tools (the Superagent's, and a person's own agent's over the remote MCP)
 /// create, list, update, run, pause, resume and remove watches; a read-only token only lists.
 #[tokio::test]
 async fn the_person_tools_manage_watches() -> TestResult {

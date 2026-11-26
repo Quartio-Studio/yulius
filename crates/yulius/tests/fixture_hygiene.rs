@@ -1,4 +1,4 @@
-//! Test fixtures hold no credential in a provider's shape (SPEC-406 TCF-001, ADR-0258): no file
+//! Test fixtures hold no credential in a provider's shape: no file
 //! under `crates/yulius/tests` (the Rust sources and the stream probe's JavaScript and HTML) has
 //! a provider's token prefix followed by a token body. Secret scanners and push protection match
 //! that shape, and a real token pasted into a fixture would look like the synthetic ones. A

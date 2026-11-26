@@ -1199,7 +1199,7 @@ impl App {
             id: request_id(run, action),
             action,
             commit: run.target_commit.clone(),
-            token: token.map(|t| t.0),
+            token: token.map(|t| t.expose().to_owned()),
             requested_at: self.now().0,
         })
     }

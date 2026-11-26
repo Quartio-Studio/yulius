@@ -1,4 +1,4 @@
-//! Superadmin recovery code (SPEC-001 ACC-002/011, AC-ACC-7): shown once at setup, three wrong
+//! Superadmin recovery code: shown once at setup, three wrong
 //! codes lock recovery for good (also under parallel guessing), a recovery resets the password,
 //! ends sessions and issues a new code, and a signed-in superadmin can regenerate the code.
 
@@ -54,7 +54,7 @@ fn wrong_code(code: &str) -> String {
     format!("{}{}", (first + 1) % 10, &code[1..])
 }
 
-/// SPEC-242 PWM-001: recovery takes an 8-character password; 7 are refused with the minimum,
+/// Recovery takes an 8-character password; 7 are refused with the minimum,
 /// before the code is checked, so the refusal spends no attempt.
 #[tokio::test]
 async fn recovery_accepts_eight_characters_and_refuses_seven_without_spending_an_attempt()

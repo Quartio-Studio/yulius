@@ -1,4 +1,4 @@
-//! MCP servers for every sandbox or one, and for the team or only their owner (SPEC-332): who
+//! MCP servers for every sandbox or one, and for the team or only their owner: who
 //! sees and manages a personal server, whose runs get it, precedence of the four combinations
 //! and changing them later.
 
@@ -106,7 +106,7 @@ fn pair(name: &str, url: &str) -> (String, String) {
     (name.to_owned(), url.to_owned())
 }
 
-/// AC-1, AC-2, MSC-003, MSC-004: a personal server exists only for its owner and reaches only its
+/// A personal server exists only for its owner and reaches only its
 /// owner's runs, in one sandbox or in every one.
 #[tokio::test]
 async fn a_personal_server_is_its_owners_alone() -> TestResult {
@@ -211,7 +211,7 @@ async fn a_personal_server_is_its_owners_alone() -> TestResult {
     Ok(())
 }
 
-/// AC-3, MSC-005: this sandbox's personal > its team > every sandbox's personal > its team, and a
+/// This sandbox's personal > its team > every sandbox's personal > its team, and a
 /// disabled winner turns the name off for whom it applies.
 #[tokio::test]
 async fn the_most_specific_server_wins_per_name() -> TestResult {
@@ -282,7 +282,7 @@ async fn the_most_specific_server_wins_per_name() -> TestResult {
     Ok(())
 }
 
-/// AC-4, MSC-003, MSC-006: who may add each combination, and changing one later.
+/// Who may add each combination, and changing one later.
 #[tokio::test]
 async fn scope_and_audience_follow_permissions_and_can_change() -> TestResult {
     let w = world().await?;

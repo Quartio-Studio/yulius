@@ -1,4 +1,4 @@
-//! Antigravity as a third harness with real processes (SPEC-505): supervisor → detached
+//! Antigravity as a third harness with real processes: supervisor → detached
 //! `yulius ptyhost` → fake agent writing Antigravity CLI 1.5.10 shaped transcripts and running its
 //! hooks through `yulius hook antigravity`. An Antigravity task runs on a Google account in its own
 //! home, its conversation is learnt from its SessionStart and watched, it moves to another Google
@@ -72,7 +72,7 @@ fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
     Ok((dir, data))
 }
 
-/// SPEC-505 AGY-002, AGY-003, AGY-004, AGY-005, AGY-006, AC-1, SPEC-519 NEO-002: an Antigravity
+/// An Antigravity
 /// task runs on a Google account (never the Claude one) in `<sandbox>/antigravity/<account>`,
 /// whose settings, hooks and MCP configuration are private and whose conversations are the
 /// sandbox's; its conversation is learnt from its SessionStart (sent through
@@ -120,7 +120,7 @@ fn an_antigravity_task_runs_in_its_home() -> TestResult {
 
         let sandbox_dir = data.join("sandboxes").join(sandbox.as_str());
         // The run's own home, in its run directory: no agent of the sandbox could have made it
-        // a link before a contained run binds its `.gemini` (AGY-003).
+        // a link before a contained run binds its `.gemini`.
         let agy_home = Path::new(&attempt.run_dir).join("antigravity-home");
         let gemini = agy_home.join(".gemini");
         assert!(!gemini.starts_with(&sandbox_dir), "{gemini:?}");
@@ -310,7 +310,7 @@ exec "${0%/*}/fake-agent" "$@"
     })
 }
 
-/// SPEC-505 AGY-004, AGY-009, AC-2: a plan's quota in the transcript is a limit of the
+/// A plan's quota in the transcript is a limit of the
 /// subscription: the task resumes the same conversation on another Google account (asking agy
 /// to go on), the first account is limited, and the Claude account is untouched.
 #[test]
@@ -414,7 +414,7 @@ fn notices(watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFram
     said
 }
 
-/// SPEC-505 AGY-009, AC-2, with SPEC-447 (MOV-001, MOV-003, MOV-006): an Antigravity task moves
+/// SPEC-505 AGY-009, AC-2, with SPEC-447: an Antigravity task moves
 /// only between Antigravity subscriptions. A person's move to the Claude subscription is refused
 /// naming why; removing its subscription moves it to the other Google one in the same
 /// conversation, never to the Claude one that has room; removing that one too leaves it waiting,
@@ -580,7 +580,7 @@ fn an_antigravity_task_moves_only_between_antigravity_subscriptions() -> TestRes
     Ok(())
 }
 
-/// SPEC-505: an Antigravity goal task gets its whole request as its first message, never a
+/// An Antigravity goal task gets its whole request as its first message, never a
 /// `/goal` Yulius types (the CLI's own `/goal` is its own).
 #[test]
 fn an_antigravity_goal_task_gets_its_request_as_its_first_message() -> TestResult {
@@ -628,7 +628,7 @@ fn an_antigravity_goal_task_gets_its_request_as_its_first_message() -> TestResul
         assert_eq!(detail.effort.as_deref(), Some("high"));
         assert!(detail.model_default);
         // The pool weighs it by the model its run was launched with, so a subscription it is at
-        // the limit of is left out (SPEC-511 review): one family for both.
+        // the limit of is left out: one family for both.
         let record = app.deps.store.task(&id).await?.ok_or("task")?;
         let input = app.rotation_input(&record, Some(account)).await?;
         assert_eq!(input.running, Some(input.family));
@@ -640,7 +640,7 @@ fn an_antigravity_goal_task_gets_its_request_as_its_first_message() -> TestResul
     Ok(())
 }
 
-/// SPEC-505 AGY-008, AC-5: a Google sign-in's token file is written into its home for the run;
+/// A Google sign-in's token file is written into its home for the run;
 /// when the run ends, a token file the CLI refreshed replaces the stored sign-in, and the file
 /// leaves the sandbox once no run of the account is left.
 #[test]
@@ -707,7 +707,7 @@ fn a_refreshed_antigravity_sign_in_is_kept_and_leaves_the_sandbox() -> TestResul
     Ok(())
 }
 
-/// SPEC-505 AGY-004, AGY-006: a turn whose model API fails for good writes an error step per
+/// A turn whose model API fails for good writes an error step per
 /// attempt (no end of the turn: agy goes on) and then its Stop with the error, which Yulius settles
 /// without a gate: the task leaves `working` and waits for its person.
 #[test]
@@ -760,7 +760,7 @@ fn a_failed_antigravity_turn_leaves_its_task_waiting() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-008: a run's token file replaces only the sign-in its launch gave it. A sign-in a
+/// A run's token file replaces only the sign-in its launch gave it. A sign-in a
 /// person made during the run, or another run's newer refresh, stays: the run's refreshed file
 /// is dropped, and an unchanged one changes nothing.
 #[test]
@@ -848,7 +848,7 @@ fn a_run_never_replaces_a_newer_antigravity_sign_in() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-005: a run whose SessionStart named nothing (no hooks here) takes the CLI's last
+/// A run whose SessionStart named nothing (no hooks here) takes the CLI's last
 /// conversation of its worktree from its home's `last_conversations.json`, once its transcript
 /// was written since the run began.
 #[test]
@@ -907,7 +907,7 @@ fn an_antigravity_conversation_is_found_without_its_session_start() -> TestResul
     Ok(())
 }
 
-/// SPEC-505 AGY-003: the sandbox's shared conversations folder is opened without following a
+/// The sandbox's shared conversations folder is opened without following a
 /// link: one an agent put there fails the start, and nothing is spawned.
 #[test]
 fn a_linked_antigravity_folder_fails_the_start() -> TestResult {
@@ -955,7 +955,7 @@ fn a_linked_antigravity_folder_fails_the_start() -> TestResult {
     Ok(())
 }
 
-/// SPEC-505 AGY-003: a contained run sees its run's `.gemini` (the hooks Yulius wrote) at the
+/// A contained run sees its run's `.gemini` (the hooks Yulius wrote) at the
 /// sandbox home's, and the data directory not at all. Skipped where bwrap cannot create
 /// namespaces.
 #[test]
@@ -1023,7 +1023,7 @@ fn a_contained_antigravity_run_sees_its_home_at_the_sandbox_homes() -> TestResul
     Ok(())
 }
 
-/// SPEC-505 AGY-003: the plan of a contained Antigravity run binds its run's own `.gemini`, in the
+/// The plan of a contained Antigravity run binds its run's own `.gemini`, in the
 /// server's run directory, over the sandbox home's, writable, and sets no `HOME` of its own (the
 /// agent's shell keeps the sandbox's); its provided CLI's folder is bound read-only. Runs
 /// everywhere: the session host records the plan and starts nothing.

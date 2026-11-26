@@ -1,4 +1,4 @@
-//! The Claude account gate (SPEC-246): a person's start of an agent with no usable Claude account
+//! The Claude account gate: a person's start of an agent with no usable Claude account
 //! is refused before anything changes, with `claude_account_required` and where to connect one; a
 //! start by machinery waits, saying why; `/api/me` tells the UI whether one is connected. These
 //! tests use the in-memory harness with no session slot (`max_live_sessions = 0`): a start that
@@ -92,7 +92,7 @@ async fn status(h: &Harness, id: &str) -> Result<TaskStatus, Error> {
         .status)
 }
 
-/// CLA-002: New task (now, after a task, by a rule; from the UI and the `task_create` tool) is
+/// New task (now, after a task, by a rule; from the UI and the `task_create` tool) is
 /// refused with no account and creates nothing; a prepared task is written, and Start now on it is
 /// refused. A pending sign-in connects nothing; once an account is signed in the same requests work.
 #[tokio::test]
@@ -173,7 +173,7 @@ async fn a_new_task_without_a_claude_account_is_refused_and_creates_nothing() ->
     Ok(())
 }
 
-/// CLA-002: accounts that must all sign in again are no usable account, and the refusal says so.
+/// Accounts that must all sign in again are no usable account, and the refusal says so.
 #[tokio::test]
 async fn accounts_that_must_sign_in_again_refuse_the_start_saying_so() -> TestResult {
     let (h, alice) = world().await?;
@@ -201,7 +201,7 @@ async fn accounts_that_must_sign_in_again_refuse_the_start_saying_so() -> TestRe
     Ok(())
 }
 
-/// CLA-002: Continue / Try again of a resting task is refused and leaves it as it was.
+/// Continue / Try again of a resting task is refused and leaves it as it was.
 #[tokio::test]
 async fn continuing_without_a_claude_account_is_refused_and_changes_nothing() -> TestResult {
     let (h, alice) = world().await?;
@@ -233,13 +233,13 @@ async fn continuing_without_a_claude_account_is_refused_and_changes_nothing() ->
             .await?
             .is_empty()
     );
-    // CLA-005: the status reads as such on the wire.
+    // The status reads as such on the wire.
     let read = call(&h.router, Method::GET, "/api/tasks/t-failed", None, &alice).await?;
     assert_eq!(read.body["status"], "failed_no_account", "{:?}", read.body);
     Ok(())
 }
 
-/// CLA-001: `/api/me` says whether a Claude account is usable.
+/// `/api/me` says whether a Claude account is usable.
 #[tokio::test]
 async fn me_says_whether_a_claude_account_is_connected() -> TestResult {
     let (h, alice) = world().await?;
@@ -255,7 +255,7 @@ async fn me_says_whether_a_claude_account_is_connected() -> TestResult {
     Ok(())
 }
 
-/// SPEC-503 CDX-014: a usable Codex account alone is `codex_connected`, not `claude_connected`:
+/// A usable Codex account alone is `codex_connected`, not `claude_connected`:
 /// onboarding, the Superagent, split proposals and the Cockpit still need Claude, and the UI keeps
 /// offering to connect it, while Codex tasks can start.
 #[tokio::test]
@@ -293,7 +293,7 @@ async fn a_codex_account_alone_is_codex_connected_not_claude_connected() -> Test
     Ok(())
 }
 
-/// SPEC-505: a usable Google account makes `/api/me` say `antigravity_connected`, and only it.
+/// A usable Google account makes `/api/me` say `antigravity_connected`, and only it.
 #[tokio::test]
 async fn a_google_account_alone_is_antigravity_connected() -> TestResult {
     let (h, alice) = world().await?;
@@ -347,7 +347,7 @@ async fn a_google_account_alone_is_antigravity_connected() -> TestResult {
     Ok(())
 }
 
-/// CLA-004: a start by machinery that finds no account waits `waiting_capacity` and tells its
+/// A start by machinery that finds no account waits `waiting_capacity` and tells its
 /// viewers that no Claude account is connected and where to connect one; with an account that is
 /// only out of capacity it says that instead.
 #[tokio::test]
@@ -406,7 +406,7 @@ async fn a_start_by_machinery_waits_for_an_account_and_says_why() -> TestResult 
     Ok(())
 }
 
-/// CLA-004 (review round 2): a paused task's `waits_for_account` follows the accounts: once one is
+/// A paused task's `waits_for_account` follows the accounts: once one is
 /// connected (here one with no capacity left, so it keeps waiting) the next resume pass shows the
 /// task again as waiting for capacity, without the task itself changing.
 #[tokio::test]
@@ -432,7 +432,7 @@ async fn a_waiting_task_is_shown_again_when_an_account_is_connected() -> TestRes
     Ok(())
 }
 
-/// SPEC-505 (review round 1 of slice C2): a paused Antigravity task's `waits_for_account` follows
+/// A paused Antigravity task's `waits_for_account` follows
 /// the Google accounts as a Claude task's follows the Claude ones: once a Google account is
 /// connected (with no capacity left, so it keeps waiting) the next resume pass shows it again.
 #[tokio::test]

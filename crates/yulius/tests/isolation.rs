@@ -13,7 +13,7 @@
 //! `YULIUS_ISOLATION_TEST_SYSTEM` reuses a built `system/` directory (a base build copies about
 //! 6 GB). The limits test needs a delegated cgroup: run it in a transient unit,
 //! `systemd-run --uid=<user> -p Delegate=yes -p DelegateSubgroup=server --wait --pipe … isolation_limits`
-//! with `YULIUS_ISOLATION_TEST_LIMITS=1`. The Docker test (SPEC-187) needs the same unit, Docker
+//! with `YULIUS_ISOLATION_TEST_LIMITS=1`. The Docker test needs the same unit, Docker
 //! installed on the host and its kernel modules: `… isolation_docker` (and `isolation_docker_live`,
 //! SPEC-196) with `YULIUS_ISOLATION_TEST_DOCKER=1`.
 
@@ -634,7 +634,7 @@ async fn end_to_end(iso: &Iso, forward: u16, blocked: u16) -> TestResult {
     assert!(!Path::new("/usr/games/cowsay").exists(), "not on the host");
     eprintln!("other sandbox:\n{}", out.trim());
 
-    // SPEC-652: a note in the memory folder every session of s1 reads, before its agent starts.
+    // A note in the memory folder every session of s1 reads, before its agent starts.
     let s1 = iso.data.join("sandboxes/s1");
     let memory = s1
         .join("home/.claude/projects")
@@ -765,7 +765,7 @@ async fn isolation_limits() -> TestResult {
     };
     let (forward, _hello) = hello_server().await?;
     let iso = fixture(limits, Some(delegation.clone()), forward).await?;
-    // SPEC-053 CPU-202: a process left in the sandbox group by an older server.
+    // A process left in the sandbox group by an older server.
     let group = delegation.unit.join("sandboxes/s1");
     std::fs::create_dir_all(&group)?;
     let mut stray = std::process::Command::new("sleep").arg("300").spawn()?;
@@ -793,7 +793,7 @@ async fn isolation_limits() -> TestResult {
             std::fs::read_to_string(group.join("cpu.max"))?.trim(),
             "100000 100000"
         );
-        // SPEC-053: the CPU goes to the leaves by weight, and the shell runs in `agents`.
+        // The CPU goes to the leaves by weight, and the shell runs in `agents`.
         if delegation.controllers.iter().any(|c| c == "cpu") {
             assert!(std::fs::read_to_string(group.join("cgroup.subtree_control"))?.contains("cpu"));
             for (leaf, weight) in [("system", "100"), ("agents", "100"), ("ci", "400")] {
@@ -840,7 +840,7 @@ async fn isolation_limits() -> TestResult {
             .ok_or_else(|| format!("forks were not limited: {out}"))?;
         assert!(refused_after < 64, "at most pids.max tasks: {out}");
         eprintln!("pids.max 64: {}", out.trim());
-        // SPEC-268 PID-002: CI jobs stop at their leaf (3/8 of 64) while the agents' shell still
+        // CI jobs stop at their leaf (3/8 of 64) while the agents' shell still
         // forks; without the leaf limit the CI forker took the whole sandbox.
         if ["cpu", "pids"]
             .iter()
@@ -943,10 +943,10 @@ async fn isolation_disk_quota_refuses_new_runs() -> TestResult {
     Ok(())
 }
 
-/// Two services, one fetching from the other by its service name (SPEC-187).
+/// Two services, one fetching from the other by its service name.
 const COMPOSE: &str = "services:\n  web:\n    image: busybox\n    command: [\"sh\", \"-c\", \"mkdir -p /w && echo compose-web > /w/index.html && httpd -f -p 8080 -h /w\"]\n  probe:\n    image: busybox\n    depends_on: [web]\n    command: [\"sh\", \"-c\", \"for i in $$(seq 30); do wget -qO- http://web:8080/ && exit 0; sleep 1; done; exit 1\"]\n";
 
-/// The sandbox's own Docker engine end to end (SPEC-187, ADR-0151): as an agent and in a user's
+/// The sandbox's own Docker engine end to end: as an agent and in a user's
 /// shell, `docker run`, `docker build` and `docker compose` work; containers reach neither the
 /// host's loopback, another sandbox nor the host's Docker; `--privileged` stays inside the
 /// sandbox. Needs a delegated cgroup (like `isolation_limits`), Docker installed on the host and
@@ -982,7 +982,7 @@ async fn isolation_docker() -> TestResult {
     guarded(&iso, docker_end_to_end(&iso, &delegation, forward, blocked)).await
 }
 
-/// SPEC-196 (#597): Docker reaches runs whatever their age, the way an update meets them: a
+/// Docker reaches runs whatever their age, the way an update meets them: a
 /// holder serving no engine and a run started then (without the Docker directory) get it once
 /// the holder is adopted with Docker on; the refusal before names its reason; a recreated
 /// socket keeps the old run working; a new run has `DOCKER_HOST`. The scenario is
@@ -1074,7 +1074,7 @@ async fn docker_end_to_end(
     .await?;
     assert!(screen.contains("built-in-the-sandbox"), "{screen}");
 
-    // The engine lives below the sandbox's engine group, which holds its limits (ADR-0339).
+    // The engine lives below the sandbox's engine group, which holds its limits.
     let engine_group = delegation.unit.join("sandboxes/s1/engine/inside");
     assert!(
         !std::fs::read_to_string(engine_group.join("cgroup.procs"))?
@@ -1173,7 +1173,7 @@ async fn docker_end_to_end(
     assert!(!out.contains("seen-"), "{out}");
     assert!(out.contains("hidden-master.key"), "{out}");
 
-    // SPEC-652 MEM-010: a container's `-v` of the home's `.claude` (or of the home above it)
+    // A container's `-v` of the home's `.claude` (or of the home above it)
     // finds an empty folder, and nothing it writes there reaches the sandbox's files.
     let claude = iso.data.join("sandboxes/s1/home/.claude");
     let memory = claude.join("projects/-k/memory");

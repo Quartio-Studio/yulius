@@ -1,4 +1,4 @@
-//! Project variables (SPEC-275, ADR-0203): a project's non-secret values in plain, listed to
+//! Project variables: a project's non-secret values in plain, listed to
 //! everyone who sees it, set and deleted with write access, audited without values, and never
 //! under the name of one of its agent secrets.
 
@@ -55,7 +55,7 @@ async fn list(w: &World, creds: &Creds) -> Result<Value, Error> {
     Ok(listed.body)
 }
 
-/// VAR-001, VAR-003: set in a batch (created, changed, unchanged; an absent description kept),
+/// Set in a batch (created, changed, unchanged; an absent description kept),
 /// listed in plain to a reader, deleted; every change audited by name, never with the value.
 #[tokio::test]
 async fn variables_are_set_listed_and_deleted_with_write_access() -> TestResult {
@@ -166,7 +166,7 @@ async fn variables_are_set_listed_and_deleted_with_write_access() -> TestResult 
     Ok(())
 }
 
-/// VAR-001: names, values and descriptions are checked, and a bad batch writes nothing.
+/// Names, values and descriptions are checked, and a bad batch writes nothing.
 #[tokio::test]
 async fn bad_variables_are_refused_and_nothing_of_the_batch_is_written() -> TestResult {
     let w = world().await?;
@@ -224,7 +224,7 @@ async fn bad_variables_are_refused_and_nothing_of_the_batch_is_written() -> Test
     Ok(())
 }
 
-/// VAR-002: a project secret's name, or a global secret's switched on for the project, cannot
+/// A project secret's name, or a global secret's switched on for the project, cannot
 /// be a variable; nothing of that batch is written.
 #[tokio::test]
 async fn a_name_that_is_an_agent_secret_of_the_project_is_refused() -> TestResult {

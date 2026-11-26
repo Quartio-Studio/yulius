@@ -38,7 +38,7 @@ impl App {
             .open(sealed)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(Secret)
+            .map(Secret::new)
         else {
             return EmailRead::RetryAfter(USAGE_BACKOFF_MS);
         };

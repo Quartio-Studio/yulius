@@ -1,7 +1,7 @@
 //! The task follows its Claude Code session, however the session ends or stops (F 2026-10-10:
 //! "tasks are not synchronised with the session — when I stop Claude, task status should
-//! change"; SPEC-001 HRN-002, TSK-014, SPEC-002 §6.1), and a prompt a person types into the
-//! session passes the scope check (TSK-013, HRN-006).
+//! change"; SPEC-001 HRN-002), and a prompt a person types into the
+//! session passes the scope check.
 //!
 //! End to end: supervisor → detached `yulius ptyhost` → the fake agent shaped like Claude Code
 //! 2.1.292 (Ctrl+C handling, `SessionEnd`, the interrupt line in its transcript) running Claude
@@ -462,7 +462,7 @@ fn a_prompt_typed_into_the_terminal_passes_the_scope_check() -> TestResult {
 /// F 2026-10-10 item 1(a) end to end: the status line command Yulius configures runs the real
 /// `yulius hook` client; the session's plan usage (Claude Code reads it from its own API
 /// responses — the usage endpoint refuses a `setup-token` sign-in) becomes its subscription's
-/// windows, and the line shows the repository and branch (HRN-005).
+/// windows, and the line shows the repository and branch.
 #[test]
 fn the_session_reports_its_usage_through_the_status_line() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -526,7 +526,7 @@ fn the_session_reports_its_usage_through_the_status_line() -> TestResult {
     Ok(())
 }
 
-/// The session its watchers read: `GET /api/tasks/{tid}/transcript` (SPEC-179).
+/// The session its watchers read: `GET /api/tasks/{tid}/transcript`.
 async fn watched_session(app: &App, ctx: &AuthContext, id: &TaskId) -> Option<String> {
     let read = yulius_app::session_docs::TranscriptRead {
         from: None,
@@ -561,7 +561,7 @@ async fn lineage(app: &App, id: &TaskId) -> Result<Vec<String>, BoxError> {
         .collect())
 }
 
-/// AC-TSK-4, SPEC-281 (#862, task #266): a `claude` the agent runs in its worktree writes its transcript
+/// A `claude` the agent runs in its worktree writes its transcript
 /// next to the TUI's, but only the TUI's own hooks change the task's session. The nested session
 /// is never adopted (watchers kept reading it, and a Continue would have resumed it); `/clear` in
 /// the TUI (`SessionStart` with the new id) is, and becomes the session watchers read.
@@ -654,7 +654,7 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
         )
         .await?;
         // `/resume` back to the first session in the TUI: adopted again, it is last in the
-        // lineage and watchers read it (SSN-003).
+        // lineage and watchers read it.
         keys(
             &app,
             &ctx,

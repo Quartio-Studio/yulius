@@ -173,7 +173,9 @@ mod tests {
             r#"{"object":"list","data":[{"id":"vidoc-1","object":"model"}]}"#,
         )
         .await?;
-        let check = VidocHttp::with_base(base).check(&Secret(KEY.into())).await;
+        let check = VidocHttp::with_base(base)
+            .check(&Secret::new(KEY.into()))
+            .await;
         assert_eq!(check, VidocCheck::Ok);
         let head = seen.lock().map_err(|_| "lock")?.join("\n");
         assert!(head.starts_with("get /v1/models "), "{head}");
@@ -197,11 +199,13 @@ mod tests {
             (200, "not json", VidocCheck::Invalid),
         ] {
             let (base, _) = fake(status, body).await?;
-            let check = VidocHttp::with_base(base).check(&Secret(KEY.into())).await;
+            let check = VidocHttp::with_base(base)
+                .check(&Secret::new(KEY.into()))
+                .await;
             assert_eq!(check, expected, "{status} {body}");
         }
         let check = VidocHttp::with_base("http://127.0.0.1:9".into())
-            .check(&Secret(KEY.into()))
+            .check(&Secret::new(KEY.into()))
             .await;
         assert_eq!(check, VidocCheck::Unreachable);
         Ok(())
