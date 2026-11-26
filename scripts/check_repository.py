@@ -231,7 +231,7 @@ def new_decision_errors(added, changed):
 def branch_decision_changes(root, integration, ci_ref=""):
     """The decision records the branch adds and every path it changes, committed or not, against
     its merge base with `origin/<integration>`; None when that ref is not fetched, and for a merge
-    candidate (`YULIUS_CI_REF` `train/...`), whose members were each checked on their own."""
+    candidate (`YULIUS_CI_REF` `train/...`), whose members are normally each checked on their own."""
     if ci_ref.startswith("train/"):
         return None
     def git(*args):
