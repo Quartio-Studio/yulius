@@ -787,7 +787,10 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   approved: the branch head, or an earlier head followed only by clean merges of the
   integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
   environments with a command and `verify = "command"` only), which take these same paths with
-  the task owner's authority and are audited as `task:<n>` too (DLV-008). `delivery_merge`
+  the task owner's authority and are audited as `task:<n>` too (DLV-008). While a red after-merge
+  gate stops the merge queue (SPEC-676), `delivery_merge` arms a green head instead of merging it,
+  and says why. The exception is the repair: the call passes `repairs_gate: true`, or the task's
+  own merge brought the failure in. `delivery_merge`
   delivers the finished part of the task's plan: it is refused while no step is finished, and
   while a step is in progress when the call has a new head to deliver (a head the pull request
   already has is merged whatever step was started since). Steps still ahead stay open
@@ -894,6 +897,9 @@ apart = ["skills/defaults/", "Cargo.lock"] # generated list: two armed pull requ
                             #   change files under one of these 1-50 globs never share a merge
                             #   candidate; the later waits for the next; the integration branch's
                             #   table counts
+stop_on_red_gate = true     # SPEC-676, ADR-0482: a red after-merge gate at the integration head
+                            #   holds every merge but the repair until a later verdict is green;
+                            #   default: on beside a merge-first staging target, else off
 ```
 
 Jobs name their stages with `::yulius-stage <name>` lines ("Stages" below). Jobs get `CI=true`, `HOME` (persistent, shared by the sandbox's lanes), `YULIUS_CI_CACHE` (persistent, the job checkout's own: never shared with a job running at the same time), `YULIUS_CI_RUN`,

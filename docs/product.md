@@ -133,7 +133,11 @@ The team brings its own Claude, Codex (OpenAI) and Antigravity (Google) subscrip
   moved. Armed, green and up to date, it merges at once; otherwise it joins a merge candidate that
   tests it on top of the current integration branch with the others waiting, halved when red, and
   they merge in order as soon as that run passes. `[merge_queue] apart` keeps pull requests that
-  touch the same derived files apart. Every armed pull request says where it stands.
+  touch the same derived files apart. Every armed pull request says where it stands. Beside
+  merge-first staging, a red after-merge gate stops the queue until the integration branch is
+  green again. Armed merges wait in their places, and only the repair merges: one marked with
+  `repairs_gate`, or one from the task whose merge broke the gate. A quarantined flaky test stops
+  nothing, and `[merge_queue] stop_on_red_gate = false` turns the stop off (SPEC-676).
   [Delivery and the merge queue](architecture.md#delivery-and-the-merge-queue)
 - **Pull request notices.** Yulius types what happens to a task's open pull request into its
   session with the next step: a red run (failing jobs and tests), a conflict, a dropped or refused
