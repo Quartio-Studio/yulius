@@ -330,10 +330,12 @@ impl CiStore for SqliteStore {
         sandbox: &SandboxId,
         detail: &str,
         available: &[TaskId],
+        breakers: &[u32],
     ) -> AppResult<Vec<RepairRecipient>> {
         let available =
             serde_json::to_string(&available.iter().map(TaskId::as_str).collect::<Vec<_>>())
                 .map_err(AppError::internal)?;
+        let breakers = serde_json::to_string(breakers).map_err(AppError::internal)?;
         let (sandbox, detail) = (sandbox.clone(), detail.to_owned());
         self.call(move |c| {
             let tx = c.transaction()?;
@@ -341,8 +343,9 @@ impl CiStore for SqliteStore {
             // Keep the incumbent if eligible. Replacing the row also expires its delivery receipts.
             let owner: Option<(String, u32)> = tx.query_row(
                 "SELECT w.id, w.number FROM gate_workers w LEFT JOIN gate_repairs r ON r.sandbox_id = w.sandbox_id
-                 WHERE w.sandbox_id = ?1 AND w.id IN (SELECT value FROM json_each(?2)) ORDER BY (w.id IS r.owner_id) DESC, w.number LIMIT 1",
-                params![sid, available], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+                 WHERE w.sandbox_id = ?1 AND w.id IN (SELECT value FROM json_each(?2))
+                 ORDER BY (w.id IS r.owner_id) DESC, (w.number IN (SELECT value FROM json_each(?3))) DESC, w.number LIMIT 1",
+                params![sid, available, breakers], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
             let mut recipients = Vec::new();
             if let Some((owner, number)) = owner.filter(|_| !detail.is_empty()) {
                 tx.execute("DELETE FROM gate_repairs WHERE sandbox_id = ?1 AND (detail != ?2 OR owner_id != ?3)",

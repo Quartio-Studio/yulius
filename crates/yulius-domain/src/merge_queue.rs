@@ -38,17 +38,21 @@ pub enum Dissolved {
     Errored,
     /// It took too long (its run, a member's own run, GitHub).
     TooLong,
+    /// The after-merge gate turned red while it held a pull request that is not the repair
+    /// (SPEC-676 RGS-006).
+    GateRed,
 }
 
 impl Dissolved {
     /// Every kind, in the order the numbers list them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::MemberLeft,
         Self::MemberFailed,
         Self::Bisected,
         Self::BaseMoved,
         Self::Errored,
         Self::TooLong,
+        Self::GateRed,
     ];
 
     /// The kind's name in an audit entry and in the read.
@@ -61,6 +65,7 @@ impl Dissolved {
             Self::BaseMoved => "base_moved",
             Self::Errored => "errored",
             Self::TooLong => "too_long",
+            Self::GateRed => "gate_red",
         }
     }
 
@@ -178,6 +183,105 @@ pub fn held_apart(
         kept.push(*pr);
     }
     (kept, held)
+}
+
+/// A failure of the integration branch's after-merge gate that no later verdict cleared
+/// (SPEC-676 RGS-002), as the gate history names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenFailure {
+    /// The failing test; a job's name (`job <name>` before it is attributed) when its tests are
+    /// not known, or the run's state (`failed`, `error`) for a run-level failure.
+    pub test: String,
+    /// The revision that first showed it.
+    pub revision: String,
+    /// The number of the task whose merge made that revision, when Yulius knows it.
+    pub merge_task: Option<u32>,
+}
+
+/// The merge queue stopped by a red after-merge gate (SPEC-676): only a repair merges until the
+/// integration branch's gate is green again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeStop {
+    /// The open failures that stop it, none of them a quarantined test.
+    pub failures: Vec<OpenFailure>,
+    /// The run to read and to run again.
+    pub run: String,
+}
+
+impl MergeStop {
+    /// The stop of `failures` (RGS-002, RGS-008): `None` when every open failure is a test in
+    /// `quarantined` (flaky, ADR-0356) or there is none.
+    ///
+    /// # Examples
+    /// ```
+    /// use yulius_domain::merge_queue::{MergeStop, OpenFailure};
+    /// let failed = |test: &str| OpenFailure {
+    ///     test: test.into(),
+    ///     revision: "a1b2c3d4e5f6a7b8".into(),
+    ///     merge_task: Some(12),
+    /// };
+    /// assert!(MergeStop::of(vec![failed("app tests::flaky")], &["app tests::flaky"], "r").is_none());
+    /// let stop = MergeStop::of(vec![failed("app tests::real")], &["app tests::flaky"], "r");
+    /// assert!(stop.is_some_and(|stop| stop.lets_through(12, false) && !stop.lets_through(3, false)));
+    /// ```
+    #[must_use]
+    pub fn of(failures: Vec<OpenFailure>, quarantined: &[&str], run: &str) -> Option<Self> {
+        let failures: Vec<OpenFailure> = failures
+            .into_iter()
+            .filter(|failure| !quarantined.contains(&failure.test.as_str()))
+            .collect();
+        (!failures.is_empty()).then(|| Self {
+            failures,
+            run: run.to_owned(),
+        })
+    }
+
+    /// The tasks whose merges brought the open failures in, by number, each once.
+    #[must_use]
+    pub fn breakers(&self) -> Vec<u32> {
+        let mut numbers: Vec<u32> = self.failures.iter().filter_map(|f| f.merge_task).collect();
+        numbers.sort_unstable();
+        numbers.dedup();
+        numbers
+    }
+
+    /// Whether task `number`'s merge goes through (RGS-005): its agent marked it the repair
+    /// (`marked`), or its merge brought an open failure in.
+    #[must_use]
+    pub fn lets_through(&self, number: u32, marked: bool) -> bool {
+        marked || self.breakers().contains(&number)
+    }
+
+    /// The open failures in words: each test, where it first failed and whose merge that was.
+    #[must_use]
+    pub fn failures_text(&self) -> String {
+        self.failures
+            .iter()
+            .map(|failure| {
+                let origin = failure
+                    .merge_task
+                    .map_or_else(|| "an untracked merge".to_owned(), |n| format!("task #{n}"));
+                let revision: String = failure.revision.chars().take(12).collect();
+                format!("`{}` (first at {revision}, {origin})", failure.test)
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// What a held merge's task is told (RGS-003): why pull request `pr` waits, which failures,
+    /// and what ends the wait.
+    #[must_use]
+    pub fn waiting_note(&self, pr: u64, integration: &str) -> String {
+        format!(
+            "Pull request #{pr} waits: the after-merge gate of `{integration}` is red ({}; run \
+             {}), and the merge queue merges only its repair until a later revision's gate is \
+             green. The merge stays armed and keeps its place: it merges by itself then. If this \
+             pull request repairs that failure, call `delivery_merge` again with `repairs_gate: \
+             true`.",
+            self.failures_text(),
+            self.run
+        )
+    }
 }
 
 /// The numbers of `events` (any order) at or after `from` (none: all). Entries before `from`
@@ -523,6 +627,74 @@ mod tests {
         let (kept, held) = held_apart(&[], &[changed(1, &["gen/a"]), changed(2, &["gen/b"])]);
         assert_eq!((kept, held.len()), (vec![1, 2], 0), "nothing declared");
         Ok(())
+    }
+
+    fn open(test: &str, task: Option<u32>) -> OpenFailure {
+        OpenFailure {
+            test: test.to_owned(),
+            revision: "0123456789abcdef".to_owned(),
+            merge_task: task,
+        }
+    }
+
+    /// SPEC-676 RGS-002, RGS-008: open failures stop the queue; quarantined tests do not, and
+    /// a job without known tests is never one.
+    #[test]
+    fn open_failures_but_quarantined_tests_stop_the_queue() {
+        assert_eq!(MergeStop::of(Vec::new(), &[], "r"), None);
+        let flaky = open("app tests::flaky", Some(4));
+        assert_eq!(
+            MergeStop::of(vec![flaky.clone()], &["app tests::flaky"], "r"),
+            None
+        );
+        let job = open("job tests (1/4)", None);
+        let stop = MergeStop::of(vec![flaky, job.clone()], &["app tests::flaky"], "run-9");
+        assert_eq!(
+            stop,
+            Some(MergeStop {
+                failures: vec![job],
+                run: "run-9".to_owned()
+            })
+        );
+    }
+
+    /// SPEC-676 RGS-005: a marked repair or a breaker's merge goes through, nobody else's.
+    #[test]
+    fn only_the_repair_goes_through_a_stopped_queue() {
+        let stop = MergeStop {
+            failures: vec![
+                open("a", Some(7)),
+                open("b", Some(3)),
+                open("c", Some(7)),
+                open("d", None),
+            ],
+            run: "r".to_owned(),
+        };
+        assert_eq!(stop.breakers(), [3, 7]);
+        assert!(stop.lets_through(7, false));
+        assert!(stop.lets_through(3, false));
+        assert!(!stop.lets_through(5, false));
+        assert!(stop.lets_through(5, true));
+    }
+
+    /// SPEC-676 RGS-003: the note says why, which failure, whose, and what ends the wait.
+    #[test]
+    fn a_held_merge_is_told_why_it_waits() {
+        let stop = MergeStop {
+            failures: vec![open("store::writes", Some(412)), open("job e2e", None)],
+            run: "ci_9".to_owned(),
+        };
+        let note = stop.waiting_note(415, "dev");
+        for said in [
+            "Pull request #415 waits: the after-merge gate of `dev` is red",
+            "`store::writes` (first at 0123456789ab, task #412)",
+            "`job e2e` (first at 0123456789ab, an untracked merge)",
+            "run ci_9",
+            "it merges by itself then",
+            "`repairs_gate: true`",
+        ] {
+            assert!(note.contains(said), "{said}: {note}");
+        }
     }
 
     #[test]

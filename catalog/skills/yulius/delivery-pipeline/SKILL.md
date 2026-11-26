@@ -153,6 +153,10 @@ With a merge-first staging target (a dev-stage `[cd.<name>]` with `merge_first =
   the repair. Yulius names one working task to repair it and tells the other workers who has it.
   Leave an assigned repair to its owner. If nobody is working, project CI and Status offer a
   person a rerun or a new task. Staging verifies the fix and serves the inherited requests.
+- Beside merge-first staging, a red after-merge gate stops the merge queue until it is green
+  again: armed merges wait in their places. Only the repair merges. Mark yours with
+  `delivery_merge`'s `repairs_gate: true`; the task whose merge broke the gate counts as the
+  repair.
 - Production is promoted only from the revision staging verified.
 
 A merge deploys nothing by itself. CD (deployment) is its own mechanism, like CI: the project's `[cd.dev]`

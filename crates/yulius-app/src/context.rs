@@ -331,6 +331,10 @@ pub struct App {
     /// repair (SPEC-624, `GATE_GRACE_TICKS`).
     pub(crate) gate_unavailable_ticks:
         std::sync::Mutex<std::collections::HashMap<yulius_domain::ids::SandboxId, u32>>,
+    /// Per project: the merge queue's stop as last read (SPEC-676, `merge_stop`).
+    pub(crate) merge_stops: std::sync::Mutex<
+        std::collections::HashMap<yulius_domain::ids::SandboxId, crate::merge_stop::StopRead>,
+    >,
     /// Serializes writes of sandbox profiles, so the Vidoc switch and a profile update never undo
     /// each other (SPEC-338 VOF-001).
     pub(crate) profile_writes: tokio::sync::Mutex<()>,
@@ -469,6 +473,7 @@ impl App {
             channel: OnceLock::new(),
             notice_producers: OnceLock::new(),
             gate_unavailable_ticks: std::sync::Mutex::default(),
+            merge_stops: std::sync::Mutex::default(),
             profile_writes: tokio::sync::Mutex::new(()),
             updates: crate::updates::UpdateState::default(),
             move_helper: OnceLock::new(),

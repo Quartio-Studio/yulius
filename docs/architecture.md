@@ -394,7 +394,23 @@ pull requests merged in, tested by one run), and a failed candidate is bisected.
 own run always finishes; the queue never restarts it. Every merge goes through the GitHub adapter's
 `merge_pull`. The merge is recorded in one transaction with the task, pull request, accepted head,
 integration branch and landed commit (`task_merges`), and the pull request's review rounds close
-there. Work committed after a merge starts a new pull request of the same task. The GitHub adapter
+there. Work committed after a merge starts a new pull request of the same task.
+
+A red after-merge gate stops the queue ([decision
+0482](decisions/0482-a-red-after-merge-gate-stops-the-merge-queue.md), `merge_stop.rs`). This is
+`[merge_queue] stop_on_red_gate`, on by default beside a merge-first staging target. The queue
+stops while the gate history at the integration head has an open failure that is not a
+quarantined test. The state is read at most every 15 s per project. While it is stopped:
+
+- the armed-merge pass and `delivery_merge` keep every other merge armed, with a note naming the
+  failures;
+- a merge candidate forms only from repairs, and one under test is dissolved (`gate_red`);
+- the repair assignment prefers the task whose merge brought the failure in.
+
+A repair is marked with `delivery_merge`'s `repairs_gate`, or its task's merge brought an open
+failure in. The next pass after a green verdict merges as before.
+
+The GitHub adapter
 keeps GitHub's availability apart from task state: during an outage, task displays use the recorded
 delivery and pull observations, and display reads are shared per credential and revalidated with
 ETags.

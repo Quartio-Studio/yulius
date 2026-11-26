@@ -5170,6 +5170,132 @@ async fn no_repair_owner_is_named_before_a_new_failure_is_narrowed() -> TestResu
     Ok(())
 }
 
+/// SPEC-676 RGS-002 (review round 1 of task #660): a red verdict stops the merge queue at
+/// once, while its range is still narrowed and nobody is named yet; only a marked repair would
+/// go through. Once narrowed, the stop names the breaker, whose merge goes through.
+#[tokio::test]
+async fn a_red_verdict_stops_the_merge_queue_while_it_is_narrowed() -> TestResult {
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b", "c"] {
+        agent(&f, task).await?;
+    }
+    let base = f.push("dev", &[("base", Some("base"))])?;
+    gate(&f, &base, RunState::Passed).await?;
+    let a = land(&f, "a", "a").await?;
+    let b = land(&f, "b", "b").await?;
+    let c = land(&f, "c", "c").await?;
+    let judging_c = gate(&f, &c, RunState::Running).await?;
+    for task in ["a", "b", "c"] {
+        ask(&f, task).await?;
+    }
+    let sandbox = sandbox(&f).await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    crate::support::git(&repo, &["fetch", "-q", "origin"])?;
+    assert_eq!(
+        f.h.app.merge_stop(&sandbox).await,
+        None,
+        "c is still judged"
+    );
+    finish(&f, &judging_c, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.clock
+        .0
+        .fetch_add(16_000, std::sync::atomic::Ordering::SeqCst);
+    let stop = f.h.app.merge_stop(&sandbox).await.ok_or("stopped")?;
+    assert_eq!(stop.failures.len(), 1, "{stop:?}");
+    assert_eq!(
+        (stop.failures[0].test.as_str(), stop.failures[0].merge_task),
+        ("gate::x", None),
+        "nobody is named before the range is narrowed"
+    );
+    assert!(stop.breakers().is_empty());
+    let number = |id: &str| {
+        let f = &f;
+        let id = id.to_owned();
+        async move {
+            BoxResult::Ok(
+                f.h.store
+                    .task(&TaskId::parse(&id)?)
+                    .await?
+                    .ok_or("task")?
+                    .number,
+            )
+        }
+    };
+    assert!(!stop.lets_through(number("b").await?, false));
+    assert!(
+        stop.lets_through(number("a").await?, true),
+        "a marked repair"
+    );
+
+    let middle = candidate(&f, &b).await?.ok_or("the narrowing run")?;
+    finish(&f, &middle, RunState::Failed, &["gate::x"]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    let oldest = candidate(&f, &a).await?.ok_or("the older half")?;
+    finish(&f, &oldest, RunState::Passed, &[]).await?;
+    f.h.app.staging_advance(&sandbox, "staging").await?;
+    f.h.clock
+        .0
+        .fetch_add(16_000, std::sync::atomic::Ordering::SeqCst);
+    let stop = f.h.app.merge_stop(&sandbox).await.ok_or("still stopped")?;
+    assert_eq!(stop.breakers(), [number("b").await?], "{stop:?}");
+    assert!(stop.lets_through(number("b").await?, false));
+    assert!(!stop.lets_through(number("c").await?, false));
+    Ok(())
+}
+
+/// SPEC-676 RGS-009 (review round 1 of task #660): a new repair owner is the breaker when one
+/// is available, before a lower number; an owner already assigned keeps the repair when a
+/// breaker becomes available.
+#[tokio::test]
+async fn the_repair_goes_to_the_breaker_but_stays_with_its_owner() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b"] {
+        agent(&f, task).await?;
+    }
+    let sid = SandboxId::parse("s1")?;
+    let (a, b) = (TaskId::parse("a")?, TaskId::parse("b")?);
+    let number = |id: &TaskId| {
+        let f = &f;
+        let id = id.clone();
+        async move { BoxResult::Ok(f.h.store.task(&id).await?.ok_or("task")?.number) }
+    };
+    let (na, nb) = (number(&a).await?, number(&b).await?);
+    assert!(na < nb);
+    let owner =
+        |recipients: Vec<yulius_app::ci::RepairRecipient>| recipients.first().map(|r| r.owner);
+    let both = [a.clone(), b.clone()];
+    assert_eq!(
+        owner(
+            f.h.store
+                .reconcile_gate_repair(&sid, "x", &both, &[nb])
+                .await?
+        ),
+        Some(nb),
+        "the breaker before a lower number"
+    );
+    f.h.store.reconcile_gate_repair(&sid, "", &[], &[]).await?;
+    assert_eq!(
+        owner(
+            f.h.store
+                .reconcile_gate_repair(&sid, "x", std::slice::from_ref(&a), &[nb])
+                .await?
+        ),
+        Some(na),
+        "the breaker is not available"
+    );
+    let later =
+        f.h.store
+            .reconcile_gate_repair(&sid, "x", &both, &[nb])
+            .await?;
+    assert!(
+        later.iter().all(|r| r.owner == na),
+        "the owner keeps it: {later:?}"
+    );
+    Ok(())
+}
+
 /// A person's cancel of a request's own candidate stands,
 /// also when a newer red revision with only earlier failures would answer it without a run.
 #[tokio::test]

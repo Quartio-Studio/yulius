@@ -484,4 +484,5 @@ out of date.
 - [0478](0478-a-person-gives-each-subscriptions-charge-date.md): A person gives each subscription's charge date
 - [0479](0479-harness-memory-is-read-only-in-every-session-yulius-starts.md): Harness memory is read-only in every session Yulius starts
 - [0480](0480-the-full-gate-judges-the-newest-waiting-revision-first.md): The full gate judges the newest waiting revision first
+- [0482](0482-a-red-after-merge-gate-stops-the-merge-queue.md): A red after-merge gate stops the merge queue until the integration branch is green
 - [0481](0481-disabling-a-person-stops-their-tasks.md): Disabling a person stops their tasks, and their runs get no git credential
