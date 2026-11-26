@@ -5857,6 +5857,11 @@ async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
     ] {
         assert!(note.contains(said), "{said}: {state}");
     }
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    assert!(
+        !app.decidable_in(&sandbox).await,
+        "a held merge decides nothing"
+    );
     later(&f);
     app.merge_armed(&f.sandbox).await;
     assert!(f.merges().is_empty(), "still red");
@@ -5870,6 +5875,7 @@ async fn a_red_after_merge_gate_holds_merges_until_it_is_green() -> TestResult {
     )
     .await?;
     later(&f);
+    assert!(app.decidable_in(&sandbox).await, "green again");
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.merges(), ["merge_pull #1 squash"]);
     Ok(())
@@ -5980,6 +5986,25 @@ async fn a_candidate_under_test_is_dissolved_when_the_gate_turns_red() -> TestRe
     for (n, worktree) in [(1, &one), (2, &two)] {
         assert_eq!(f.wait(n, worktree).await?["merge_armed"], true);
     }
+    // A later revision's full gate passes (its run here, recorded): the queue resumes by itself.
+    f.advance_dev("fixed.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    let fixed = git(&f.repo, &["rev-parse", "origin/dev"])?;
+    let green =
+        crate::support::staging::recorded_gate(&app, &f.sandbox, &fixed, RunState::Passed, None)
+            .await?;
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE ci_runs SET status_note = 'recorded by the test' WHERE id = '{green}'"
+        ))
+        .await?;
+    later(&f);
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
     Ok(())
 }
 
@@ -6024,5 +6049,108 @@ async fn the_stop_is_off_without_merge_first_or_when_turned_off() -> TestResult 
         app.merge_armed(&f.sandbox).await;
         assert_eq!(f.merges(), ["merge_pull #1 squash"], "{toml}");
     }
+    Ok(())
+}
+
+/// SPEC-676 RGS-005 (review round 1): `repairs_gate` on a head armed already, and behind, marks
+/// it in its place (the saved arm keeps its time); the mark survives a restart, the marked pull
+/// requests form a candidate while the gate is red and merge, audited as the repair; the one
+/// not marked waits.
+#[tokio::test]
+async fn a_repair_marked_on_an_armed_head_survives_a_restart_and_merges_on_a_candidate()
+-> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let broken = merge_first_toml("").replace(
+        "echo full suite ran",
+        "printf -- \"---- tests::broken stdout ----\\nassertion failed\\n\"; exit 1",
+    );
+    f.advance_dev_with("yulius.toml", &broken)?;
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1u32, "a.txt"), (2, "b.txt"), (3, "c.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    red_gate(&f, "tests::broken", None).await?;
+    for (n, worktree) in (1u32..).zip(&worktrees) {
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+        assert_eq!(deliver(&f, n, worktree, json!({})).await?["armed"], true);
+    }
+    let file = app
+        .config
+        .data_dir
+        .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved =
+        || -> BoxResult<Vec<Value>> { Ok(serde_json::from_str(&std::fs::read_to_string(&file)?)?) };
+    let entry = |entries: &[Value], task: &str| {
+        entries
+            .iter()
+            .find(|e| e["task"] == task)
+            .map(|e| (e["armed_at"].clone(), e["repair"].clone()))
+    };
+    let before = saved()?;
+    // `dev` moves on (its full suite still fails): the armed heads are behind.
+    f.advance_dev("other.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    for n in [1u32, 2] {
+        let worktree = &worktrees[usize::try_from(n - 1)?];
+        let answer = deliver(&f, n, worktree, json!({"repairs_gate": true})).await?;
+        assert_eq!(answer["armed"], true, "{answer}");
+    }
+    let after = saved()?;
+    for task in ["t1", "t2"] {
+        let (was, _) = entry(&before, task).ok_or("armed")?;
+        assert_eq!(entry(&after, task), Some((was, json!(true))), "{after:?}");
+    }
+    assert_eq!(entry(&after, "t3").map(|(_, r)| r), Some(Value::Null));
+    let app = restart(&app).await;
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
+    assert!(!f.merged(&app, 3).await?, "#3 waits");
+    assert!(
+        f.train_runs(&app)
+            .await?
+            .iter()
+            .all(|run| run.reference.key() == "train/1+2"),
+        "only the repairs formed a candidate"
+    );
+    let gone = dissolved(&app).await?;
+    assert!(
+        gone.iter().all(|d| !d.contains("(why: gate_red)")),
+        "a merged repair holds nothing: {gone:?}"
+    );
+    let audit = |action: &'static str| {
+        let app = Arc::clone(&app);
+        async move {
+            BoxResult::Ok(
+                yulius_app::ports::store::AuditStore::audit_details(
+                    app.deps.store.as_ref(),
+                    "app#1",
+                    action,
+                    10,
+                )
+                .await?,
+            )
+        }
+    };
+    let armed = audit("delivery.agent.merge_armed").await?;
+    assert!(
+        armed
+            .iter()
+            .any(|d| d.contains("armed already at head") && d.contains("marked as the repair")),
+        "the mark is audited: {armed:?}"
+    );
+    let merged = audit("delivery.agent.merge").await?;
+    assert!(
+        merged
+            .iter()
+            .any(|d| d.contains("in merge train") && d.contains("marked as the repair")),
+        "the merge is audited as the repair: {merged:?}"
+    );
     Ok(())
 }

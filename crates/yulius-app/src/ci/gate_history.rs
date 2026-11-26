@@ -595,16 +595,27 @@ impl App {
         if let Err(err) = self.sync_gate_notices(sandbox, unowned, hold_new).await {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "gate notices could not be reconciled");
         }
-        // The task whose merge brought a failure in repairs it first (SPEC-676 RGS-009).
-        let breakers: Vec<u32> = failures.iter().filter_map(|n| n.merge_task).collect();
+        // The task whose merge brought a failure in repairs it first (SPEC-676 RGS-009); a
+        // quarantined flaky test names nobody.
+        let quarantined = if failures.is_empty() {
+            Vec::new()
+        } else {
+            self.quarantined_names(sandbox).await
+        };
+        let breakers: Vec<u32> = failures
+            .iter()
+            .filter(|n| !quarantined.contains(&n.test))
+            .filter_map(|n| n.merge_task)
+            .collect();
         let recipients = store
             .reconcile_gate_repair(&sandbox.id, &detail, &available, &breakers)
             .await?;
         if recipients.is_empty() || self.update_holds_starts() {
             return Ok(0);
         }
-        // While the red gate stops the merge queue, every worker hears that merges wait.
-        let stopped = self.merge_stop(sandbox).await.is_some();
+        // While the red gate stops the merge queue, every worker hears that merges wait: read
+        // now, not as kept for the queue (review round 1).
+        let stopped = self.read_merge_stop(sandbox).await.is_some();
         let mut told = 0;
         for recipient in recipients {
             let Some(task) = store.task(&recipient.task).await? else {

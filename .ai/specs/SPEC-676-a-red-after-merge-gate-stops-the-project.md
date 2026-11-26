@@ -60,6 +60,10 @@ What exists:
     not a quarantined test of the project.
   - An open failure is one shown by the newest settled verdict, or a failure since the last
     full pass that no later verdict has cleared.
+  - A settled red verdict whose range is still being narrowed (SPEC-653), or that is newer than
+    an active verdict, stops the queue at once, unattributed: only a marked repair passes.
+  - A failure kept open only because later passing runs skipped its job stops nothing; it stays
+    a notice for people.
   - The state is read at most every 15 s per project. A new integration head is read at once.
 - **RGS-003 Waiting merges stay armed.**
   - While the queue is stopped, the armed-merge pass merges no pull request that is not a

@@ -30,8 +30,12 @@ added one rule: a red after-merge gate stops the merge queue until the branch is
   - `[merge_queue] stop_on_red_gate` in `yulius.toml`, read at the integration head like `apart`.
   - Without the key it is on exactly when the project has a merge-first staging target.
 - **Stopped** means the gate history at the integration head (settled verdicts since the last
-  full pass) has an open failure that is not a quarantined flaky test of the project. The state
-  is read at most every 15 s per project, and at once for a new integration head.
+  full pass) has an open failure that is not a quarantined flaky test of the project.
+  - A settled red verdict whose range is still being narrowed, or that is newer than an active
+    verdict, stops the queue at once, before anyone is named. Only a marked repair passes then.
+  - A failure kept open only because later passing runs skipped its job stays a notice for
+    people, but stops nothing.
+  - The state is read at most every 15 s per project, and at once for a new integration head.
 - **Held, not dropped.**
   - The armed-merge pass and `delivery_merge` merge no pull request that is not a repair. Each
     one stays armed in its place.
@@ -74,6 +78,8 @@ added one rule: a red after-merge gate stops the merge queue until the branch is
 - On merge-first projects (quartio-v2, Yulius itself), a red after-merge gate holds every merge
   that is not a repair until the gate is green. A flake that is not quarantined holds them too,
   until it is rerun or quarantined: the CI tab offers the rerun.
+- A failure whose job later runs skip (its `paths` no longer match) stops nothing. It would
+  otherwise hold every merge until a change touched that job's paths again.
 - When no task repairs the gate, the queue stays stopped until a person reruns the run or starts
   a task. The CI tab says that nobody is working on the repair.
 - A person's own Merge of a green pull request on the task page is not held. Their armed merge

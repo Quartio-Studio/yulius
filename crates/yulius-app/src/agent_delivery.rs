@@ -170,6 +170,7 @@ impl App {
             .get("repairs_gate")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let mark = crate::merge_stop::repair_audit(repair, false);
         let mut summary: String = args
             .get("review_summary")
             .and_then(Value::as_str)
@@ -416,6 +417,16 @@ impl App {
                     .arm_merge(&ctx.task, &head, reviewed, &summary, repair)
                     .await?
                 {
+                    // Marked the repair on a merge armed already (SPEC-676 RGS-005).
+                    if repair {
+                        self.agent_audit(
+                            ctx,
+                            "delivery.agent.merge_armed",
+                            &format!("{}#{}", sandbox.slug, ctx.task.number),
+                            &format!("armed already at head {head}{mark}"),
+                        )
+                        .await;
+                    }
                     return Ok(json!({
                         "merged": false,
                         "armed": true,
@@ -433,7 +444,7 @@ impl App {
                     "delivery.agent.merge_armed",
                     &format!("{}#{}", sandbox.slug, ctx.task.number),
                     &format!(
-                        "armed at head {head} (checks {other}); reviewed independently{since}"
+                        "armed at head {head} (checks {other}); reviewed independently{since}{mark}"
                     ),
                 )
                 .await;
@@ -465,7 +476,7 @@ impl App {
                 &format!("{}#{}", sandbox.slug, ctx.task.number),
                 &format!(
                     "armed at head {head} (checks {checks}; held by the red after-merge gate); \
-                     reviewed independently{since}"
+                     reviewed independently{since}{mark}"
                 ),
             )
             .await;
@@ -493,7 +504,7 @@ impl App {
                     "delivery.agent.merge_armed",
                     &format!("{}#{}", sandbox.slug, ctx.task.number),
                     &format!(
-                        "armed at head {head} (checks {checks}; {}); reviewed independently{since}",
+                        "armed at head {head} (checks {checks}; {}); reviewed independently{since}{mark}",
                         err.public_message()
                     ),
                 )

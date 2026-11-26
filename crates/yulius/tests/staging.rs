@@ -5244,6 +5244,58 @@ async fn a_red_verdict_stops_the_merge_queue_while_it_is_narrowed() -> TestResul
     Ok(())
 }
 
+/// SPEC-676 RGS-009 (review round 1 of task #660): a new repair owner is the breaker when one
+/// is available, before a lower number; an owner already assigned keeps the repair when a
+/// breaker becomes available.
+#[tokio::test]
+async fn the_repair_goes_to_the_breaker_but_stays_with_its_owner() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore as _;
+    let f = fixture(&staging_toml()).await?;
+    for task in ["a", "b"] {
+        agent(&f, task).await?;
+    }
+    let sid = SandboxId::parse("s1")?;
+    let (a, b) = (TaskId::parse("a")?, TaskId::parse("b")?);
+    let number = |id: &TaskId| {
+        let f = &f;
+        let id = id.clone();
+        async move { BoxResult::Ok(f.h.store.task(&id).await?.ok_or("task")?.number) }
+    };
+    let (na, nb) = (number(&a).await?, number(&b).await?);
+    assert!(na < nb);
+    let owner =
+        |recipients: Vec<yulius_app::ci::RepairRecipient>| recipients.first().map(|r| r.owner);
+    let both = [a.clone(), b.clone()];
+    assert_eq!(
+        owner(
+            f.h.store
+                .reconcile_gate_repair(&sid, "x", &both, &[nb])
+                .await?
+        ),
+        Some(nb),
+        "the breaker before a lower number"
+    );
+    f.h.store.reconcile_gate_repair(&sid, "", &[], &[]).await?;
+    assert_eq!(
+        owner(
+            f.h.store
+                .reconcile_gate_repair(&sid, "x", &[a.clone()], &[nb])
+                .await?
+        ),
+        Some(na),
+        "the breaker is not available"
+    );
+    let later =
+        f.h.store
+            .reconcile_gate_repair(&sid, "x", &both, &[nb])
+            .await?;
+    assert!(
+        later.iter().all(|r| r.owner == na),
+        "the owner keeps it: {later:?}"
+    );
+    Ok(())
+}
+
 /// A person's cancel of a request's own candidate stands,
 /// also when a newer red revision with only earlier failures would answer it without a run.
 #[tokio::test]

@@ -18,6 +18,18 @@ use crate::model::SandboxRecord;
 /// How long a project's stop is kept before it is read again (ms).
 pub(crate) const STOP_READ_MS: i64 = 15_000;
 
+/// What a merge's audit adds about the stop (SPEC-676 RGS-005): a merge its agent `marked` the
+/// repair, or one that went through a `stopped` queue as the breaker's.
+pub(crate) const fn repair_audit(marked: bool, stopped: bool) -> &'static str {
+    if marked {
+        "; marked as the repair of the red gate"
+    } else if stopped {
+        "; as the repair of the red gate"
+    } else {
+        ""
+    }
+}
+
 /// A project's stop as last read: the integration head, when, and the stop.
 pub(crate) type StopRead = (String, i64, Option<MergeStop>);
 

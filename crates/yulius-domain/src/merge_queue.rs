@@ -189,7 +189,8 @@ pub fn held_apart(
 /// (SPEC-676 RGS-002), as the gate history names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFailure {
-    /// The failing test, or `job <name>` when its tests are not known.
+    /// The failing test; a job's name (`job <name>` before it is attributed) when its tests are
+    /// not known, or the run's state (`failed`, `error`) for a run-level failure.
     pub test: String,
     /// The revision that first showed it.
     pub revision: String,

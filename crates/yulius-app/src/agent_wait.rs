@@ -441,12 +441,16 @@ impl App {
         {
             let mut slot = lock_slot(&runtime);
             if let Some(armed) = slot.merge.as_mut().filter(|armed| armed.head == head) {
-                // Marked the repair now (SPEC-676 RGS-005): it keeps its place.
+                // Marked the repair now (SPEC-676 RGS-005): it keeps its place. Saved first,
+                // so a failed write marks nothing.
                 if repair && !armed.repair {
-                    armed.repair = true;
-                    let merge = armed.clone();
+                    let merge = ArmedMerge {
+                        repair: true,
+                        ..armed.clone()
+                    };
                     self.write_armed(&task.id, Some(&merge))
                         .map_err(crate::error::AppError::internal)?;
+                    armed.repair = true;
                 }
                 return Ok(false);
             }
@@ -1418,11 +1422,7 @@ impl App {
                 let detail = format!(
                     "merged at head {} {how}; armed while the checks ran{}",
                     armed.head,
-                    if stop.is_some() {
-                        "; as the repair of the red gate"
-                    } else {
-                        ""
-                    }
+                    crate::merge_stop::repair_audit(armed.repair, stop.is_some())
                 );
                 if let Err(err) = self
                     .deps

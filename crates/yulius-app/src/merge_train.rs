@@ -854,10 +854,21 @@ impl App {
             let Ok(id) = TaskId::parse(&member.task) else {
                 continue;
             };
+            // One merged already is no longer held (review round 1).
+            if matches!(
+                self.deps.store.delivery(&id).await,
+                Ok(Some(record)) if past_merge(&record.stage)
+            ) {
+                continue;
+            }
             let Ok(Some(task)) = self.deps.store.task(&id).await else {
                 continue;
             };
-            let marked = matches!(self.armed_now(&id), ArmedNow::Armed(armed) if armed.repair);
+            // Read while it is being decided too.
+            let marked = self
+                .armed_merge_view(&id)
+                .0
+                .is_some_and(|armed| armed.repair);
             if !stop.lets_through(task.number, marked) {
                 return Some(format!(
                     "the after-merge gate of the integration branch is red ({}); #{} is not its \
@@ -1623,12 +1634,14 @@ impl App {
                     .filter(|n| *n != member.pr)
                     .collect();
                 let (actor, action, how) = armed.merge_audit(task.number);
+                let stopped = self.merge_stop(sandbox).await.is_some();
                 let detail = format!(
                     "merged at head {head} {how}; armed while the checks ran; in merge train {} \
-                     tested at {} (run {})",
+                     tested at {} (run {}){}",
                     listed(&numbers(&train.members)),
                     train.commit,
-                    train.run
+                    train.run,
+                    crate::merge_stop::repair_audit(armed.repair, stopped)
                 );
                 if let Err(err) = self
                     .deps
