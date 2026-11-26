@@ -610,7 +610,7 @@ async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
         yulius::wiring::harness::HarnessAdapter::new("/bin/false".into(), "http://127.0.0.1:1")
             .with_codex_cli(Arc::new(cli));
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         harness: Some(Arc::new(adapter)),
         ..support::HarnessOptions::default()
@@ -654,7 +654,7 @@ async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResul
             .with_codex_cli(Arc::clone(&cli));
     let host = Arc::new(FakeHost::default());
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         harness: Some(Arc::new(adapter)),
         ..support::HarnessOptions::default()
@@ -1892,7 +1892,7 @@ async fn a_login_terminal_closes_once_its_sign_in_or_administration_ends() -> Te
     use yulius_app::ports::store::UserStore as _;
     let host = Arc::new(FakeHost::default());
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
         ..support::HarnessOptions::default()
@@ -2298,7 +2298,7 @@ async fn setup_with_antigravity(
     adapter.host_antigravity = None;
     let host = Arc::new(FakeHost::default());
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         harness: Some(Arc::new(adapter)),
         ..support::HarnessOptions::default()
@@ -2384,7 +2384,7 @@ async fn a_google_sign_in_given_up_during_the_install_leaves_no_account() -> Tes
     let gate = Arc::new(Semaphore::new(0));
     let host = Arc::new(FakeHost::default());
     let h = support::harness_with(support::HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        git: Some(Arc::new(crate::support::pending::UnavailableGit)),
         session_host: Some(host.clone()),
         harness: Some(Arc::new(support::agents::FakeAgentHarness::new(
             "/bin/yulius".into(),

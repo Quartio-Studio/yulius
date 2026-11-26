@@ -1032,7 +1032,7 @@ impl World {
             clock: clock.clone(),
             crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
             github: github.clone(),
-            session_host: Arc::new(yulius::wiring::pending::UnavailableSessionHost),
+            session_host: Arc::new(crate::support::pending::UnavailableSessionHost),
             harness: Arc::new(yulius::wiring::harness::HarnessAdapter::new(
                 "/bin/false".into(),
                 "http://127.0.0.1:1",

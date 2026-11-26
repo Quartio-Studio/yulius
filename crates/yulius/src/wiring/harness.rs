@@ -1210,15 +1210,7 @@ impl TranscriptWatch for Watch {
             }
             heard = out.len();
         }
-        let now = Timestamp(
-            i64::try_from(
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map_or(0, |since| since.as_millis()),
-            )
-            .unwrap_or(i64::MAX),
-        );
-        out.extend(self.limits.report(self.tail.at_end(), now));
+        out.extend(self.limits.report(self.tail.at_end(), super::clock::now()));
         Ok(out)
     }
 

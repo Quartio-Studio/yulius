@@ -7,7 +7,7 @@ description: Lay a project's engineering foundations the way a senior engineer w
 
 Foundations are what make every later task fast and safe. Lay them once, properly, for the
 project's own stack, then leave them stable: change them only when the product needs it (for
-example when it starts deploying for real), and record every change as a decision.
+example when it starts deploying for real), and update the ADR of each choice you change.
 
 ## Principles
 
@@ -21,7 +21,8 @@ example when it starts deploying for real), and record every change as a decisio
 - **Our own machines only.** CI runs on our own infrastructure through Yulius CI, which runs the
   gate for every pull request head and for the integration and production branches. Never add
   GitHub Actions or anything that needs a paid GitHub plan (rulesets, hosted runner minutes).
-- **Decide, don't ask.** Compare options, choose, and write an ADR per lasting choice.
+- **Decide, don't ask.** Compare options and choose; write an ADR only for a choice someone may
+  want to reverse (a dependency, a service, a storage format), with two rejected alternatives.
 - **Small pull requests.** Deliver the bootstrap as a short series of pull requests, one concern
   each, through the normal pipeline (`delivery-pipeline`). During onboarding, steps 1 and 2 land
   in the onboarding pull request itself, so the project starts work with its gate; never leave
@@ -285,7 +286,7 @@ example when it starts deploying for real), and record every change as a decisio
      `[secret:NAME]`.
 4. **Docs.** `AGENTS.md` (rules, commands, layout and the docs index), a `CLAUDE.md` pointer to
    it, `docs/product.md` (purpose, users, scope, current state), `docs/architecture.md` with a
-   Mermaid diagram, ADRs for the choices above, and the first entry of `docs/changes.md`. When
+   Mermaid diagram, an ADR for each choice above someone may want to reverse, and the first entry of `docs/changes.md`. When
    the repository already has equivalents, point `yulius.toml` `[docs]` at them.
 5. **GitHub hygiene (free features only).** Labels: `type: bug|enhancement|docs|chore|performance`,
    `priority: high|medium|low`, `area: <part>` per main area, `risk: high`. Issue templates with
@@ -319,5 +320,5 @@ example when it starts deploying for real), and record every change as a decisio
   `[cd.<name>]` and its `stage` for each further target, and each one that deploys has a deploy
   and a verify script that passed on a real run, and a `rollback` with its `migrations` line
   whose dev drill passed after two dev deploys; the gate tests the rollback script.
-- The docs describe the project as it is, and each choice has an ADR.
+- The docs describe the project as it is, and each choice someone may want to reverse has an ADR.
 - The critical and high-cost conventions are codified as primitives or checked by the gate.

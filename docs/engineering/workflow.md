@@ -18,8 +18,8 @@ gates.
    Plan all the known work as steps of similar effort, each a slice that leaves the code
    working, and finish them one at a time (STP-006/007, STP-009).
 3. **Implement:** build a complete slice, preserving existing behavior. Keep an
-   affected boundary's types, implementation and tests together. New architecture
-   deserves a short ADR with alternatives and consequences.
+   affected boundary's types, implementation and tests together. An ADR is only for a
+   choice someone may want to reverse ([spec workflow](specifications.md)).
 4. **Verify:** demonstrate the reported behavior and failure cases. While iterating,
    run the checks your change touches. The whole gate is Yulius CI's job: it tests the
    head while the reviewer reads. Do not run the whole gate locally before a review or
