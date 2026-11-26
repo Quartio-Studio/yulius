@@ -360,7 +360,7 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          6. Keep `docs/architecture.md` (with its Mermaid diagram), `docs/product.md` and this\n   \
             file true in the same change. Production-grade defaults: explicit error handling,\n   \
             no secrets in the repository.\n\
-         7. On completion add a short entry at the top of `docs/changes.md`.\n\
+         7. Note each user-visible change at the top of `docs/changes.md`.\n\
          \n\
          ## Delivery\n\
          \n\
@@ -488,7 +488,7 @@ fn changes_md(template: TemplateKind) -> String {
     format!(
         "# Changes\n\
          \n\
-         Delivered changes, newest first. Add an entry at the top when a task is completed.\n\
+         User-visible changes, newest first, one line each.\n\
          \n\
          ## Project created\n\
          \n\
@@ -838,6 +838,7 @@ mod tests {
             "no `git stash` as a tool",
             "never add GitHub Actions",
             "## Layout (the docs index)",
+            "7. Note each user-visible change at the top of `docs/changes.md`.",
             "only for a choice of how the system is built or run\n   that someone may want to reverse",
         ] {
             assert!(agents.contains(needle), "AGENTS.md lacks {needle}");
