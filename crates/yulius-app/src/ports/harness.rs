@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use yulius_domain::harness::Harness;
+use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, LimitScope, ModelTokens, TokenUsage};
@@ -576,6 +576,18 @@ pub trait HarnessPort: Send + Sync {
     fn provide_antigravity(&self, install: bool) -> ProvideFuture<'_> {
         let _ = install;
         Box::pin(async { Ok(None) })
+    }
+    /// The CLI Yulius provides for `provider`'s harness, as [`Self::provide_codex`] and
+    /// [`Self::provide_antigravity`] say; `None` for Claude Code, which is on the run's `PATH`.
+    ///
+    /// # Errors
+    /// As theirs.
+    fn provide_cli(&self, provider: Provider, install: bool) -> ProvideFuture<'_> {
+        match provider {
+            Provider::OpenAi => self.provide_codex(install),
+            Provider::Google => self.provide_antigravity(install),
+            Provider::Anthropic => Box::pin(async { Ok(None) }),
+        }
     }
     /// Plans a launch.
     ///

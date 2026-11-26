@@ -2,6 +2,15 @@
 
 use std::fmt;
 
+/// Prefix of the long-lived Claude token `claude setup-token` prints.
+pub const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-oat01-";
+/// Fewest token characters after [`CLAUDE_TOKEN_PREFIX`].
+pub const CLAUDE_TOKEN_MIN_BODY: usize = 20;
+/// Largest Codex `auth.json` accepted, or read back from a run or a sign-in.
+pub const CODEX_AUTH_MAX_BYTES: usize = 1024 * 1024;
+/// Largest Antigravity token file accepted, or read back from a run or a sign-in.
+pub const ANTIGRAVITY_TOKEN_MAX_BYTES: usize = 64 * 1024;
+
 /// Prefixes of user-role messages that Codex injects as context rather than typed prompts, for a
 /// message without provenance (0.167's rollouts; 0.169 marks each content item). From
 /// `core/src/context` of `rust-v0.169.0`. Read by the rollout observer and the transcript reader.

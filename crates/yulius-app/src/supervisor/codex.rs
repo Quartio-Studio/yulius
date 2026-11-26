@@ -156,9 +156,6 @@ fn ensure_sessions_link(dir: &std::os::fd::OwnedFd) -> AppResult<()> {
     }
 }
 
-/// Largest Codex `auth.json` read back from a run (SPEC-503 CDX-006).
-const CODEX_AUTH_MAX: u64 = 1024 * 1024;
-
 /// The Codex home's `auth.json` a launch wrote, taken back when the launch ends before its run is
 /// live (SPEC-503 CDX-006): a failed spawn, a store error, or a subscription removed just after it
 /// was chosen (SPEC-447) would otherwise leave it for later tasks of the sandbox to read. Dropped
@@ -216,10 +213,7 @@ fn remove_codex_auth(root: &Path, account: &AccountId) -> AppResult<()> {
         Err(nix::errno::Errno::ENOENT) => return Ok(()),
         Err(err) => return Err(crate::files::errno_error(err)),
     };
-    match nix::unistd::unlinkat(&dir, "auth.json", nix::unistd::UnlinkatFlags::NoRemoveDir) {
-        Ok(()) | Err(nix::errno::Errno::ENOENT) => Ok(()),
-        Err(err) => Err(crate::files::errno_error(err)),
-    }
+    crate::files::remove_at(&dir, std::ffi::OsStr::new("auth.json"))
 }
 
 /// Writes the plan's files of the Codex home `home` through its handle `dir` (mode 0600) and takes
@@ -256,7 +250,6 @@ pub(super) fn write_codex_files(
 /// The `auth.json` a Codex run left in its home, read without following a link and bounded;
 /// `None` when there is none.
 fn read_codex_auth(root: &Path, account: &AccountId) -> AppResult<Option<Vec<u8>>> {
-    use std::io::Read as _;
     let dir = match crate::files::open_dirs_below(
         root,
         &[
@@ -269,27 +262,16 @@ fn read_codex_auth(root: &Path, account: &AccountId) -> AppResult<Option<Vec<u8>
         Err(nix::errno::Errno::ENOENT) => return Ok(None),
         Err(err) => return Err(crate::files::errno_error(err)),
     };
-    let flags = nix::fcntl::OFlag::O_RDONLY
-        | nix::fcntl::OFlag::O_NOFOLLOW
-        | nix::fcntl::OFlag::O_NONBLOCK
-        | nix::fcntl::OFlag::O_CLOEXEC;
-    let fd = match nix::fcntl::openat(&dir, "auth.json", flags, nix::sys::stat::Mode::empty()) {
-        Ok(fd) => fd,
-        Err(nix::errno::Errno::ENOENT) => return Ok(None),
-        Err(err) => return Err(crate::files::errno_error(err)),
-    };
-    let file = std::fs::File::from(fd);
-    if !file.metadata().map_err(AppError::internal)?.is_file() {
-        return Ok(None);
+    match crate::files::read_bounded_at(
+        &dir,
+        std::ffi::OsStr::new("auth.json"),
+        yulius_domain::harness::CODEX_AUTH_MAX_BYTES,
+    ) {
+        Ok(crate::files::Bounded::Bytes(mut bytes)) => Ok(Some(std::mem::take(&mut *bytes))),
+        Ok(crate::files::Bounded::NotPlain | crate::files::Bounded::TooLarge) => Ok(None),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(crate::files::io_error(&err)),
     }
-    let mut bytes = Vec::new();
-    file.take(CODEX_AUTH_MAX + 1)
-        .read_to_end(&mut bytes)
-        .map_err(AppError::internal)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > CODEX_AUTH_MAX {
-        return Ok(None);
-    }
-    Ok(Some(bytes))
 }
 
 impl TaskRuntime {

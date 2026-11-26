@@ -90,10 +90,6 @@ pub(super) const ANTIGRAVITY_GIVEN: &str = "antigravity-given";
 /// The run's home below its run directory, as [`antigravity_run_home`] names it.
 const ANTIGRAVITY_RUN_HOME: &str = "antigravity-home";
 
-/// Largest Antigravity token file read back from a run, as
-/// `yulius_harness::login::ANTIGRAVITY_TOKEN_MAX_BYTES`.
-const ANTIGRAVITY_TOKEN_MAX: u64 = 64 * 1024;
-
 /// The folder holding the token file of the Antigravity home `home` below `root`, opened without
 /// following a link (the CLI's process could change what lies below its `.gemini`); `None` when
 /// it is missing.
@@ -122,40 +118,24 @@ fn read_antigravity_token(run_dir: &Path) -> AppResult<Option<Vec<u8>>> {
 /// The token file the Antigravity CLI left in the home `home` below `root` (a run's, or a
 /// sign-in's), read as [`read_antigravity_token`] says.
 pub(crate) fn read_antigravity_token_in(root: &Path, home: &str) -> AppResult<Option<Vec<u8>>> {
-    use std::io::Read as _;
     let Some(dir) = antigravity_token_dir(root, home)? else {
         return Ok(None);
     };
-    let flags = nix::fcntl::OFlag::O_RDONLY
-        | nix::fcntl::OFlag::O_NOFOLLOW
-        | nix::fcntl::OFlag::O_NONBLOCK
-        | nix::fcntl::OFlag::O_CLOEXEC;
-    let fd = match nix::fcntl::openat(
+    match crate::files::read_bounded_at(
         &dir,
-        antigravity::TOKEN_NAME,
-        flags,
-        nix::sys::stat::Mode::empty(),
+        std::ffi::OsStr::new(antigravity::TOKEN_NAME),
+        yulius_domain::harness::ANTIGRAVITY_TOKEN_MAX_BYTES,
     ) {
-        Ok(fd) => fd,
-        Err(nix::errno::Errno::ENOENT | nix::errno::Errno::ELOOP) => return Ok(None),
-        Err(err) => return Err(crate::files::errno_error(err)),
-    };
-    let file = std::fs::File::from(fd);
-    if !file.metadata().map_err(AppError::internal)?.is_file() {
-        return Ok(None);
+        Ok(crate::files::Bounded::Bytes(mut bytes)) => Ok(Some(std::mem::take(&mut *bytes))),
+        Ok(crate::files::Bounded::NotPlain | crate::files::Bounded::TooLarge) => Ok(None),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::NotFound
+                || err.raw_os_error() == Some(nix::libc::ELOOP) =>
+        {
+            Ok(None)
+        }
+        Err(err) => Err(crate::files::io_error(&err)),
     }
-    // A copy that is not taken (half read, or past the bound) is zeroed before it is freed; the
-    // room is reserved first, so no reallocation leaves an earlier copy behind.
-    let mut bytes = Vec::with_capacity(usize::try_from(ANTIGRAVITY_TOKEN_MAX + 1).unwrap_or(0));
-    if let Err(err) = file.take(ANTIGRAVITY_TOKEN_MAX + 1).read_to_end(&mut bytes) {
-        zeroize::Zeroize::zeroize(&mut bytes);
-        return Err(AppError::internal(err));
-    }
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > ANTIGRAVITY_TOKEN_MAX {
-        zeroize::Zeroize::zeroize(&mut bytes);
-        return Ok(None);
-    }
-    Ok(Some(bytes))
 }
 
 /// Removes the token file of the run whose folder is `run_dir`.
@@ -163,14 +143,7 @@ fn remove_antigravity_token(run_dir: &Path) -> AppResult<()> {
     let Some(dir) = antigravity_token_dir(run_dir, ANTIGRAVITY_RUN_HOME)? else {
         return Ok(());
     };
-    match nix::unistd::unlinkat(
-        &dir,
-        antigravity::TOKEN_NAME,
-        nix::unistd::UnlinkatFlags::NoRemoveDir,
-    ) {
-        Ok(()) | Err(nix::errno::Errno::ENOENT) => Ok(()),
-        Err(err) => Err(crate::files::errno_error(err)),
-    }
+    crate::files::remove_at(&dir, std::ffi::OsStr::new(antigravity::TOKEN_NAME))
 }
 
 impl App {

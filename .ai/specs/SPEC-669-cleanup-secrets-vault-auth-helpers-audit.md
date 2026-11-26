@@ -49,8 +49,8 @@ before and their existing tests pass unchanged.
 - [x] F8: pure egress decision with unit tests
 - [x] F8: egress_apply calls the pure decision
 - [ ] F8: independent review of the egress PR
-- [ ] F3: one no-follow bounded reader for login files
-- [ ] F3: provide_cli and the shared credential constants
+- [x] F3: one no-follow bounded reader for login files
+- [x] F3: provide_cli and the shared credential constants
 - [ ] F3: independent review of the credential-reader PR
 
 ## Acceptance criteria
@@ -102,5 +102,19 @@ before and their existing tests pass unchanged.
   `EgressRequest`, `RuleCheck` and the substitution helpers, all app types, and moving them is
   no cleanup. The liveness check, Vidoc, the loads, the audits and the control-character log
   stay in `egress_apply`; the decision has unit tests without an `App`.
+- F3: `files::read_bounded_at(dir, name, max)` opens with `O_NOFOLLOW | O_NONBLOCK`, reserves
+  the room, reads at most `max` bytes and zeroes a copy it does not hand back; each caller keeps
+  its own mapping of a missing file, a link and a read error to its own result or refusal text.
+  `read_login_file` keeps its path signature (its tests are unchanged): its folder is opened by
+  path and the file below it without following a link, so a link swapped in after the old
+  `symlink_metadata` check is no longer followed (the audit's one stated change; the texts stay).
+  The run readers zero an oversized or half-read Codex copy too, as the Antigravity one did.
+- F3: the credential constants live once in `yulius_domain::harness` and `yulius-harness`
+  re-exports them: the app may not depend on an adapter crate, so "export them from
+  yulius-harness" would not reach `accounts.rs` and the supervisor.
+- F3: `HarnessPort::provide_cli(provider, install)` replaces the provider matches at the account
+  creation, the background warm-up after a key or file, the sign-in start and the start
+  preflight. The startup warm-up keeps its two calls (each logs its own line) and the launch its
+  two (they fill different fields).
 - Helpers stay inside the vault module where the copies are all there (`parse_args`, `named`),
   so the parallel MCP-argument cleanup (#656) is not raced.
