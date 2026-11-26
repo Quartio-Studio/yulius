@@ -16,7 +16,7 @@ use support::{
 use yulius_app::coordination::AgentContext;
 use yulius_app::model::TaskOrigin;
 use yulius_app::ports::store::{
-    AccountStore as _, AuditStore as _, TaskStore as _, UserStore as _,
+    AccountStore as _, AuditStore as _, PermissionStore as _, TaskStore as _, UserStore as _,
 };
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
@@ -957,5 +957,78 @@ async fn a_refusal_names_its_source_and_what_was_asked() -> TestResult {
         .find(|r| r["reason"].as_str().is_some_and(|r| r.contains("nowhere")))
         .ok_or("the refused row")?;
     assert_eq!(row["target_sandbox"], "nowhere", "{row}");
+    Ok(())
+}
+
+/// Answering a handoff is control of the task: an owner whose access to the project dropped to
+/// read approves and declines nothing, with the refusal every control path gives, and the request
+/// keeps waiting.
+#[tokio::test]
+async fn an_owner_down_to_read_access_answers_no_handoff() -> TestResult {
+    let w = world().await?;
+    set_mode(&w, "ask", 3, 20).await?;
+    let asked = hand(
+        &w,
+        "t1",
+        json!({"sandbox": "api", "title": "Add the endpoint", "prompt": "Add GET /v1/items"}),
+    )
+    .await?
+    .map_err(|e| e.to_string())?;
+    let path = format!(
+        "/api/tasks/t1/handoffs/{}",
+        asked["id"].as_str().ok_or("id")?
+    );
+
+    w.h.github.set_perm("alice", "acme/app", perms("read"));
+    let alice = w.h.store.user_by_login("alice").await?.ok_or("alice")?;
+    let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
+    w.h.store
+        .put_access(
+            &alice.id,
+            &sandbox,
+            yulius_domain::permission::AccessLevel::Read,
+            w.h.app.now(),
+        )
+        .await?;
+    // What another control path of the task answers her now.
+    let continued = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t1/continue",
+        Some(json!({})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        continued.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        continued.body
+    );
+    for approve in [false, true] {
+        let answered = call(
+            &w.h.router,
+            Method::POST,
+            &path,
+            Some(json!({"approve": approve})),
+            &w.alice,
+        )
+        .await?;
+        assert_eq!(answered.status, StatusCode::FORBIDDEN, "{}", answered.body);
+        assert_eq!(answered.body, continued.body, "the control refusal");
+    }
+    let page = call(
+        &w.h.router,
+        Method::GET,
+        "/api/tasks/t1/handoffs",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        page.body["handoffs"][0]["state"], "requested",
+        "{}",
+        page.body
+    );
     Ok(())
 }
