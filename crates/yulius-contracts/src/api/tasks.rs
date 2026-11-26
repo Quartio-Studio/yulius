@@ -659,6 +659,83 @@ fn one() -> u8 {
     1
 }
 
+/// What the MCP tools `steps_get`, `steps_set` and `step_update` answer: the plan, its progress
+/// and the current nudges.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanRecord {
+    /// The plan's progress.
+    pub progress: PlanProgress,
+    /// Its steps, in order.
+    pub steps: Vec<PlanStep>,
+    /// What the agent is reminded of.
+    #[serde(default)]
+    pub nudges: Vec<String>,
+    /// The step `step_update` changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<StepChange>,
+}
+
+/// A plan's progress as the MCP tools say it, in a plan record and a task brief's `steps`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanProgress {
+    /// Finished steps (done or skipped).
+    pub done: u32,
+    /// All steps.
+    pub total: u32,
+    /// Finished share of the plan's effort, 0-100.
+    #[serde(default)]
+    pub percent: u8,
+    /// Current step title.
+    pub current: Option<String>,
+    /// Steps the plan had when its first step was finished, when it has grown since.
+    pub first_total: Option<u32>,
+}
+
+impl From<&StepProgress> for PlanProgress {
+    fn from(p: &StepProgress) -> Self {
+        Self {
+            done: p.done,
+            total: p.total,
+            percent: p.percent,
+            current: p.current.clone(),
+            first_total: p.first_total,
+        }
+    }
+}
+
+/// One step of a [`PlanRecord`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanStep {
+    /// Step id.
+    pub id: String,
+    /// Position.
+    pub ordinal: u32,
+    /// Title.
+    pub title: String,
+    /// `pending`, `in_progress`, `done`, `skipped` or `blocked`.
+    pub status: String,
+    /// Declared effort, 1-3.
+    #[serde(default)]
+    pub effort: u8,
+    /// Note.
+    pub note: Option<String>,
+    /// When it was first started (RFC 3339).
+    pub started_at: Option<String>,
+    /// When it was finished (RFC 3339).
+    pub finished_at: Option<String>,
+}
+
+/// The step a `step_update` changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StepChange {
+    /// Its position.
+    pub ordinal: u32,
+    /// Its title.
+    pub title: String,
+    /// Its new status.
+    pub status: String,
+}
+
 /// Token and duration metrics; `None` means unknown, never zero.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Metrics {
