@@ -21,8 +21,8 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
   `App::agent_context` (`coordination.rs`) checks only the run.
 - `App::update_user` (`admin.rs`) revokes a disabled person's web sessions, API tokens and cached
   access. It left their tasks' runs alone, and those runs could keep asking for credentials.
-  Yulius's own pushes, pull requests and merges for such a task fall back to the App's
-  installation token (`App::task_github_token`), so a run that kept going would still land work.
+  Yulius's own pushes and pull requests for such a task fall back to the App's installation
+  token (`App::task_github_token`), so a run that kept going would still publish work.
 - The sibling `App::workspace_git_credential` (`identity.rs`), for a person's own processes,
   already refuses a disabled person or one without Work on the project.
 - `App::answer_handoff` (`handoffs.rs`, SPEC-512 HOF-004) loaded the task with `load_task(View)`
@@ -37,11 +37,16 @@ closed. Task #653 confirmed both, and the owner decided they get fixed:
   check (`App::git_credential_holder`), so both refuse the same way: a disabled person is
   `Unauthenticated`; a person without access is `NotFound`; one with read access is `Forbidden`.
   The superadmin keeps Admin on every project (ACC-012), so the superadmin's tasks are unchanged.
+  An owner whose access cannot be settled now is refused too (`Unauthenticated`). The task's
+  terminal says once why the agent gets no credential, and again after a hand-over.
 - L4Q3-002: Disabling a person stops every task they own that is not resting. That includes live
   runs and tasks that would start by themselves (queued, chained, prepared, parked, waiting for
-  capacity). It uses the ordinary stop path, with an audit entry `task.stopped` per task naming
-  the reason and a notice in the task's terminal. A stop that fails is logged. It does not undo
-  the disable, and L4Q3-001 still refuses that run's credential. The decision is ADR-0481.
+  capacity). It uses the ordinary stop path, waiting tasks first, on a task of its own after the
+  disable and its `user.updated` audit are written. A task is read again before its stop and left
+  when someone took control meanwhile. Each stop gets an audit entry `task.stopped` naming the
+  reason and a notice in the task's terminal. A stop that fails is logged. It does not undo the
+  disable, the others still stop, and L4Q3-001 still refuses that run's credential. The decision
+  is ADR-0481. Automations of a disabled person are outside this change (#1824).
 - L4Q3-003: `answer_handoff` loads the task with `TaskAction::Control`. An owner down to read
   access, and anyone but the owner, are refused with the same refusal as the other control paths.
   Approval still needs Work on the target project.

@@ -2301,8 +2301,10 @@ body `{"head": "<sha>"|null, "since": WaitState|null, "timeout_secs": n|null}`; 
 `POST /internal/git-credential` (the run's task token; the Git credential helper and `yulius
 gh-token`): `{"protocol", "host", "path?"}` → `{"token"}`, the App's agent token for the project's
 repository (ADR-0114), only while the task's owner is enabled and may work in the project, as for a
-person's own git (ADR-0481): `401` for a disabled owner, `404` or `403` for an owner without write
-access, `403` for another host or repository.
+person's own git (ADR-0481): `401` for a disabled owner or one whose access cannot be settled now
+(an expired GitHub sign-in past the access cache's staleness bound), `404` or `403` for an owner
+without write access, `403` for another host or repository. The task's terminal says once why its
+agent gets no credential.
 
 Every route of the loopback listener that the agents' own clients call (hooks, `yulius wait`'s
 `/internal/agent/wait`, the Git credential helper, the scrub fingerprints) answers an application

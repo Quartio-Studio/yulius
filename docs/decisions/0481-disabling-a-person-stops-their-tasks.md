@@ -13,10 +13,10 @@ owner is absent, so anyone who may work in the project takes control at once.
 
 When a superadmin disabled a person, Yulius revoked that person's web sessions, API tokens and
 cached access. Their tasks' agents kept running. Each run kept asking `/internal/git-credential`,
-which issued the App's agent token to any run that was not over. Yulius's own pushes, pull
-requests and merges for such a task fall back to the App's installation token once the owner's
-token is unusable (`task_github_token`). So a run started on a disabled person's instruction could
-keep pushing to the project, and its work could be merged. A person's own processes were already
+which issued the App's agent token to any run that was not over. Yulius's own pushes and pull
+requests for such a task fall back to the App's installation token once the owner's token is
+unusable (`task_github_token`); only `delivery_merge` and the merge train refuse a disabled owner.
+So a run started on a disabled person's instruction could keep pushing to the project. A person's own processes were already
 refused after a disable (`workspace_git_credential` checks enabled and Work). The agent path was
 the one way left that acted on the disabled person's authority.
 
@@ -25,13 +25,18 @@ the one way left that acted on the disabled person's authority.
 - **A run's git credential needs its owner's standing.** The agent's credential is issued only
   while the task's owner is enabled and holds Work on the project. The agent path and the person's
   path ask one shared check, `App::git_credential_holder`, so they refuse alike. The same check
-  covers an owner who only lost write access on GitHub, with no disable at all.
+  covers an owner who only lost write access on GitHub, with no disable at all, and an owner whose
+  access cannot be settled now (their GitHub sign-in can no longer be refreshed and the cached
+  access is past its staleness bound): refusing is the safe side of an unknown. The task's
+  terminal says once why the agent's git fails, and again after a hand-over.
 - **Disabling a person stops every task they own that is not resting.** That covers live runs and
   tasks that would start by themselves: queued, chained, prepared, parked and waiting for capacity.
-  It uses the ordinary stop path (`stop_task_now`). Each stop is audited as `task.stopped`, with
-  the superadmin as actor and the reason `owner disabled`, and the task's terminal says why. A stop
-  that fails is logged and does not undo the disable. The credential refusal still holds for that
-  run.
+  It uses the ordinary stop path (`stop_task_now`), waiting tasks first, on a task of its own
+  after the disable and its audit are written, so a request that goes away leaves no half-done
+  record. Each task is read again first and left when someone took control meanwhile. Each stop is
+  audited as `task.stopped`, with the superadmin as actor and the reason `owner disabled`, and the
+  task's terminal says why. A stop that fails is logged and does not undo the disable, and the
+  others still stop. The credential refusal still holds for that run.
 - Nothing is deleted. A stopped task keeps its worktree, branch, session and pull request. Because
   its owner is absent, anyone who may work in the project takes control and continues it. If the
   person is enabled again, they continue it themselves.
@@ -39,9 +44,8 @@ the one way left that acted on the disabled person's authority.
 ## Alternatives
 
 - **Refuse only the credential, leave runs running.** This is the smallest change, but the run
-  goes on with compute, a subscription and the agent's MCP tools. Yulius's own push and
-  `delivery_merge` would still land its work as the App. The disable would not end what the
-  person started. Rejected.
+  goes on with compute, a subscription and the agent's MCP tools, and Yulius's own push still
+  publishes its branch as the App. The disable would not end what the person started. Rejected.
 - **Refuse every agent call of a disabled owner's run in `agent_context`.** Hooks and MCP calls
   would fail in the middle of a turn, with no stop recorded and the process still alive. That is
   worse to read and to recover from than a stop. Rejected; the stop gives the same containment
@@ -53,9 +57,11 @@ the one way left that acted on the disabled person's authority.
 
 ## Consequences
 
-- Disabling is a full stop: nothing the person started keeps running or keeps a GitHub credential.
+- None of the person's tasks keeps running or keeps a GitHub credential. Their enabled
+  automations are not covered: they still create tasks, which then get no credential (#1824).
 - Disabling someone by mistake stops their work. Enabling them again and continuing each task
-  recovers it, with nothing lost but the interrupted turn.
+  recovers its work, but not every waiting task's plan: a cancelled chained task loses its link to
+  its predecessor, a prepared one its start time and a queued one its place in the queue.
 - The disable request takes longer by one stop per task the person owns. Stops are sequential and
   bounded by the stop path's own rounds.
 - A credential request now asks the owner's access. Within the permission cache's freshness bound
