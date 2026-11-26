@@ -39,7 +39,7 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 - [x] PR4: config.rs shared list/names/one-line helpers, EnvironmentsConflict and render narrowing
 - [x] PR4: [disk] validated by parse_yulius_toml (test first)
 - [x] PR4: vidoc.rs on the TOML parser; one frontmatter, one clip, doctests folded
-- [ ] PR4: review approved and merged into dev
+- [x] PR4: review approved and merged into dev
 - [ ] PR5: move-only split of ci_job
 - [ ] PR5: move-only split of cd_prepare into cd_resolve_target and cd_promote_for
 - [ ] PR5: F6 production pinning without staging simplified in cd_promote_for
