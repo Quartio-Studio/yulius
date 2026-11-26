@@ -59,6 +59,8 @@
 //! [merge_queue]                        # derived files (SPEC-497 MQW-003): two armed pull
 //! apart = ["skills/defaults/"]           # requests that both change files under one of these
 //!                                        # globs never share a merge candidate
+//! stop_on_red_gate = true                # a red after-merge gate holds every merge but the
+//!                                        # repair (SPEC-676); default: on beside merge-first
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
@@ -330,7 +332,7 @@ const COMMAND_KEYS: &str = "test, lint, build, gate";
 const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merge, promote, auto_promote, require_checks, environments";
 const DISK_KEYS: &str = "caches";
 const REVIEW_KEYS: &str = "product, not_product";
-const MERGE_QUEUE_KEYS: &str = "apart";
+const MERGE_QUEUE_KEYS: &str = "apart, stop_on_red_gate";
 const LOCAL_KEYS: &str = "deploy, verify, about";
 /// Most globs in one `[review]` key.
 const MAX_REVIEW_GLOBS: usize = 50;
@@ -1402,6 +1404,34 @@ pub fn parse_yulius_toml_merge_queue(text: &str) -> Result<Vec<Pattern>, FormatE
     parse_document(text).and_then(|document| merge_queue_of(&document))
 }
 
+/// Whether a red after-merge gate stops the merge queue (SPEC-676 RGS-001): `[merge_queue]
+/// stop_on_red_gate`, else whether the project has a merge-first staging target.
+///
+/// # Errors
+/// A syntax error of the file, an invalid `[merge_queue]` entry or CD table.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::spec_format::parse_yulius_toml_stop_on_red_gate;
+/// let staging = "[cd.dev]\nmerge_first = true\ndeploy = \"d\"\nverify = \"v\"\nrollback = \"r\"\n\
+///                migrations = \"none\"\n";
+/// assert!(parse_yulius_toml_stop_on_red_gate(staging)?);
+/// assert!(!parse_yulius_toml_stop_on_red_gate("[merge_queue]\nstop_on_red_gate = false\n")?);
+/// # Ok::<(), yulius_domain::spec_format::FormatError>(())
+/// ```
+pub fn parse_yulius_toml_stop_on_red_gate(text: &str) -> Result<bool, FormatError> {
+    let document = parse_document(text)?;
+    merge_queue_of(&document)?;
+    let explicit = document
+        .merge_queue
+        .as_ref()
+        .and_then(|table| table.entries.iter().find(|e| e.key == "stop_on_red_gate"));
+    match explicit {
+        Some(entry) => bool_value(entry),
+        None => Ok(cd_of(&document)?.merge_first().is_some()),
+    }
+}
+
 /// The task-local deployment (SPEC-575 MFS-010): `[local]` with its `deploy` command and an
 /// optional `verify` and `about`; `None` without the table.
 ///
@@ -1449,10 +1479,13 @@ fn merge_queue_of(document: &Document) -> Result<Vec<Pattern>, FormatError> {
         .map(|t| t.entries.as_slice())
         .unwrap_or_default()
     {
-        if entry.key != "apart" {
-            return Err(unknown("merge_queue", entry, MERGE_QUEUE_KEYS));
+        match entry.key.as_str() {
+            "apart" => apart.extend(glob_list(entry)?),
+            "stop_on_red_gate" => {
+                bool_value(entry)?;
+            }
+            _ => return Err(unknown("merge_queue", entry, MERGE_QUEUE_KEYS)),
         }
-        apart.extend(glob_list(entry)?);
     }
     Ok(apart)
 }
@@ -2741,6 +2774,29 @@ anything = { a = [1, 2.5, { b = 1979-05-27 }] }
             assert!(parse_yulius_toml_merge_queue(&bad).is_err(), "{bad}");
             assert!(parse_yulius_toml(&bad).is_err(), "{bad}");
         }
+        Ok(())
+    }
+
+    /// SPEC-676 RGS-001: `stop_on_red_gate` is a bool beside `apart`; without it the stop is on
+    /// exactly where a merge-first staging target is.
+    #[test]
+    fn the_merge_queue_stops_on_a_red_gate_by_default_beside_merge_first() -> TestResult {
+        let merge_first = "[cd.dev]\nmerge_first = true\ndeploy = \"d\"\nverify = \"v\"\n\
+                           rollback = \"r\"\nmigrations = \"none\"\n[cd.prod]\n";
+        assert!(parse_yulius_toml_stop_on_red_gate(merge_first)?);
+        assert!(!parse_yulius_toml_stop_on_red_gate(
+            "[cd.dev]\n[cd.prod]\n"
+        )?);
+        assert!(!parse_yulius_toml_stop_on_red_gate("")?);
+        let off = format!("{merge_first}[merge_queue]\nstop_on_red_gate = false\n");
+        assert!(!parse_yulius_toml_stop_on_red_gate(&off)?);
+        let on = "[merge_queue]\napart = [\"gen/\"]\nstop_on_red_gate = true\n";
+        assert!(parse_yulius_toml_stop_on_red_gate(on)?);
+        assert_eq!(parse_yulius_toml_merge_queue(on)?.len(), 1);
+        parse_yulius_toml(on)?;
+        let bad = "[merge_queue]\nstop_on_red_gate = \"yes\"\n";
+        assert!(parse_yulius_toml_stop_on_red_gate(bad).is_err());
+        assert!(parse_yulius_toml(bad).is_err());
         Ok(())
     }
 

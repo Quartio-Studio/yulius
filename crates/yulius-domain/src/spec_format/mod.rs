@@ -33,7 +33,7 @@ pub use config::{
     parse_yulius_toml, parse_yulius_toml_branch_policy, parse_yulius_toml_caches,
     parse_yulius_toml_cd, parse_yulius_toml_docs, parse_yulius_toml_local,
     parse_yulius_toml_merge_queue, parse_yulius_toml_resources, parse_yulius_toml_resources_table,
-    parse_yulius_toml_review, render_yulius_toml,
+    parse_yulius_toml_review, parse_yulius_toml_stop_on_red_gate, render_yulius_toml,
 };
 pub use project::{
     DecisionFiles, NamedFile, ProjectFiles, ProjectProblem, ProjectProblemKind, ProjectReport,
