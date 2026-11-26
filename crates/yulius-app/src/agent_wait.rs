@@ -234,8 +234,9 @@ impl ArmedSlot {
     }
 }
 
-/// `task`'s armed slot read once under its lock ([`App::armed_snapshot`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `task`'s armed slot read once under its lock ([`App::armed_snapshot`]); compare two with
+/// [`ArmedSnapshot::same_arm`].
+#[derive(Debug)]
 pub(crate) struct ArmedSnapshot {
     pub(crate) now: ArmedNow,
     pub(crate) observation: ArmObservation,
@@ -251,7 +252,7 @@ impl ArmedSnapshot {
 }
 
 /// The live slot changes relevant to delivering advice prepared across asynchronous reads.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ArmObservation {
     generation: u64,
     decisions_started: u64,
@@ -852,9 +853,9 @@ impl App {
     }
 
     /// Whether the merge queue may touch `task`'s branch now (DLV-203): its turn ended, no
-    /// background command runs, nothing is uncommitted (a failed read counts as uncommitted), the
-    /// task runs, and its worktree is at `head` when one is given. Checked in this order, so the
-    /// first reason is the one to tell.
+    /// background command runs, the task runs, it has a worktree with nothing uncommitted (a
+    /// failed read counts as uncommitted), at `head` when one is given. Checked in this order,
+    /// cheapest first, so the first reason is the one to tell.
     pub(crate) async fn queue_readiness(&self, task: &TaskRecord, head: Option<&str>) -> Readiness {
         use yulius_domain::task::{Activity, TaskStatus};
         if !task.activity.is_some_and(Activity::is_idle) {
@@ -863,14 +864,14 @@ impl App {
         if self.background_shells_of(&task.id).unwrap_or(0) > 0 {
             return Readiness::Shells;
         }
+        if task.status != TaskStatus::Running {
+            return Readiness::NotRunning;
+        }
         let Some(worktree) = task.worktree_path.as_deref().map(std::path::Path::new) else {
             return Readiness::MovedOn;
         };
         if self.deps.git.has_changes(worktree).await.unwrap_or(true) {
             return Readiness::Dirty;
-        }
-        if task.status != TaskStatus::Running {
-            return Readiness::NotRunning;
         }
         match head {
             Some(head)
