@@ -98,7 +98,7 @@ PR 0 (#1774), spec discovery (CLN-001):
 PR 1, the split of `delivery.rs` (audit L2 F8, CLN-002):
 - Commit `5845fc850` moves eight regions verbatim into `delivery/{profile,text,view,open,parking,
   merge,promote,environments}.rs`, each inside its own `impl App` block; `switch_tests` moves with
-  the profile code it tests. `delivery.rs` goes from 8,236 to 1,195 lines.
+  the profile code it tests. `delivery.rs` goes from 8,236 to 1,784 lines (about 590 of them its tests).
 - A line-multiset comparison of the old file against the parent and the eight files finds no line
   lost; the only lines added are the module declarations, three glob re-exports, the file
   headers, `use super::*;`, the `impl App {`/`}` wrappers and 26 `pub(super)` tokens on items
