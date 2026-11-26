@@ -51,7 +51,7 @@ async fn world_with(
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let _ = Command::new(&exe).arg("version").output();
     // A file store, so a test can refuse notices with a trigger (an outage).
-    let store = yulius_store::SqliteStore::open(&dir.path().join("yulius.db"))?;
+    let store = crate::support::store::migrated(&dir.path().join("yulius.db"))?;
     let h = harness_with(HarnessOptions {
         session_host: Some(host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe)))),
         dir: Some(dir),

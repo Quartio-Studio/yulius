@@ -548,7 +548,7 @@ async fn a_deletion_with_unreadable_tasks_says_not_moved_when_the_folder_stayed(
     let dir = tempfile::tempdir()?;
     let db_path = dir.path().join("yulius.db");
     let (h, attachments) = world_in(support::harness_with(support::HarnessOptions {
-        store: Some(yulius_store::SqliteStore::open(&db_path)?),
+        store: Some(crate::support::store::migrated(&db_path)?),
         dir: Some(dir),
         configure: Some(Box::new(|c| c.max_live_sessions = 0)),
         ..support::HarnessOptions::default()

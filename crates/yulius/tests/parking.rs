@@ -1722,7 +1722,7 @@ async fn queued_park_screen(
     // A real park wakes the queue asynchronously. Reconstruct the cold states
     // on a consistent copy so that drain cannot launch the synthetic queued run.
     let (_cold_dir, cold_data) = data_dir()?;
-    yulius_store::SqliteStore::open(&data.join("yulius.db"))?
+    crate::support::store::migrated(&data.join("yulius.db"))?
         .backup_to(&cold_data.join("yulius.db"))
         .await?;
     let cold = self::app(&cold_data, 8, 1).await?;
@@ -2330,7 +2330,7 @@ fn an_unreadable_recorded_spec_keeps_the_session_through_digest_parking() -> Tes
             .store
             .set_spec_status(&id, Some("in-progress"))
             .await?;
-        let store = yulius_store::SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         store
             .execute_for_tests(
                 "ALTER TABLE tasks RENAME COLUMN spec_status TO unavailable_spec_status",

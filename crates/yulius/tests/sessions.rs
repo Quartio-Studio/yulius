@@ -225,7 +225,7 @@ async fn session_search_redacts_a_dotenv_result_appended_after_restart() -> Test
     let start = || -> Result<support::Harness, Error> {
         let data = dir.path().to_path_buf();
         support::harness_with(support::HarnessOptions {
-            store: Some(yulius_store::SqliteStore::open(&data.join("index.sqlite"))?),
+            store: Some(crate::support::store::migrated(&data.join("index.sqlite"))?),
             configure: Some(Box::new(move |config| config.data_dir = data)),
             ..Default::default()
         })

@@ -870,6 +870,8 @@ pub struct Harness {
     /// The machine metrics (the data disk is settable).
     pub system: Arc<SettableSystem>,
     pub _dir: tempfile::TempDir,
+    /// Holds the store's file, apart from the data folder the app scans.
+    pub _store: tempfile::TempDir,
 }
 
 /// The real Git adapter as the server builds it: on Linux every command confined (ADR-0322),
@@ -1434,6 +1436,8 @@ pub mod secrets;
 pub mod secrets_env;
 /// Fixtures shared with other files, moved from `staging`.
 pub mod staging;
+/// Stores copied from a migrated template.
+pub mod store;
 /// Fixtures shared with other files, moved from `subscription_moves`.
 pub mod subscription_moves;
 /// Fixtures shared with other files, moved from `subscription_pool`.
@@ -1870,9 +1874,10 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         None => tempfile::tempdir()?,
     };
     let data = dir.path().canonicalize()?;
+    let store_dir = tempfile::tempdir()?;
     let store = match options.store {
         Some(store) => store,
-        None => SqliteStore::open_in_memory()?,
+        None => store::migrated(&store_dir.path().join("yulius.db"))?,
     };
     let github = Arc::new(FakeGitHub::default());
     let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
@@ -1928,6 +1933,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         router,
         system,
         _dir: dir,
+        _store: store_dir,
     })
 }
 

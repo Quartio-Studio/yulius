@@ -5,7 +5,6 @@ use std::process::Command;
 use yulius_app::model::UserRecord;
 use yulius_domain::ids::UserId;
 use yulius_domain::time::Timestamp;
-use yulius_store::SqliteStore;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -47,7 +46,7 @@ async fn backup_writes_a_consistent_copy_and_never_overwrites() -> TestResult {
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data)?;
     {
-        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let store = crate::support::store::migrated(&data.join("yulius.db"))?;
         use yulius_app::ports::store::UserStore;
         store
             .insert_user(&UserRecord {
@@ -75,7 +74,7 @@ async fn backup_writes_a_consistent_copy_and_never_overwrites() -> TestResult {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let copy = SqliteStore::open(&dest)?;
+    let copy = crate::support::store::migrated(&dest)?;
     use yulius_app::ports::store::UserStore;
     let user = copy.user_by_login("backup").await?;
     assert_eq!(
