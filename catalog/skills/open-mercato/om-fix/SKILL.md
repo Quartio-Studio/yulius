@@ -29,10 +29,7 @@ never invent a cause of your own when an analysis exists.
 4. **Green, then the gate.** Run the regression test (now passing) and the targeted tests of the
    changed areas, the lint and typecheck commands, and any generator the changed files feed.
    Re-read the diff and remove scope creep, then commit and push with `om-check-and-commit`.
-   While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it
-   tests the head while the reviewer reads. Do not run the whole gate locally before a review
-   or between rounds, except to reproduce a CI failure or when CI cannot run (a playground
-   without CI, an outage). Never weaken an assertion to get green.
+   Never weaken an assertion to get green.
 5. **Report** in this shape:
 
    ```
@@ -52,9 +49,7 @@ never invent a cause of your own when an analysis exists.
 
 A review finding or a failed check is a defect like any other: reproduce it with a test (or the
 failing command), fix it minimally, rerun the checks it touches, and answer the finding with the
-evidence.
-Before asking for another round, answer each finding of the last report with the test that fails
-without its fix (or why no test can) and check every finding of that report against the new head.
+evidence, as `om-code-review` asks before another round.
 
 ## Rules
 

@@ -6,8 +6,8 @@ description: Design, implement or debug Yulius coding-agent adapters, subprocess
 # Work on a provider or supervisor boundary
 
 Read `AGENTS.md`, the affected spec, `docs/engineering/rust.md` and
-`docs/engineering/runtime-contracts.md`. This skill applies to future runtime
-work; the current checkout has only engineering tooling.
+`docs/engineering/runtime-contracts.md`. The adapters live in `crates/yulius-harness`,
+`crates/yulius-ptyhost` and `crates/yulius-sandbox`; supervision in `crates/yulius-app`.
 
 Establish a provider/version capability table from primary wire documentation or
 redacted real fixtures before defining a mapper. Distinguish simulated fixtures

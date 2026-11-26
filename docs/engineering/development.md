@@ -66,10 +66,7 @@ one file's tests with `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
 Test fixtures there hold no credential in a provider's shape: put one that needs it together
 from the prefix and a synthetic body (`concat!("sk_test_", "…")`); `fixture_hygiene` fails on
 a provider prefix followed by a token body ([ADR-0258](../decisions/0258-test-fixtures-hold-no-provider-shaped-credential-literal.md)).
-While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests
-the head while the reviewer reads. Do not run the whole gate locally before a review or between
-rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an
-outage). `scripts/dev ci` is that gate (ADR-0342).
+`scripts/dev ci` is the whole gate, which Yulius CI runs (ADR-0342).
 
 The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)
 and page errors, run in a browser against the UI's mock mode. They need Node 24.8+ (test-only;
@@ -314,7 +311,8 @@ steps are skipped). Run the file-reader selector locally with an explicit change
 
 ## Mutation testing
 
-Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Here the on-request command is `scripts/dev mutants`.
+The policy is the bundled skill `test-driven-development`'s: mutation checks are by hand. Here the
+command a request may ask for by name is `scripts/dev mutants`.
 
 Contained agents and CI jobs receive a private disk directory in `YULIUS_BUILD_SCRATCH`. Run `scripts/cargo --scratch-target check` (or another Cargo command) for an ad-hoc build. Each invocation places final and intermediate artifacts in its own target and removes it once its workers stop. Pass the subcommand first and expand any Cargo aliases yourself. Supported built-ins are `bench`, `build`, `check`, `clean`, `doc`, `fix`, `run`, `rustc`, `rustdoc` and `test`. For `clippy` and `nextest`, the launcher invokes the installed plugin directly, including when a Cargo alias shares its name. Eligible builds reuse the sandbox compiler cache across disposable targets. Omit explicit output-directory flags. The launcher pins both directories after user-supplied Cargo configuration. For `cargo run`, place `--config` before positional arguments, including separate option values such as the name in `--bin NAME`. Arguments after Cargo’s `--` separator go to the program as usual. Older sessions and local checkouts use a fresh directory under the checkout’s `target`. The host reclaims the run-owned directory on exit. The separate 1 GiB session tmpfs returns ENOSPC when full. On native macOS, a new process group can make it unclear whether a build worker survived. The command reports the retained scratch path in that case. For the disposable Cargo launcher, an unrelated process started during the build can also trigger retention.
 
