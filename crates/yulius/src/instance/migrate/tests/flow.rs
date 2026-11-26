@@ -879,6 +879,8 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             max_downtime: None,
             no_sign_in: false,
             request: None,
+            status: false,
+            abort: false,
         },
         local,
         remote: FakeRemote {

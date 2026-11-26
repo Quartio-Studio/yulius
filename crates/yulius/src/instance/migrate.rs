@@ -38,34 +38,82 @@ const SAMPLE: Duration = Duration::from_secs(2);
 const PROXY_BACKUP: &str = "Caddyfile.before";
 
 /// Options of `yulius instance migrate`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct Options {
-    /// `[user@]host` of the new host; absent with `--status` and `--abort`.
+    /// The new host, as ssh takes it: `root@new-host`.
     pub target: Option<String>,
-    /// Its SSH port.
+    /// The new host's SSH port.
+    #[arg(long = "ssh-port", value_name = "SSH_PORT", default_value_t = 22)]
     pub port: u16,
-    /// The new public URL.
+    /// The new public URL (default: the old one, or the same form for the new address).
+    #[arg(long)]
     pub public_url: Option<String>,
-    /// Blank disks of the new host for the data directory: one, or two for a mirror.
+    /// A blank disk of the new host for the data directory; twice for a mirror.
+    #[arg(long = "data-disk", value_name = "DATA_DISK")]
     pub data_disks: Vec<String>,
-    /// Do not ask "Proceed?".
+    /// Do not ask before moving.
+    #[arg(long)]
     pub yes: bool,
-    /// The data directory.
+    /// The longest freeze to begin, in minutes: while the estimate is above it the move
+    /// copies again, and after five such passes it stops without freezing.
+    #[arg(long = "max-downtime", value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
+    pub max_downtime: Option<u64>,
+    /// Never sign in to the new host as root does (root's own keys, agent and ssh
+    /// configuration, a password): reach it with the move's one-time key alone, and show
+    /// the key's line for a person to add there. The move helper runs the command so.
+    #[arg(long = "no-sign-in")]
+    pub no_sign_in: bool,
+    /// The id of the request this run answers (the move helper sets it): it is written
+    /// into the status, so that readers tell this run's checklist from another's.
+    #[arg(long = "request-id", value_name = "ID", value_parser = request_id)]
+    pub request: Option<String>,
+    /// Print the recorded move and its checklist.
+    #[arg(long, conflicts_with_all = ["abort", "target"])]
+    pub status: bool,
+    /// Go back to this host: stop the new instance, undo the redirect, thaw and enable the
+    /// old one.
+    #[arg(long, conflicts_with = "target")]
+    pub abort: bool,
+    /// Data directory.
+    #[arg(
+        long = "data-dir",
+        visible_alias = "data",
+        env = "YULIUS_DATA",
+        default_value = "/var/lib/yulius"
+    )]
     pub data_dir: PathBuf,
-    /// The server's unit.
+    /// The server's systemd unit.
+    #[arg(long, default_value = "yulius.service")]
     pub service: String,
     /// The update helper's unit.
+    #[arg(long, default_value = "yulius-update.service")]
     pub update_service: String,
-    /// The flow's own directory.
+    /// Where the move keeps its key and state.
+    #[arg(long, default_value = "/var/lib/yulius-migrate")]
     pub state_dir: PathBuf,
-    /// The longest freeze the move may begin, in minutes: above it, it copies again.
-    pub max_downtime: Option<u64>,
-    /// Never sign in to the new host as root does (its own keys, its agent, its ssh
-    /// configuration, a password): only the move's one-time key reaches it, and its line is
-    /// shown for a person to add there. How the move helper runs the command (SPEC-470).
-    pub no_sign_in: bool,
-    /// The id of the request this run answers (the move helper's): written into the status.
-    pub request: Option<String>,
+}
+
+impl Options {
+    /// What `--status` and `--abort` ask for (they exclude each other).
+    #[must_use]
+    pub fn action(&self) -> Action {
+        if self.status {
+            Action::Status
+        } else if self.abort {
+            Action::Abort
+        } else {
+            Action::Run
+        }
+    }
+}
+
+/// A request's id as the move helper passes it: the request's own rule.
+fn request_id(text: &str) -> Result<String, String> {
+    if yulius_app::migration::rules::valid_id(text) {
+        Ok(text.to_owned())
+    } else {
+        Err("8 to 64 letters, digits or hyphens".into())
+    }
 }
 
 /// What to do.
@@ -3104,7 +3152,8 @@ pub fn lock(dir: &Path) -> Result<std::fs::File, String> {
 
 /// `yulius instance migrate`.
 #[must_use]
-pub fn main(opts: &Options, action: Action) -> ExitCode {
+pub fn main(opts: &Options) -> ExitCode {
+    let action = opts.action();
     use std::os::unix::fs::PermissionsExt as _;
     let refused = |why: &str| {
         eprintln!("yulius instance migrate: {why}");
