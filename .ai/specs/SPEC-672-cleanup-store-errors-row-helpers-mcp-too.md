@@ -35,9 +35,8 @@ less code doing the same thing, one pull request per finding. Behaviour stays th
 - [x] F5.1+F8: store row-parse helpers (text_as, ts, opt_ts) used by every *_from_row
 - [x] F5.1+F8: tests pass; independent review approves
 - [x] F4 PR1: TaskSummary carries the server-computed group, with a test
-- [ ] F4 PR1: independent review approves
-- [ ] F4 PR2: status.js reads the group; JS derivation and scrape tests deleted
-- [ ] F4 PR2: e2e and tests pass; independent review approves
+  (written as PR #1791, then reverted unmerged: see Decisions)
+- [x] F4: checked and reported: the server-owned group would change what the sidebar shows
 - [ ] F5.2: one tool table derives COCKPIT/PROJECT/PERSON lists and descriptors
 - [ ] F5.2: authorisation tests pass unchanged; independent review approves
 - [ ] F6: typed contracts structs for the MCP results mcp_text renders
@@ -57,3 +56,16 @@ less code doing the same thing, one pull request per finding. Behaviour stays th
 
 - A spec is written despite the charter's "no spec": without one Yulius starts no CI run and
   nothing can merge. It is kept to this plan and its evidence.
+- F4 (the web UI reads the server's sidebar group) is not done. The audit made it conditional:
+  "the server must publish `TaskUpdated` when [pull request state and browser requests] change".
+  It does not. The Git overview refreshes `observed_pulls` without republishing the task, and
+  the PR watch republishes a task only for a stall, news or a candidate change. Meanwhile the
+  web UI applies `pulls.updated` and `browser.action_*` itself. Review of PR #1791 found more:
+  - a parked row's own facts disagree with its verified `parked_needs_you` in three existing
+    tests;
+  - `TaskUpdated` events carry the unverified group of a parked task;
+  - the summary's `yulius_wait` is wider than the facts'.
+  So `status.js` on the server's group would show stale or different groups. By the owner's
+  charter (behaviour stays the same; report instead of deciding), both pull requests stay
+  undone. Part 1 alone would add a field nothing reads.
+
