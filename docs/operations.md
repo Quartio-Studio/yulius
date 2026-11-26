@@ -99,6 +99,8 @@ The agent CLIs must be installed for the `yulius` user, and logged-in state is n
 Claude subscriptions are added inside Yulius (user menu → Administration → Subscriptions), not with
 the CLIs' own `login` on the VM.
 
+[details](archive/operations-until-2026-11-26.md#2-build-and-install)
+
 ## 3. systemd unit
 
 `yulius host setup` writes this unit when there is none (§2), and gives an existing one
@@ -131,7 +133,7 @@ Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 # Minutes a finished task (its turn ended, it waits for a person) keeps its idle session before it
 # is parked: the process ends, and the task resumes in the same session when someone writes to it
 # (default 30; 0 never). Before rolling back to a server older than parking, set 0 and resume or
-# archive the tasks marked "parked". What parking does: see the archived guide (§3).
+# archive the tasks marked "parked". What parking does: docs/product.md, "Waiting and parking".
 #Environment=YULIUS_PARK_AFTER_MINUTES=30
 # Percent of a window binding a task's model past which a subscription of that harness gets no
 # new task while another has room, and its idle tasks move to the one with the most room every 2
@@ -329,6 +331,8 @@ requests is checked against it. Yulius sends `X-Frame-Options: DENY`, a strict
 `X-Yulius: <process tag>`; the proxy must pass these on, not replace them. HSTS is the TLS proxy's
 job, as above; add it once the domain is meant to stay on HTTPS.
 
+[details](archive/operations-until-2026-11-26.md#4-reverse-proxy-tls-websockets)
+
 ### Per-client sign-in limits (trusted proxy header)
 
 Password sign-in allows 5 attempts per minute **per client**. Behind the proxy every connection
@@ -407,6 +411,8 @@ secret, repeat step 1 and restart Yulius and the proxy.
 `YULIUS_SANDBOX_FORWARD` to the public port). Without containment (`YULIUS_CONTAINED=false`) agents
 could read Yulius's copy, like `master.key`. Keep Caddy's admin API unreachable from such runs.
 
+[details](archive/operations-until-2026-11-26.md#per-client-sign-in-limits-trusted-proxy-header)
+
 ### Optional: live previews (wildcard DNS and TLS)
 
 **Open live in a new window** (browser panel) opens a sandbox dev server in the user's own browser
@@ -467,6 +473,8 @@ server {
 
 Without DNS or TLS for the previews everything else keeps working; only "Open live in a new window"
 fails to load.
+
+[details](archive/operations-until-2026-11-26.md#optional-live-previews-wildcard-dns-and-tls)
 
 ### Sandbox browser (virtual displays)
 
@@ -599,6 +607,8 @@ host they are ordinary files, which a person edits in place:
 as `-` (e.g. `-var-lib-yulius-sandboxes-<id>-repo`). A protected path that is a link or of the
 wrong kind is moved aside to `<name>.yulius-moved-<ms>` before a session starts.
 
+[details](archive/operations-until-2026-11-26.md#harness-memory-is-read-only)
+
 ### Subscription rebalance
 
 Every 2 minutes Yulius moves idle tasks off a subscription past its harness's threshold
@@ -606,6 +616,8 @@ Every 2 minutes Yulius moves idle tasks off a subscription past its harness's th
 with the most room; new tasks keep off it while another has room. Tasks a person put on a
 subscription ("Run on…", "Continue on…") stay. Moves are recorded as `rebalance: …` and logged as
 `rebalance pass`. 98 turns it off for that harness.
+
+[details](archive/operations-until-2026-11-26.md#subscription-rebalance)
 
 ### Resource limits
 
@@ -786,6 +798,8 @@ no open port. The card says `retrying` and why: `refused` (token revoked: set a 
 | --- | --- | --- |
 | `--telegram-api-url` / `YULIUS_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram's Bot API. HTTPS, or HTTP on a loopback host only (a fake Bot API in tests). The bot token is set in Settings → Administration, never here. |
 
+[details](archive/operations-until-2026-11-26.md#telegram-notifications)
+
 ### Security scans (Vidoc)
 
 Optional. With a Vidoc key, agents and granted CI jobs run `yulius security-scan`: Vidoc's `vidoc-1`
@@ -856,6 +870,8 @@ and the same secret, and select **Pull request** under **Permissions & events**
 Check: a new same-repository PR shows `pull_request.opened` with HTTP 202 in the App's recent
 deliveries and a queued run on the CI page. The periodic CI sync recovers missed deliveries.
 
+[details](archive/operations-until-2026-11-26.md#immediate-ci-for-pull-requests-opened-on-github)
+
 ### GitHub App permissions
 
 Yulius uses one GitHub App. Its installation tokens and people's sign-in (user-to-server) tokens can
@@ -906,6 +922,8 @@ Read-only) on `https://github.com/organizations/<org>/settings/apps/<app-slug>/p
 account: `https://github.com/settings/apps/<app-slug>/permissions`) and save; the installation's
 owner accepts it under Settings → GitHub Apps → the App → Configure; then `systemctl restart yulius`
 to drop installation tokens cached for up to an hour.
+
+[details](archive/operations-until-2026-11-26.md#github-app-permissions)
 
 ### The App after the public URL changes
 
@@ -995,6 +1013,8 @@ once and a project has at most 20 watches. A run cut by a restart is recorded as
 watch gets only the agent secrets it names (audit actor `ci:watch:<name>`). Changes are audited
 `watch.create`, `watch.update`, `watch.run`, `watch.pause`, `watch.resume`, `watch.remove`.
 
+[details](archive/operations-until-2026-11-26.md#script-watches-on-this-machine)
+
 ### CD on this machine
 
 CD (deployment) needs no server configuration: projects define `[cd.dev]`, `[cd.prod]` and any other
@@ -1064,7 +1084,8 @@ rollback and verify refuses while it exists. Restore by hand, remove the file an
 
 **Who deploys**
 ([ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
-A pull request merges on `quality` and `security`; `test` and `e2e` run once on each merged revision
+A pull request merges on its pull-request jobs (`quality`, `lint`, `macos`, `docs`, `deps`,
+`security` and the affected `file-contracts`); `test` and `e2e` run once on each merged revision
 of `dev`. A merged task's agent asks with `cd_deploy`, and a person with Deploy on the CD page; each
 deploys once the revision's full suite passed. Staging also follows `dev` by itself once 5 merges
 behind, or after 60 minutes while `dev` is ahead; set both `serve_*` keys to `0` to stop that.
@@ -1126,6 +1147,8 @@ left; the GitHub repository, task records and audit (`sandbox.purge_requested`, 
 `sandbox.purged`) stay. **Keep its files** keeps them, listed with their size
 ([Leftovers](#leftovers-what-is-kept-what-is-cleaned-and-when)).
 
+[details](archive/operations-until-2026-11-26.md#6-onboarding-a-repository-and-your-claude-sessions-yulius-onboard)
+
 ### Importing secrets (`yulius secrets import`)
 
 Keys held on a computer go into the vault from the CLI, signed in with `yulius login`, or with
@@ -1159,14 +1182,18 @@ yulius secrets import --to agent                           # type each name and 
 - Values never appear in output, on disk or in logs. Exit 0 when every secret was imported, already
   there or declined, 1 otherwise; a second run skips the imported ones.
 
+[details](archive/operations-until-2026-11-26.md#importing-secrets-yulius-secrets-import)
+
 ### Dropped files
 
 Files dragged onto the editor go into the repository or a task worktree; files dropped or pasted
 onto a terminal are attachments in `<data>/sandboxes/<sid>/attachments/{tasks,shells}/<id>/`,
 outside every worktree: at most 1 GiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal, 8
-uploads at once, refused when the data disk would reach 95 %. A deleted task's wait 7 days in
+uploads at once, refused when the data disk would reach 95 %. A deleted task's attachments wait 7 days in
 `attachments/trash/<secs>-<number>-<id>/` (`attachments_trash` restores them); composer drafts in
 `attachments/drafts/<user>/` go after a week. Audited `file.uploaded`, `attachment.uploaded`.
+
+[details](archive/operations-until-2026-11-26.md#dropped-files)
 
 ## 7. Backup and restore
 
@@ -1247,7 +1274,8 @@ unit. The copy on the new host stays until you remove it; laptops run `yulius re
 
 A run that ordered the start ignores Ctrl-C and SIGTERM; if it hangs, `kill -9` it and rerun or
 `--abort`. Processes a stopped old unit left (`KillMode=process`, §3) end a run with a `FAIL` line
-and the command (before systemd 252: `--kill-whom`):
+and the command (`--kill-who` is the older spelling, which systemd 252 and later still take
+beside `--kill-whom`):
 
 ```sh
 sudo systemctl kill --kill-who=all --signal=SIGKILL yulius.service
@@ -1404,6 +1432,8 @@ in the database with their redacted output. Audit actions: `command.define`, `co
 **Rotation.** Replace a value on the Secrets page after rotating it at its provider (the page marks
 values older than 180 days). If `master.key` and a database copy may have leaked together, rotate
 every team and agent secret at its source.
+
+[details](archive/operations-until-2026-11-26.md#secrets-vault-agent-secrets-adr-20)
 
 ### Leftover agent processes
 
@@ -1705,6 +1735,8 @@ UMask=0022
 **Logs.** `journalctl -u yulius-migrate`. "The move helper did not take the request" on the page:
 `systemctl status yulius-migrate.path yulius-migrate.service`.
 
+[details](archive/operations-until-2026-11-26.md#the-move-helper-moves-from-settings--instance)
+
 ### Notes for specific upgrades
 
 Notes for upgrades that every host has already taken (and "The way back" for a host that restarted
@@ -1747,3 +1779,5 @@ on systemd 258 or later without the sessions units) are in the
 - Password sign-in is limited per client only with the proxy's shared secret configured
   (`YULIUS_PROXY_SECRET_FILE`, §4 "Per-client sign-in limits"); without it every client behind the
   proxy shares one limit.
+
+[details](archive/operations-until-2026-11-26.md#9-security-notes)
