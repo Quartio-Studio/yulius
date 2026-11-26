@@ -1412,11 +1412,13 @@ pub mod remote;
 pub use remote::BareRemote;
 /// A Google account for Antigravity tasks and its API key.
 pub mod antigravity;
-/// A sandbox with CD environments, its container holders and a process host that records containment.
+/// A sandbox with CD environments, its container holders and a process host that records
+/// containment.
 pub mod cd;
 /// A person's Superagent, by role.
 pub mod cd_rollback;
-/// The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and records.
+/// The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and
+/// records.
 pub mod cockpit;
 /// A connected Codex account and Codex tasks.
 pub mod codex;

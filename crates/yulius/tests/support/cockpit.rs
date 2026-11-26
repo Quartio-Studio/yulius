@@ -1,4 +1,5 @@
-//! The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and records.
+//! The Cockpit fixture: a sandbox, its Superagent's fake Claude and reads of its terminal and
+//! records.
 
 use crate::support;
 use axum::http::{Method, StatusCode};

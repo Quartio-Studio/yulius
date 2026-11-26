@@ -619,10 +619,10 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
     Ok(())
 }
 
-/// A playground merge records whether a review
-/// round approved the head it merged: a commit of the task's own after the approval past the
-/// follow-up bound is not covered; a clean merge of the integration branch after it is, judged against the integration
-/// branch as it was before this merge.
+/// A playground merge records whether a review round approved the head it merged: a commit of
+/// the task's own after the approval past the follow-up bound is not covered; a clean merge of
+/// the integration branch after it is, judged against the integration branch as it was before
+/// this merge.
 #[tokio::test]
 async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> TestResult {
     use yulius_app::model::ReviewRoundRecord;

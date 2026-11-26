@@ -36,7 +36,8 @@ before the next starts.
 - [x] PR2: review findings answered
 - [x] PR3: migrated-template store, test time measured before and after
 - [x] PR3: review findings answered
-- [x] PR4a: tables for the five near-duplicate families and store_at
+- [x] PR4a: helpers for the agent_hooks and merge_train families (store_at, proxy.rs and local_ci
+  not done: see Decisions)
 - [ ] PR4a: review findings answered
 - [ ] PR4b: comments that only cite spec IDs deleted
 - [ ] PR4b: review findings answered
@@ -55,3 +56,7 @@ before the next starts.
 
 - A spec is written despite the charter's "no spec": without one, Yulius starts no CI run and
   nothing can merge. It holds only this plan and its evidence.
+- PR4a covers two of the five §2.5 families, with named helpers instead of tables, so each case
+  keeps its test name. `store_at` (`crates/yulius-store`, task #656's) and the `proxy.rs` capacity
+  table (`crates/yulius-egress`, task #653's) are outside this task's paths. A `local_ci.rs` table
+  saved no lines (+50/−46), so that family stays as it is.
