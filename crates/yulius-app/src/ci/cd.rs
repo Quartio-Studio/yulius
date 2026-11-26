@@ -1830,28 +1830,43 @@ impl App {
         source: PromotionSource<'_>,
     ) -> AppResult<String> {
         let (integration, production) = (&profile.integration_branch, &profile.production_branch);
-        let token = self
-            .person_github_token(user, &format!("Deploying {production}"))
+        // The superadmin without a GitHub identity promotes through the App (SPEC-677).
+        let acting = self
+            .person_or_app_token(user, sandbox, &format!("Deploying {production}"))
             .await?;
+        let refused = |err: AppError| {
+            if acting.through_app {
+                crate::access::app_refusal(err, production)
+            } else {
+                err
+            }
+        };
+        let token = &acting.token;
         let mut result = self
-            .cd_promote_once(sandbox, profile, user, &token, source)
-            .await?;
+            .cd_promote_once(sandbox, profile, user, token, source)
+            .await
+            .map_err(refused)?;
         if result.result == "pr_opened" {
             let url = result.sha.clone().unwrap_or_default();
             result = self
-                .cd_promote_once(sandbox, profile, user, &token, source)
+                .cd_promote_once(sandbox, profile, user, token, source)
                 .await
                 .map_err(|err| {
                     AppError::Conflict(format!(
                         "nothing was deployed: the promotion pull request {url} is open and cannot \
                          merge yet ({}); deploy production again once it can",
-                        err.public_message()
+                        refused(err).public_message()
                     ))
                 })?;
         }
         Ok(format!(
-            "promoted '{integration}' to '{production}' at {}",
-            result.sha.as_deref().unwrap_or("?")
+            "promoted '{integration}' to '{production}' at {}{}",
+            result.sha.as_deref().unwrap_or("?"),
+            if acting.through_app {
+                " by the superadmin through the GitHub App"
+            } else {
+                ""
+            }
         ))
     }
 

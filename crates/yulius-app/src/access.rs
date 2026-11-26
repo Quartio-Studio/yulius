@@ -12,6 +12,51 @@ use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, TaskRecord, UserRecord};
 use crate::ports::github::RepoAccess;
 
+/// The token a person's action on GitHub uses, and whether it is the GitHub App's
+/// installation token rather than the person's own (SPEC-677).
+pub(crate) struct ActingToken {
+    /// The token.
+    pub(crate) token: Secret,
+    /// The App acts for the superadmin without a GitHub identity.
+    pub(crate) through_app: bool,
+}
+
+/// Whether `user` reaches GitHub only through the GitHub App: the superadmin without a GitHub
+/// identity (ACC-012, SPEC-677).
+pub(crate) fn acts_through_app(user: &UserRecord) -> bool {
+    user.is_superadmin && user.github_login.is_none()
+}
+
+/// GitHub's answers that refuse a write rather than fail it: a missing permission (403), a merge
+/// it will not make (405), a ref update a rule rejects (422).
+const GITHUB_REFUSALS: [&str; 3] = ["(HTTP 403)", "(HTTP 405)", "(HTTP 422)"];
+
+/// `err` of an action the GitHub App took for the superadmin on `branch`, said plainly when
+/// GitHub refused the App (SPEC-677 SAP-004): a ruleset whose bypass list leaves the App out
+/// binds it as it binds anyone. The error keeps its kind, and Yulius's own refusals (no HTTP
+/// code) pass unchanged. A 401 for the App's token is the App's, never the person's session.
+pub(crate) fn app_refusal(err: AppError, branch: &str) -> AppError {
+    let said = |reason: &str| {
+        let reason = reason.strip_prefix("GitHub: ").unwrap_or(reason);
+        format!(
+            "GitHub refused the Yulius GitHub App, which acts for the superadmin: {reason}. If a \
+             ruleset on '{branch}' leaves the App out of its bypass list, add the App to it, or \
+             do it on GitHub."
+        )
+    };
+    let refused = |message: &str| GITHUB_REFUSALS.iter().any(|code| message.contains(code));
+    match err {
+        AppError::Unauthenticated => {
+            AppError::Upstream(said("GitHub rejected the App's credentials (HTTP 401)"))
+        }
+        AppError::Upstream(m) if refused(&m) => AppError::Upstream(said(&m)),
+        AppError::Conflict(m) if refused(&m) => AppError::Conflict(said(&m)),
+        AppError::Invalid(m) if refused(&m) => AppError::Invalid(said(&m)),
+        AppError::Forbidden(m) if refused(&m) => AppError::Forbidden(said(&m)),
+        other => other,
+    }
+}
+
 impl App {
     /// Effective access of `user` to `sandbox`.
     ///
@@ -176,6 +221,30 @@ impl App {
         self.user_github_token(user).await
     }
 
+    /// [`App::person_github_token`], except that the superadmin without a GitHub identity acts
+    /// through the GitHub App's installation for `sandbox` (SPEC-677 SAP-001). The caller checks
+    /// every other rule first; GitHub's own rules still bind the App.
+    ///
+    /// # Errors
+    /// As [`App::person_github_token`]; for the App, as [`App::dlv_installation_token`].
+    pub(crate) async fn person_or_app_token(
+        &self,
+        user: &UserRecord,
+        sandbox: &SandboxRecord,
+        action: &str,
+    ) -> AppResult<ActingToken> {
+        if acts_through_app(user) {
+            return Ok(ActingToken {
+                token: self.dlv_installation_token(sandbox).await?,
+                through_app: true,
+            });
+        }
+        Ok(ActingToken {
+            token: self.person_github_token(user, action).await?,
+            through_app: false,
+        })
+    }
+
     /// The GitHub token of the person who owns `task` (SPEC-070; its creator until a hand-over),
     /// for what Yulius does on GitHub for the task (F 2026-10-11): its pushes and pull requests for
     /// it and the agent's delivery tools (never the agent's own Git and `gh`, ADR-0114), so GitHub
@@ -317,5 +386,66 @@ impl App {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod app_refusal_tests {
+    use super::{AppError, app_refusal};
+
+    #[test]
+    fn a_github_refusal_names_the_app_and_keeps_its_kind() {
+        let ruleset = app_refusal(
+            AppError::Conflict(
+                "pull request is not mergeable (HTTP 405): Repository rule violations found".into(),
+            ),
+            "main",
+        );
+        let AppError::Conflict(text) = ruleset else {
+            panic!("a conflict stays a conflict: {ruleset:?}");
+        };
+        assert!(
+            text.starts_with("GitHub refused the Yulius GitHub App, which acts for the superadmin: pull request is not mergeable (HTTP 405): Repository rule violations found.")
+                && text.contains("ruleset on 'main'")
+                && text.contains("bypass list"),
+            "{text}"
+        );
+        for err in [
+            AppError::Upstream("GitHub: GitHub refused the request (HTTP 403): no".into()),
+            AppError::Upstream(
+                "GitHub: GitHub rejected the request as invalid (HTTP 422): rules".into(),
+            ),
+        ] {
+            let AppError::Upstream(text) = app_refusal(err, "main") else {
+                panic!("an upstream failure stays upstream");
+            };
+            assert!(
+                text.starts_with(
+                    "GitHub refused the Yulius GitHub App, which acts for the superadmin: GitHub re"
+                ),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn yulius_own_refusals_and_failures_that_may_pass_are_unchanged() {
+        for err in [
+            AppError::Conflict("nothing was promoted: 'dev' moved since it was confirmed".into()),
+            AppError::Upstream("GitHub: GitHub upstream error (HTTP 502)".into()),
+            AppError::Conflict("the ref update is not a fast-forward".into()),
+            AppError::NotFound,
+        ] {
+            assert_eq!(app_refusal(err.clone(), "main"), err);
+        }
+    }
+
+    #[test]
+    fn a_rejected_app_token_never_signs_the_person_out() {
+        let err = app_refusal(AppError::Unauthenticated, "main");
+        assert!(
+            matches!(&err, AppError::Upstream(text) if text.contains("(HTTP 401)")),
+            "{err:?}"
+        );
     }
 }

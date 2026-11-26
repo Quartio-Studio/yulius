@@ -111,6 +111,10 @@ pub struct FakeGitHub {
     pub retitle_errors: Mutex<Vec<AppError>>,
     /// While set, opening a pull request fails with this message.
     pub create_pull_error: Mutex<Option<String>>,
+    /// While set, merging a pull request or fast-forwarding a branch with the App installation's
+    /// token fails with this error, as GitHub answers a ruleset whose bypass list leaves the App
+    /// out (SPEC-677 SAP-004); people's tokens still write.
+    pub app_write_refusal: Mutex<Option<AppError>>,
     /// Repository side of PRs and refs; without it PR heads are unknown.
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
     /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
@@ -645,6 +649,7 @@ impl GitHubPort for FakeGitHub {
         method: &str,
         expected_head: &str,
     ) -> AppResult<String> {
+        self.refuse_app_write(token)?;
         self.refresh_heads();
         if let Some(base) = self
             .retarget_on_merge
@@ -753,6 +758,7 @@ impl GitHubPort for FakeGitHub {
         branch: &str,
         sha: &str,
     ) -> AppResult<()> {
+        self.refuse_app_write(token)?;
         let remote = self
             .remote()
             .ok_or_else(|| AppError::Upstream("no remote".into()))?;
@@ -1493,6 +1499,21 @@ impl FakeGitHub {
     }
     fn remote(&self) -> Option<Arc<dyn FakeRemote>> {
         self.remote.lock().ok().and_then(|r| r.clone())
+    }
+    /// [`Self::app_write_refusal`] for a write carrying `token`.
+    fn refuse_app_write(&self, token: &Secret) -> AppResult<()> {
+        if login_of(token) != "inst" {
+            return Ok(());
+        }
+        match self
+            .app_write_refusal
+            .lock()
+            .map_err(AppError::internal)?
+            .clone()
+        {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
     fn record(&self, token: &Secret, call: String) {
         if let Ok(mut by) = self.writes_by.lock() {

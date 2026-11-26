@@ -609,13 +609,11 @@ async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> Test
     assert!(git(&f.origin, &["merge-base", "--is-ancestor", &dev, &main]).is_ok());
     assert_eq!(started.body["commit"], main);
     assert_eq!(started.body["branch"], "main");
-    assert!(
-        started.body["note"]
-            .as_str()
-            .is_some_and(|n| n.contains("promoted 'dev' to 'main'")),
-        "{}",
-        started.body
-    );
+    let note = started.body["note"].as_str().unwrap_or_default();
+    assert!(note.contains("promoted 'dev' to 'main'"), "{note}");
+    // A person signed in with GitHub promotes with their own token (SPEC-677 SAP-001).
+    assert!(!note.contains("GitHub App"), "{note}");
+    assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
     let run = f
         .ended(started.body["run_id"].as_str().ok_or("id")?)
         .await?;
@@ -647,6 +645,81 @@ async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> Test
             .is_some_and(|n| n.contains("nothing to promote"))
     );
     f.ended(again.body["run_id"].as_str().ok_or("id")?).await?;
+    Ok(())
+}
+
+/// SPEC-677 SAP-001..SAP-004: the superadmin, who signs in with a password and has no GitHub
+/// identity (ACC-012), deploys production: the slug is still typed, and the promotion goes
+/// through the GitHub App, which the run's note and the release record say. When GitHub refuses
+/// the App (a ruleset whose bypass list leaves it out), the refusal says so plainly.
+#[tokio::test]
+async fn the_superadmin_deploys_production_through_the_github_app() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    let f = fixture(&full_cd()).await?;
+    let root = support::superadmin_bearer(&f.h).await?;
+    let dev = f.push("dev", &[("feature.txt", Some("new\n"))])?;
+    f.prove("dev").await?;
+    let main_before = f.head("main")?;
+
+    // Every other rule holds: the typed slug first, and a writer is no administrator.
+    let untyped = f.deploy(&root, "prod", None).await?;
+    assert_eq!(
+        untyped.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        untyped.body
+    );
+    let writer = f.deploy(&f.alice, "prod", Some("app")).await?;
+    assert_eq!(writer.status, StatusCode::FORBIDDEN, "{}", writer.body);
+    assert_eq!(f.head("main")?, main_before, "nothing was promoted");
+
+    // GitHub's ruleset on production binds the App: refused, said plainly, nothing moved.
+    *f.h.github.app_write_refusal.lock().map_err(|_| "lock")? =
+        Some(yulius_app::error::AppError::Conflict(
+            "pull request is not mergeable (HTTP 405): Repository rule violations found".into(),
+        ));
+    let refused = f.deploy(&root, "prod", Some("app")).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let message = refused.body["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("GitHub refused the Yulius GitHub App")
+            && message.contains("Repository rule violations found")
+            && message.contains("bypass"),
+        "{message}"
+    );
+    assert_eq!(f.head("main")?, main_before, "nothing was promoted");
+    *f.h.github.app_write_refusal.lock().map_err(|_| "lock")? = None;
+
+    let started = f.deploy(&root, "prod", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let main = f.head("main")?;
+    assert!(git(&f.origin, &["merge-base", "--is-ancestor", &dev, &main]).is_ok());
+    let note = started.body["note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("promoted 'dev' to 'main'")
+            && note.contains("by the superadmin through the GitHub App"),
+        "{note}"
+    );
+    assert_eq!(
+        f.h.github.actors_of("merge_pull"),
+        ["inst"],
+        "the App merged"
+    );
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert!(output.contains("through the GitHub App"), "{output}");
+    assert_eq!(run["requested_by"], "superadmin");
+    let release =
+        f.h.store
+            .last_audit("app", "delivery.promote", Timestamp(0))
+            .await?
+            .ok_or("no release record")?;
+    assert_eq!(release.actor, "superadmin (through the GitHub App)");
     Ok(())
 }
 
