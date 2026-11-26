@@ -1817,14 +1817,6 @@ impl App {
         });
     }
 
-    /// Whether the launch goal's watch of `task` does not count now: a prompt held for capacity,
-    /// an update or a person's pause is not refused, it waits (SPEC-191 PER-005).
-    pub async fn launch_goal_held(&self, task: &TaskId) -> bool {
-        self.held_for_update(task)
-            || matches!(self.deps.store.open_pause(task).await, Ok(Some(_)))
-            || self.is_paused_by_person(task).await
-    }
-
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.
     /// A status change that loses to a concurrent one (a switch or a start completing) is made
     /// again from the status read anew, so the stop always takes effect (SPEC-250 STW-001).
