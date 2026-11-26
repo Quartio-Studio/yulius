@@ -1,4 +1,4 @@
-//! The one credential wrapper every crate passes secrets in (SEC-002).
+//! The one credential wrapper every crate passes secrets in.
 
 use std::fmt;
 use std::ops::Deref;
@@ -65,7 +65,7 @@ mod tests {
         let bytes = Secret::bytes(b"ghu_SuperSecretValue".to_vec());
         assert_eq!(format!("{text:?}"), "Secret(<redacted>)");
         assert_eq!(format!("{bytes:?}"), "Secret(<redacted>)");
-        assert!(text.expose().ends_with("SYNTHETIC"));
+        assert_eq!(text.expose(), "sk-ant-oat01-SYNTHETICSYNTHETICSYNTHETIC");
         assert_eq!(bytes.expose(), b"ghu_SuperSecretValue");
     }
 }

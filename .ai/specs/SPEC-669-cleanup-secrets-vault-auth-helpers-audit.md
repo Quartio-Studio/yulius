@@ -40,8 +40,8 @@ before and their existing tests pass unchanged.
 - [x] F5: Q3 authorisation gaps checked (agent_git_credential, handoffs owner check)
 - [x] F5: one instance-admin rule (UserRecord::is_admin) and one token-scope rule (token_allows)
 - [x] F5: independent review of the auth-helper PR
-- [ ] F6: one zeroizing Secret type shared by every crate
-- [ ] F6: constructor shim removed, call sites moved to Secret::new
+- [x] F6: one zeroizing Secret type shared by every crate
+- [x] F6: constructor shim removed, call sites moved to Secret::new
 - [ ] F6: independent review of the Secret PR
 - [ ] F7: one JSON string walker for redaction
 - [ ] F7: one redact_for_sandbox and shared credential-shape detectors
