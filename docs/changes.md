@@ -4,6 +4,10 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-26
+
+- `crates/yulius-sandbox/src/manager.rs` is split without a change of behaviour: the Docker front's methods and helpers are in `manager/docker.rs`, the base build in `manager/build.rs`, and the system-layer readers in `system_layer.rs` (audit L5, F2 part a).
+
 ## 2026-11-25
 
 - The sandbox manager no longer carries the SPEC-187 "holder serves Docker" branch or a second replacement of engine fronts from before SPEC-652: the outdated-front replacement already replaces them once quiet (audit L5, F3). Behaviour unchanged.
