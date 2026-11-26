@@ -7,7 +7,9 @@
 //! tool without its own rendering is printed as an outline of its record. A record whose shape
 //! a rendering does not recognise is printed as an outline too, so nothing is lost.
 
+use serde::Deserialize;
 use serde_json::{Map, Value};
+use yulius_contracts::api::tasks::{PlanProgress, PlanRecord};
 
 /// Characters of a job command shown in `ci_status`'s list of jobs.
 const COMMAND_CHARS: usize = 120;
@@ -19,9 +21,9 @@ const FAILURES_SHOWN: usize = 32 * 1024;
 #[must_use]
 pub fn render(tool: &str, args: &Value, value: &Value) -> String {
     let text = match tool {
-        "steps_set" => plan(value, true),
-        "steps_get" => plan(value, false),
-        "step_update" => step_update(value),
+        "steps_set" => plan_record(value).map(|record| plan(&record, true)),
+        "steps_get" => plan_record(value).map(|record| plan(&record, false)),
+        "step_update" => plan_record(value).and_then(|record| step_update(&record)),
         "ci_status" if arg(args, "run_id").is_some() => ci_run(value, arg(args, "job")),
         "ci_status" => ci_status(value),
         "ci_rerun" => run_head(value).map(|head| {
@@ -59,10 +61,17 @@ fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
+    value.get(key).and_then(Value::as_str).and_then(shown)
+}
+
+/// `text` unless it is blank.
+fn shown(text: &str) -> Option<&str> {
+    Some(text).filter(|s| !s.trim().is_empty())
+}
+
+/// A step's or a change's title, "(untitled)" when blank.
+fn title(text: &str) -> &str {
+    shown(text).unwrap_or("(untitled)")
 }
 
 fn push_line(out: &mut String, line: &str) {
@@ -207,17 +216,19 @@ fn status_words(status: &str) -> &str {
 }
 
 /// One step as a checklist line: `3 [>] Title (in progress, effort 2)` and its note.
-fn step_line(out: &mut String, ordinal: u64, step: &Value) {
-    let status = text(step, "status").unwrap_or("pending");
+fn step_line(
+    out: &mut String,
+    ordinal: u64,
+    status: &str,
+    title: &str,
+    effort: u64,
+    note: Option<&str>,
+) {
     let mut extra = Vec::new();
     if matches!(status, "in_progress" | "skipped" | "blocked") {
         extra.push(status_words(status).to_owned());
     }
-    if let Some(effort) = step
-        .get("effort")
-        .and_then(Value::as_u64)
-        .filter(|e| *e > 1)
-    {
+    if effort > 1 {
         extra.push(format!("effort {effort}"));
     }
     let extra = if extra.is_empty() {
@@ -225,12 +236,11 @@ fn step_line(out: &mut String, ordinal: u64, step: &Value) {
     } else {
         format!(" ({})", extra.join(", "))
     };
-    let title = text(step, "title").unwrap_or("(untitled)");
     push_line(
         out,
         &format!("{ordinal} {} {title}{extra}", status_mark(status)),
     );
-    if let Some(note) = text(step, "note") {
+    if let Some(note) = note {
         push_line(out, &format!("    note: {}", one_line(note)));
     }
 }
@@ -239,46 +249,38 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn ordinal_of(step: &Value, index: usize) -> u64 {
-    step.get("ordinal")
-        .and_then(Value::as_u64)
-        .unwrap_or(index as u64 + 1)
+/// The record of `steps_get`, `steps_set` and `step_update`, when `value` is one.
+fn plan_record(value: &Value) -> Option<PlanRecord> {
+    PlanRecord::deserialize(value).ok()
 }
 
-fn progress_line(value: &Value) -> Option<String> {
-    let progress = value.get("progress")?;
-    let done = progress.get("done")?.as_u64()?;
-    let total = progress.get("total")?.as_u64()?;
-    if total == 0 {
-        return Some("No steps yet: set the plan with steps_set.".to_owned());
+fn progress_line(progress: &PlanProgress) -> String {
+    let PlanProgress {
+        done,
+        total,
+        percent,
+        ..
+    } = progress;
+    if *total == 0 {
+        return "No steps yet: set the plan with steps_set.".to_owned();
     }
-    let percent = progress.get("percent").and_then(Value::as_u64).unwrap_or(0);
-    let first = at_first(progress);
-    Some(format!(
-        "Progress: {done}/{total} steps done{first}, {percent}% by effort."
-    ))
+    let first = at_first(progress.first_total);
+    format!("Progress: {done}/{total} steps done{first}, {percent}% by effort.")
 }
 
 /// " (N at first)" for a plan that grew since its first step was finished (`first_total`,
 /// SPEC-484 PLN-010), so the count is not read as the plan it began with; empty otherwise.
-fn at_first(progress: &Value) -> String {
-    progress
-        .get("first_total")
-        .and_then(Value::as_u64)
-        .map_or_else(String::new, |first| format!(" ({first} at first)"))
+fn at_first(first_total: Option<u32>) -> String {
+    first_total.map_or_else(String::new, |first| format!(" ({first} at first)"))
 }
 
-fn nudges(out: &mut String, value: &Value) {
-    let items: Vec<&str> = value
-        .get("nudges")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .filter(|s| !s.trim().is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+fn nudges(out: &mut String, record: &PlanRecord) {
+    let items: Vec<&str> = record
+        .nudges
+        .iter()
+        .map(String::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .collect();
     match items.as_slice() {
         [] => {}
         [one] => push_line(out, &format!("Nudge: {one}")),
@@ -293,62 +295,66 @@ fn nudges(out: &mut String, value: &Value) {
 
 /// `steps_get` / `steps_set`: the plan as a checklist, the progress and the nudges. Step ids and
 /// times are left out: steps are named by ordinal or title.
-fn plan(value: &Value, set: bool) -> Option<String> {
-    let steps = value.get("steps")?.as_array()?;
+fn plan(record: &PlanRecord, set: bool) -> String {
     let mut out = String::new();
+    let count = record.steps.len();
     if set {
         push_line(
             &mut out,
             &format!(
-                "Plan set: {} step{}.",
-                steps.len(),
-                if steps.len() == 1 { "" } else { "s" }
+                "Plan set: {count} step{}.",
+                if count == 1 { "" } else { "s" }
             ),
         );
     }
-    push_line(&mut out, &progress_line(value)?);
-    for (index, step) in steps.iter().enumerate() {
-        step_line(&mut out, ordinal_of(step, index), step);
+    push_line(&mut out, &progress_line(&record.progress));
+    for step in &record.steps {
+        step_line(
+            &mut out,
+            u64::from(step.ordinal),
+            &step.status,
+            title(&step.title),
+            u64::from(step.effort),
+            step.note.as_deref().and_then(shown),
+        );
     }
-    nudges(&mut out, value);
-    Some(out)
+    nudges(&mut out, record);
+    out
 }
 
 /// `step_update`: the step that changed, the progress, what is next and the nudges.
-fn step_update(value: &Value) -> Option<String> {
-    let updated = value.get("updated")?;
-    let steps = value.get("steps")?.as_array()?;
-    let ordinal = updated.get("ordinal")?.as_u64()?;
-    let status = text(updated, "status")?;
+fn step_update(record: &PlanRecord) -> Option<String> {
+    let updated = record.updated.as_ref()?;
     let mut out = format!(
-        "Step {ordinal} \"{}\" is {}.\n",
-        text(updated, "title").unwrap_or("(untitled)"),
-        status_words(status)
+        "Step {} \"{}\" is {}.\n",
+        updated.ordinal,
+        title(&updated.title),
+        status_words(&updated.status)
     );
-    push_line(&mut out, &progress_line(value)?);
+    push_line(&mut out, &progress_line(&record.progress));
     let open = |wanted: &[&str]| {
-        steps.iter().enumerate().find(|(index, step)| {
-            ordinal_of(step, *index) != ordinal
-                && wanted.contains(&text(step, "status").unwrap_or("pending"))
-        })
+        record
+            .steps
+            .iter()
+            .find(|step| step.ordinal != updated.ordinal && wanted.contains(&step.status.as_str()))
     };
     let next = open(&["pending", "blocked"]).or_else(|| open(&["in_progress"]));
     match next {
-        Some((index, step)) => push_line(
+        Some(step) => push_line(
             &mut out,
             &format!(
                 "Next: {} \"{}\" ({}).",
-                ordinal_of(step, index),
-                text(step, "title").unwrap_or("(untitled)"),
-                status_words(text(step, "status").unwrap_or("pending"))
+                step.ordinal,
+                title(&step.title),
+                status_words(&step.status)
             ),
         ),
-        None if matches!(status, "done" | "skipped") => {
+        None if matches!(updated.status.as_str(), "done" | "skipped") => {
             push_line(&mut out, "Every step is finished.");
         }
         None => {}
     }
-    nudges(&mut out, value);
+    nudges(&mut out, record);
     Some(out)
 }
 
@@ -922,20 +928,22 @@ fn task_line(task: &Value) -> Option<String> {
     if let Some(number) = task.pointer("/parked_pr/number").and_then(Value::as_u64) {
         parts.push(format!("PR #{number}"));
     }
-    if let Some(steps) = task.get("steps") {
-        let total = steps.get("total").and_then(Value::as_u64).unwrap_or(0);
-        if total > 0 {
-            let mut s = format!(
-                "steps {}/{total}{}, {}%",
-                steps.get("done").and_then(Value::as_u64).unwrap_or(0),
-                at_first(steps),
-                steps.get("percent").and_then(Value::as_u64).unwrap_or(0)
-            );
-            if let Some(current) = text(steps, "current") {
-                s.push_str(&format!(", now \"{current}\""));
-            }
-            parts.push(s);
+    if let Some(steps) = task
+        .get("steps")
+        .and_then(|steps| PlanProgress::deserialize(steps).ok())
+        .filter(|steps| steps.total > 0)
+    {
+        let mut s = format!(
+            "steps {}/{}{}, {}%",
+            steps.done,
+            steps.total,
+            at_first(steps.first_total),
+            steps.percent
+        );
+        if let Some(current) = steps.current.as_deref().and_then(shown) {
+            s.push_str(&format!(", now \"{current}\""));
         }
+        parts.push(s);
     }
     if let Some(after) = task.get("runs_after").and_then(Value::as_u64) {
         parts.push(format!("after #{after}"));
@@ -1141,7 +1149,14 @@ fn task_get(value: &Value) -> Option<String> {
     {
         push_line(&mut out, "Steps:");
         for (index, step) in steps.iter().enumerate() {
-            step_line(&mut out, ordinal_of(step, index), step);
+            step_line(
+                &mut out,
+                index as u64 + 1,
+                text(step, "status").unwrap_or("pending"),
+                text(step, "title").unwrap_or("(untitled)"),
+                0,
+                text(step, "note"),
+            );
         }
     }
     if let Some(history) = value
@@ -1474,6 +1489,47 @@ mod tests {
         last["updated"] = json!({"ordinal": 3, "title": "Review", "status": "done"});
         let text = render("step_update", &json!({}), &last);
         assert!(text.ends_with("Every step is finished."), "{text}");
+    }
+
+    /// A blank note is no note and a blank title reads "(untitled)", in the plan, an update and
+    /// a task's line, as the record's text always did.
+    #[test]
+    fn blank_notes_and_titles_read_as_absent() {
+        for blank in ["", " "] {
+            let mut record = plan_record();
+            record["steps"][0]["note"] = json!(blank);
+            record["steps"][1]["title"] = json!(blank);
+            let text = render("steps_get", &json!({}), &record);
+            assert_eq!(
+                text,
+                "Progress: 1/3 steps done, 40% by effort.\n\
+                 1 [x] Write the spec\n\
+                 2 [>] (untitled) (in progress, effort 2)\n\
+                 3 [ ] Review\n    note: waits for CI\n\
+                 Nudge: Mark \"Review\" in_progress when you start it.",
+                "{blank:?}"
+            );
+            record["steps"][2]["title"] = json!(blank);
+            record["steps"][2]["status"] = json!("done");
+            record["updated"] = json!({"ordinal": 3, "title": blank, "status": "done"});
+            let text = render("step_update", &json!({}), &record);
+            assert!(
+                text.starts_with("Step 3 \"(untitled)\" is done.\n")
+                    && text.contains("Next: 2 \"(untitled)\" (in progress)."),
+                "{blank:?}: {text}"
+            );
+            let task = json!({
+                "task_id": UUID, "number": 7, "title": "Audit", "harness": "claude",
+                "status": "running", "activity": "working", "branch": null, "spec_path": null,
+                "steps": {"done": 1, "total": 2, "percent": 50, "current": blank, "first_total": null},
+                "runs_after": null, "created_at": "2026-11-12T22:12:35Z", "updated_at": "2026-11-13T16:23:07Z"
+            });
+            let text = render("task_get", &json!({"number": 7}), &task);
+            assert!(
+                text.contains("steps 1/2, 50%") && !text.contains("now"),
+                "{blank:?}: {text}"
+            );
+        }
     }
 
     /// TOL-006: a record a rendering does not recognise is printed whole, as an outline.
