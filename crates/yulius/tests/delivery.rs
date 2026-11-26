@@ -4702,6 +4702,93 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
     Ok(())
 }
 
+/// F4 of the layering audit: each task summary carries the sidebar group the server decides
+/// (`AttentionFacts::group`), so the web UI reads it instead of deciding it again, and the
+/// counters count the same groups.
+#[tokio::test]
+async fn task_summaries_carry_the_group_the_counters_count() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let set = async |id: &str, status: TaskStatus, activity: Option<Activity>| -> BoxResult<()> {
+        f.h.store
+            .transition_task(&TaskId::parse(id)?, None, status, activity, Timestamp(5))
+            .await?;
+        Ok(())
+    };
+    let tasks: [(&str, TaskStatus, Option<Activity>, &str); 8] = [
+        ("t1", TaskStatus::Queued, None, "queued"),
+        ("t2", TaskStatus::Chained, None, "queued"),
+        ("t3", TaskStatus::Starting, None, "working"),
+        (
+            "t4",
+            TaskStatus::Running,
+            Some(Activity::Working),
+            "working",
+        ),
+        // Your turn: stopped with a step open.
+        (
+            "t5",
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            "needs_you",
+        ),
+        // Answered: nothing open, nothing asked (SPEC-429).
+        ("t6", TaskStatus::Running, Some(Activity::Waiting), "done"),
+        (
+            "t7",
+            TaskStatus::Running,
+            Some(Activity::NeedsAttention),
+            "needs_you",
+        ),
+        ("t8", TaskStatus::Stopping, Some(Activity::Working), "ended"),
+    ];
+    for (id, status, activity, _) in tasks {
+        f.add_task(id, id, &format!("feat/{id}"), "dev").await?;
+        set(id, status, activity).await?;
+    }
+    set_steps(&f, "t5", &["done", "pending"]).await?;
+
+    let r = f
+        .req(Method::GET, "/api/sandboxes/s1/tasks", None, &f.bob)
+        .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let listed = r.body.as_array().ok_or("task list")?;
+    let group_of = |id: &str| {
+        listed
+            .iter()
+            .find(|t| t["id"] == id)
+            .map(|t| t["group"].clone())
+    };
+    for (id, _, _, group) in tasks {
+        assert_eq!(group_of(id), Some(json!(group)), "{id}");
+        let detail = f
+            .req(Method::GET, &format!("/api/tasks/{id}"), None, &f.bob)
+            .await?;
+        assert_eq!(detail.status, StatusCode::OK, "{}", detail.body);
+        assert_eq!(detail.body["group"], json!(group), "{id} detail");
+    }
+
+    let r = f.req(Method::GET, "/api/sandboxes", None, &f.bob).await?;
+    let sandbox = r
+        .body
+        .as_array()
+        .and_then(|list| list.iter().find(|s| s["id"] == "s1"))
+        .ok_or("s1")?;
+    let listed_in = |group: &str| listed.iter().filter(|t| t["group"] == group).count() as u64;
+    assert_eq!(
+        sandbox["counts"]["needs_attention"].as_u64(),
+        Some(listed_in("needs_you"))
+    );
+    assert_eq!(
+        sandbox["counts"]["running"].as_u64(),
+        Some(listed_in("working"))
+    );
+    assert_eq!(
+        sandbox["counts"]["queued"].as_u64(),
+        Some(listed_in("queued"))
+    );
+    Ok(())
+}
+
 async fn answer_with_a_successor(f: &Fixture) -> BoxResult<(TaskId, TaskId)> {
     use yulius_app::ports::store_ext::IntakeStore as _;
     let before = TaskId::parse("t1")?;
@@ -4870,6 +4957,7 @@ async fn a_parked_detail_bounds_its_initial_browser_lookup_and_keeps_the_recorde
         detail.map_err(|_| "browser startup consumed the parked task read budget")???,
     )?;
     assert_eq!(detail["parked_needs_you"], false);
+    assert_ne!(detail["group"], "needs_you");
     assert!(detail["needs_you_notice"].is_null(), "{detail}");
     assert_eq!(detail["parked_pr"], json!({"number":1,"open":true}));
     Ok(())
@@ -5059,6 +5147,7 @@ async fn a_historical_parked_goal_keeps_its_owner_and_chain_state_after_restart(
     let summary = fresh.task_detail(&owner, parked.id.as_str()).await?;
     assert!(summary.summary.goal_unfinished);
     assert_eq!(summary.summary.parked_needs_you, Some(true));
+    assert_eq!(summary.summary.group, "needs_you");
     fresh.advance_chains(&before).await;
     assert_eq!(
         f.h.store.task(&child).await?.ok_or("successor")?.status,
@@ -5244,6 +5333,7 @@ async fn a_parked_achieved_goal_waits_for_its_failed_ordinary_run() -> TestResul
             .ok_or("owner")?;
     let detail = f.h.app.task_detail(&owner, before.as_str()).await?;
     assert_eq!(detail.summary.parked_needs_you, Some(false));
+    assert_ne!(detail.summary.group, "needs_you");
     f.h.github.set_checks(&head, ChecksState::Failure);
     app.advance_chains(&before).await;
     assert_eq!(
@@ -5336,6 +5426,7 @@ async fn a_parked_successor_waits_for_the_replacement_ordinary_pr() -> TestResul
     f.h.github.set_checks(&head, ChecksState::Success);
     let summary = serde_json::to_value(f.h.app.task_detail(&owner, parked.id.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], false, "replacement settled");
+    assert_ne!(summary["group"], "needs_you");
     let held = f.h.github.hold_checks();
     let app = f.h.app.clone();
     let auth = owner.clone();
@@ -5485,6 +5576,7 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
     *f.git.parked_git_hold.lock().map_err(|_| "git hold")? = None;
     hold.finishing.close();
     assert_eq!(draining.parked_needs_you, Some(true));
+    assert_eq!(draining.group, "needs_you");
     assert_eq!(draining.needs_you_notice.as_ref(), Some(&failure));
     tokio::time::timeout(
         Duration::from_secs(30),
@@ -5493,6 +5585,7 @@ async fn overlapping_parked_status_reads_bound_git_workers_after_timeouts() -> T
     .await??;
     let recovered = app.task_detail(&owner, task.id.as_str()).await?.summary;
     assert_eq!(recovered.parked_needs_you, Some(false));
+    assert_ne!(recovered.group, "needs_you");
     assert!(recovered.needs_you_notice.is_none());
     Ok(())
 }
@@ -9055,6 +9148,7 @@ async fn a_merged_pull_request_github_still_lists_as_open_reads_merged() -> Test
     let task = f.h.store.task(&id).await?.ok_or("parked task")?;
     let summary = serde_json::to_value(f.h.app.task_detail(&owner, task.id.as_str()).await?)?;
     assert_eq!(summary["parked_needs_you"], false);
+    assert_ne!(summary["group"], "needs_you");
     assert_eq!(summary["parked_pr"], json!({"number":1,"open":false}));
     Ok(())
 }

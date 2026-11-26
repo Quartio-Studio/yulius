@@ -983,6 +983,7 @@ async fn parked_task_with_merged_pr_does_not_record_phantom_wait_history() -> Te
     let owner = auth_ctx(&h, "u-alice").await?;
     let detail = h.app.task_detail(&owner, "t1").await?;
     assert_eq!(detail.summary.parked_needs_you, Some(false));
+    assert_ne!(detail.summary.group, "needs_you");
     assert!(detail.summary.needs_you_notice.is_none());
     assert!(
         detail.wait_history.is_empty(),
@@ -1067,6 +1068,8 @@ async fn parked_http_and_mcp_agree_on_cold_and_stale_observed_pulls() -> TestRes
     let expected_happened = "The task is parked and pull request #1536 checks are failing.";
     assert_eq!(http_row.parked_needs_you, Some(true));
     assert_eq!(http_detail.summary.parked_needs_you, Some(true));
+    assert_eq!(http_row.group, "needs_you");
+    assert_eq!(http_detail.summary.group, "needs_you");
     assert_eq!(
         http_row
             .needs_you_notice
@@ -1139,6 +1142,7 @@ async fn parked_http_and_mcp_agree_on_cold_and_stale_observed_pulls() -> TestRes
     // Reading the last observed merge cannot discover an unobserved replacement.
     let before_tick = h.app.task_detail(&owner, "t1").await?;
     assert_eq!(before_tick.summary.parked_needs_you, Some(false));
+    assert_ne!(before_tick.summary.group, "needs_you");
     assert_eq!(
         before_tick.summary.parked_pr.as_ref().map(|pr| pr.number),
         Some(1536)
@@ -1151,6 +1155,7 @@ async fn parked_http_and_mcp_agree_on_cold_and_stale_observed_pulls() -> TestRes
         .await?;
     let expected_1537 = "The task is parked and pull request #1537 checks are failing.";
     assert_eq!(stale_detail.summary.parked_needs_you, Some(true));
+    assert_eq!(stale_detail.summary.group, "needs_you");
     assert_eq!(
         stale_detail
             .summary

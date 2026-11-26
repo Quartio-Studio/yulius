@@ -539,6 +539,8 @@ session limit the resume waits `queued` with its prompt. Archive and close make 
 `stopped_cancelled`. A message while the park is ending the session, until its run's end has settled the task, is
 409 ("is parking its idle session"); once the task reads `parked`, a message resumes it. Each park is audited `task.parked` by `yulius`.
 
+Every task summary includes `group`, the sidebar group the server decides (`needs_you`, `working`, `queued`, `done` or `ended`): the group the sandbox counters count and the MCP tools' `shows` names.
+
 A live task whose goal is achieved includes `candidate_pending: true` while its recorded integration failure still applies (the PR watch has not seen its pull request close or its head or base move): it reads as waiting on Yulius, not Done, from the watch's last answered check (a re-read in flight or a failed one changes nothing), the watch publishes the task when that answer changes, and `task_get`'s `waits_for` names the re-check; otherwise the field is absent (SPEC-621 FIN-004).
 
 A parked task in the sandbox task list or the task detail includes `parked_needs_you`, the server’s classification from its
