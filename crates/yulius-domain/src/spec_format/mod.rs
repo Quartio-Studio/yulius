@@ -387,49 +387,83 @@ impl SpecReport {
         message
     }
 
-    /// The rename an agent is asked for when the file name does not follow the heading (audit
-    /// L10 F5: files were named after the raw request). The number (`SPEC-674-`) or date
-    /// (`2026-10-07-`) before the name is kept; a `SPEC-674:` before the title is dropped.
+    /// The rename an agent is asked for when the file name does not follow the heading: files were
+    /// named after the raw request. The number (`SPEC-674`, `0007`) or date (`2026-10-07`) that
+    /// starts the name is kept, and dropped from the title wherever the heading repeats it. A
+    /// name that is the start of the heading's slug (cut when it was made), a name that starts
+    /// with a number of another form, and a heading in a script the slug cannot spell get none.
     fn name_hint(&self, spec_path: &str) -> Option<String> {
         let title = self.title.as_deref()?;
         let file = spec_path.rsplit('/').next().unwrap_or(spec_path);
         let dir = &spec_path[..spec_path.len() - file.len()];
         let stem = file.strip_suffix(".md")?;
-        let (prefix, name) = stem.split_at(prefix_len(stem));
-        let title = title
-            .split_once(':')
-            .filter(|(head, _)| prefix_len(&format!("{}-", head.trim())) > 0)
-            .map_or(title, |(_, rest)| rest);
-        let wanted = slug_or(title, name);
-        if wanted == name {
+        let keep = name_number(stem)?;
+        let name = stem[keep.len()..].trim_start_matches(['-', '_']);
+        if title
+            .chars()
+            .any(|c| c.is_alphabetic() && !c.is_ascii() && transliterate(c).is_none())
+        {
             return None;
         }
+        let wanted = slug_or(without_number(title, keep), "");
+        if wanted.is_empty() || (!name.is_empty() && wanted.starts_with(name)) {
+            return None;
+        }
+        let joined = if keep.is_empty() {
+            wanted
+        } else {
+            format!("{keep}-{wanted}")
+        };
         Some(format!(
-            "Its file name does not follow its heading: rename it to `{dir}{prefix}{wanted}.md` \
-             (`git mv`; Yulius follows a renamed spec by its frontmatter)."
+            "Its file name does not follow its heading: before it merges, rename it to \
+             `{dir}{joined}.md` with `git mv` and update the links to it (Yulius follows a renamed \
+             spec by its frontmatter)."
         ))
     }
 }
 
-/// Length of a `SPEC-<digits>-` or `YYYY-MM-DD-` prefix of a spec file stem, else 0.
-fn prefix_len(stem: &str) -> usize {
-    let bytes = stem.as_bytes();
-    if let Some(rest) = stem.strip_prefix("SPEC-") {
-        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-        if digits > 0 && rest.as_bytes().get(digits) == Some(&b'-') {
-            return 5 + digits + 1;
-        }
+/// The number or date that starts a spec file stem (`SPEC-674`, `0007`, `2026-10-07`), `""` when
+/// it starts with a letter and no number, and `None` when it starts with a number of another form.
+fn name_number(stem: &str) -> Option<&str> {
+    if let Some(numbered) = crate::numbering::parse(stem) {
+        return Some(&stem[..numbered.prefix.len() + numbered.width]);
     }
-    let date = bytes.len() > 11
+    let bytes = stem.as_bytes();
+    let date = bytes.len() >= 10
         && bytes[..10].iter().enumerate().all(|(i, b)| {
             if i == 4 || i == 7 {
                 *b == b'-'
             } else {
                 b.is_ascii_digit()
             }
-        })
-        && bytes[10] == b'-';
-    if date { 11 } else { 0 }
+        });
+    if date {
+        Some(&stem[..10])
+    } else if stem.starts_with(|c: char| c.is_ascii_digit()) {
+        None
+    } else {
+        Some("")
+    }
+}
+
+/// `title` without a leading copy of the file's number (`SPEC-674 — `, `SPEC-674: `, `2026-10-07: `)
+/// or the template's placeholder for it (`SPEC-NNN: `).
+fn without_number<'a>(title: &'a str, number: &str) -> &'a str {
+    let title = title.trim();
+    if number.is_empty() {
+        return title;
+    }
+    let letters = number.trim_end_matches(|c: char| c.is_ascii_digit());
+    let placeholder = format!("{letters}NNN");
+    for lead in [number, placeholder.as_str()] {
+        if !lead.is_empty()
+            && let Some(head) = title.get(..lead.len())
+            && head.eq_ignore_ascii_case(lead)
+        {
+            return title[lead.len()..].trim_start_matches(|c: char| !c.is_alphanumeric());
+        }
+    }
+    title
 }
 
 const REQUIRED_SECTIONS: [&str; 7] = [
@@ -640,9 +674,10 @@ pub fn validate_spec(markdown: &str) -> SpecReport {
 
     let title = lines[body_start.min(lines.len())..]
         .iter()
-        .find(|line| !line.code && line.content.starts_with("# "))
-        .map(|line| line.content[2..].trim().to_owned())
-        .filter(|title| !title.is_empty());
+        .filter(|line| !line.code)
+        .find_map(|line| markdown::heading(&line.content))
+        .filter(|(level, text)| *level == 1 && !text.trim().is_empty())
+        .map(|(_, text)| text.trim().to_owned());
     SpecReport {
         problems,
         plan,
@@ -1099,44 +1134,115 @@ mod tests {
         Ok(())
     }
 
-    /// Audit L10 F5: a spec file is named after its heading, not the raw request it was created
-    /// from; the message says the name to give it, keeping its number or date.
+    /// A spec file is named after its heading, not the raw request it was created from: the
+    /// message names the file it should be, keeping its number or date.
     #[test]
     fn a_spec_named_after_the_request_is_told_its_heading_name() {
+        let hint = |heading: &str, path: &str| {
+            let message =
+                validate_spec(&VALID.replace("# Checkout API", heading)).agent_message(path);
+            message
+                .split_once("rename it to `")
+                .map(|(_, rest)| rest.split('`').next().unwrap_or_default().to_owned())
+        };
         let valid = validate_spec(VALID);
-        let named = |path: &str| valid.agent_message(path);
         assert_eq!(
-            named("docs/specs/checkout-api.md"),
+            valid.agent_message("docs/specs/checkout-api.md"),
             "The task spec `docs/specs/checkout-api.md` satisfies the Yulius format."
         );
-        for (path, wanted) in [
+        assert!(
+            valid
+                .agent_message(".ai/specs/SPEC-674-bruh-fix-it-pls.md")
+                .ends_with(
+                    "Its file name does not follow its heading: before it merges, rename it to \
+             `.ai/specs/SPEC-674-checkout-api.md` with `git mv` and update the links to it \
+             (Yulius follows a renamed spec by its frontmatter)."
+                )
+        );
+        for (heading, path, wanted) in [
+            // The number or date the name starts with is kept.
             (
-                ".ai/specs/SPEC-674-bruh-fix-it-pls.md",
-                ".ai/specs/SPEC-674-checkout-api.md",
+                "# Checkout API",
+                ".ai/specs/SPEC-674-bruh.md",
+                Some(".ai/specs/SPEC-674-checkout-api.md"),
             ),
             (
+                "# Checkout API",
                 "docs/specs/2026-10-07-lol.md",
-                "docs/specs/2026-10-07-checkout-api.md",
+                Some("docs/specs/2026-10-07-checkout-api.md"),
             ),
-            ("docs/specs/raw-prompt.md", "docs/specs/checkout-api.md"),
+            (
+                "# Checkout API",
+                "docs/specs/raw-prompt.md",
+                Some("docs/specs/checkout-api.md"),
+            ),
+            ("# Checkout API", "raw-prompt.md", Some("checkout-api.md")),
+            (
+                "# Checkout API",
+                "docs/specs/0007-raw.md",
+                Some("docs/specs/0007-checkout-api.md"),
+            ),
+            (
+                "# Checkout API",
+                ".ai/specs/SPEC-080.md",
+                Some(".ai/specs/SPEC-080-checkout-api.md"),
+            ),
+            (
+                "# Checkout API",
+                "rfc/RFC-0007-raw.md",
+                Some("rfc/RFC-0007-checkout-api.md"),
+            ),
+            // A heading that repeats the number names the file with it once, whatever follows it.
+            (
+                "# SPEC-674: Checkout API",
+                ".ai/specs/SPEC-674-checkout-api.md",
+                None,
+            ),
+            (
+                "# SPEC-674 \u{2014} Checkout API",
+                ".ai/specs/SPEC-674-checkout-api.md",
+                None,
+            ),
+            (
+                "# SPEC-674 Checkout API",
+                ".ai/specs/SPEC-674-checkout-api.md",
+                None,
+            ),
+            (
+                "# SPEC-674. Checkout API",
+                ".ai/specs/SPEC-674-checkout-api.md",
+                None,
+            ),
+            (
+                "# 2026-10-07: Checkout API",
+                "docs/specs/2026-10-07-checkout-api.md",
+                None,
+            ),
+            (
+                "# SPEC-NNN: Checkout API",
+                ".ai/specs/SPEC-674-checkout-api.md",
+                None,
+            ),
+            // A name cut from the heading's slug when it was made follows it.
+            (
+                "# Make task-local testing and one staging deploy per task the default",
+                ".ai/specs/SPEC-575-make-task-local-testing-and-one-staging.md",
+                None,
+            ),
+            // A number of another form, or a script the slug cannot spell: no hint.
+            ("# Checkout API", "db/20231012120000_raw.md", None),
+            (
+                "# \u{418}\u{441}\u{43f}\u{440}\u{430}\u{432}\u{438}\u{442}\u{44c} OAuth 2",
+                ".ai/specs/SPEC-080-fix-oauth-login.md",
+                None,
+            ),
         ] {
-            let message = named(path);
-            assert!(message.starts_with("The task spec"), "{message}");
-            assert!(
-                message.ends_with(&format!(
-                    "Its file name does not follow its heading: rename it to `{wanted}` \
-                     (`git mv`; Yulius follows a renamed spec by its frontmatter)."
-                )),
-                "{message}"
+            assert_eq!(
+                hint(heading, path).as_deref(),
+                wanted,
+                "{heading} at {path}"
             );
         }
-        // A numbered heading names the file without its number twice.
-        let numbered = validate_spec(&VALID.replace("# Checkout API", "# SPEC-674: Checkout API"));
-        assert!(
-            numbered
-                .agent_message(".ai/specs/SPEC-674-checkout-api.md")
-                .ends_with("format.")
-        );
         // An invalid spec gets the hint after its problems; no heading, no hint.
         let invalid = validate_spec_for(
             VALID,
