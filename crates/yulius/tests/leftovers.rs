@@ -5,10 +5,10 @@
 //! stays, and every rule is checked again right before a deletion.
 
 use crate::support;
+use crate::support::git;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
@@ -31,27 +31,6 @@ use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
-
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
-    let out = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Yulius Test",
-            "-c",
-            "user.email=test@yulius.test",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .output()?;
-    if !out.status.success() {
-        return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
-}
 
 /// Holders the test starts and stops; mapped removals are recorded and done by the walk the
 /// mapped root runs (`sandbox-host remove-tree --below <data>`, ADR-0176).

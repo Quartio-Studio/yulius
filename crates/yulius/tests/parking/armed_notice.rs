@@ -110,14 +110,14 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
         let (id, caller) = answered(&app, &data).await?;
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
         let tree = Path::new(task.worktree_path.as_deref().ok_or("checkout")?);
-        crate::pr_watch::git(&data.join("seed"), &["push", "-q", "origin", "main:dev"])?;
-        crate::pr_watch::git(tree, &["fetch", "-q", "origin"])?;
+        crate::support::git(&data.join("seed"), &["push", "-q", "origin", "main:dev"])?;
+        crate::support::git(tree, &["fetch", "-q", "origin"])?;
         let branch = task.branch.as_deref().ok_or("branch")?;
-        crate::pr_watch::git(
+        crate::support::git(
             tree,
             &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
         )?;
-        let head = crate::pr_watch::git(tree, &["rev-parse", "HEAD"])?;
+        let head = crate::support::git(tree, &["rev-parse", "HEAD"])?;
         open_pull_at(&app, &github, &id, 1481, &head).await?;
         app.deps
             .store
@@ -272,7 +272,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                 Some("Replacement session ready".into()),
             )
             .await?;
-            super::wait_for(
+            crate::support::eventually(
                 "the new attempt to attach",
                 Duration::from_secs(10),
                 || async {
@@ -507,11 +507,11 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                 case,
                 OwnerCase::ExternalRepair(_) | OwnerCase::BrowserRestart
             ) {
-                crate::pr_watch::git(
+                crate::support::git(
                     tree,
                     &["clone", "-q", ".", other.to_str().ok_or("clone path")?],
                 )?;
-                crate::pr_watch::git(
+                crate::support::git(
                     &other,
                     &[
                         "remote",
@@ -524,7 +524,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             } else {
                 tree
             };
-            crate::pr_watch::git(
+            crate::support::git(
                 tree,
                 &[
                     "commit",
@@ -534,7 +534,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
                     "Repair the failed check",
                 ],
             )?;
-            crate::pr_watch::git(
+            crate::support::git(
                 tree,
                 &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
             )?;
@@ -544,14 +544,14 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
             ) {
                 let checkout = Path::new(task.worktree_path.as_deref().ok_or("owner checkout")?);
                 assert_eq!(
-                    crate::pr_watch::git(
+                    crate::support::git(
                         checkout,
                         &["rev-parse", &format!("refs/remotes/origin/{branch}")]
                     )?,
                     head
                 );
                 assert_ne!(
-                    crate::pr_watch::git(&origin, &["rev-parse", &format!("refs/heads/{branch}")])?,
+                    crate::support::git(&origin, &["rev-parse", &format!("refs/heads/{branch}")])?,
                     head
                 );
             }
@@ -596,7 +596,7 @@ fn armed_owner_case(case: OwnerCase) -> TestResult {
 
 #[test]
 fn an_armed_pr_without_an_ordinary_run_checks_conflicts_at_its_published_head() -> TestResult {
-    use crate::pr_watch::git;
+    use crate::support::git;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
@@ -673,7 +673,7 @@ fn an_armed_pr_without_an_ordinary_run_checks_conflicts_at_its_published_head() 
 #[test]
 fn a_decision_during_draft_readiness_keeps_the_armed_notice_unheard() -> TestResult {
     use crate::first_message::ShiftedClock;
-    use crate::pr_watch::git;
+    use crate::support::git;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {

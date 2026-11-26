@@ -9,12 +9,12 @@
 //! through the terminal API a viewer uses; real worktrees.
 
 use crate::support;
+use crate::support::{eventually, git};
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use support::TestResult;
@@ -76,21 +76,6 @@ async fn start(data: &Path, fake: &Path, agent: FakeAgentOptions) -> Result<Arc<
         .into_make_service_with_connect_info::<SocketAddr>();
     tokio::spawn(async move { axum::serve(listener, internal).await });
     Ok(app)
-}
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
 }
 
 /// A superadmin, a sandbox whose repository is a clone of a bare origin, and a Claude account.
@@ -204,21 +189,6 @@ async fn new_task(
     Ok(record.id)
 }
 
-async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if check().await {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Err(format!("timed out waiting for {what}").into())
-}
-
 async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, BoxError> {
     Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
 }
@@ -255,7 +225,7 @@ async fn ready(
     title: &str,
 ) -> Result<(TaskId, AuthContext, TerminalAttach), BoxError> {
     let id = new_task(app, sandbox, &user.id, title).await?;
-    wait_for("the fake agent", Duration::from_secs(30), || {
+    eventually("the fake agent", Duration::from_secs(30), || {
         screen_contains(app, &id, "FAKE-AGENT READY")
     })
     .await?;
@@ -309,7 +279,7 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
         // the turn and the task waits for its person.
         let (id, ctx, attach) = ready(&app, &sandbox, &user, "Interrupt and leave").await?;
         keys(&app, &ctx, &attach, b"/work 30000 refactor the parser\r").await?;
-        wait_for("the turn", Duration::from_secs(20), || async {
+        eventually("the turn", Duration::from_secs(20), || async {
             screen_contains(&app, &id, "WORKING").await
                 && task(&app, &id)
                     .await
@@ -317,11 +287,11 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
         })
         .await?;
         keys(&app, &ctx, &attach, b"\x03").await?;
-        wait_for("the interrupt", Duration::from_secs(10), || {
+        eventually("the interrupt", Duration::from_secs(10), || {
             screen_contains(&app, &id, "INTERRUPTED")
         })
         .await?;
-        wait_for(
+        eventually(
             "Your turn after the interrupt",
             Duration::from_secs(5),
             || async {
@@ -334,12 +304,12 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
         // Ctrl+C twice at the prompt leaves the session: closed, like /exit.
         let mut events = app.events.subscribe();
         keys(&app, &ctx, &attach, b"\x03").await?;
-        wait_for("the first Ctrl+C", Duration::from_secs(10), || {
+        eventually("the first Ctrl+C", Duration::from_secs(10), || {
             screen_contains(&app, &id, "Press Ctrl-C again to exit")
         })
         .await?;
         keys(&app, &ctx, &attach, b"\x03").await?;
-        wait_for("closed after Ctrl+C twice", Duration::from_secs(10), || {
+        eventually("closed after Ctrl+C twice", Duration::from_secs(10), || {
             has_status(&app, &id, TaskStatus::Closed)
         })
         .await?;
@@ -347,7 +317,7 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
         assert_eq!(last.exit_code, Some(0));
         // The store changes first and the event follows it, so wait for the event.
         let mut seen = Vec::new();
-        wait_for("the closed event", Duration::from_secs(10), || {
+        eventually("the closed event", Duration::from_secs(10), || {
             while let Ok(envelope) = events.try_recv() {
                 if let UiEvent::TaskUpdated { task } = envelope.event
                     && task.id == id.as_str()
@@ -364,7 +334,7 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
         // /exit: SessionEnd, then a clean exit.
         let (id, ctx, attach) = ready(&app, &sandbox, &user, "Leave with exit").await?;
         keys(&app, &ctx, &attach, b"/exit\r").await?;
-        wait_for("closed after /exit", Duration::from_secs(10), || {
+        eventually("closed after /exit", Duration::from_secs(10), || {
             has_status(&app, &id, TaskStatus::Closed)
         })
         .await?;
@@ -373,7 +343,7 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
         // A crash.
         let (id, ctx, attach) = ready(&app, &sandbox, &user, "Crash").await?;
         keys(&app, &ctx, &attach, b"/crash\r").await?;
-        wait_for("stopped after a crash", Duration::from_secs(10), || {
+        eventually("stopped after a crash", Duration::from_secs(10), || {
             has_status(&app, &id, TaskStatus::Stopped(StopReason::Crashed))
         })
         .await?;
@@ -385,7 +355,7 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
             ("Killed", nix::sys::signal::Signal::SIGKILL),
         ] {
             let id = new_task(&app, &sandbox, &user.id, title).await?;
-            wait_for("the fake agent", Duration::from_secs(30), || {
+            eventually("the fake agent", Duration::from_secs(30), || {
                 screen_contains(&app, &id, "FAKE-AGENT READY")
             })
             .await?;
@@ -397,7 +367,7 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
                 .and_then(|a| a.child_pid)
                 .ok_or("child pid")?;
             nix::sys::signal::kill(nix::unistd::Pid::from_raw(i32::try_from(pid)?), signal)?;
-            wait_for("stopped after a kill", Duration::from_secs(10), || {
+            eventually("stopped after a kill", Duration::from_secs(10), || {
                 has_status(&app, &id, TaskStatus::Stopped(StopReason::Killed))
             })
             .await?;
@@ -406,13 +376,13 @@ fn the_task_follows_its_session_however_it_stops() -> TestResult {
         // Stop in the UI: `stopping` as soon as it is asked for, then stopped (Claude Code does
         // not exit on the first Ctrl+C; the escalation's SIGTERM ends it).
         let id = new_task(&app, &sandbox, &user.id, "Stopped by a person").await?;
-        wait_for("the fake agent", Duration::from_secs(30), || {
+        eventually("the fake agent", Duration::from_secs(30), || {
             screen_contains(&app, &id, "FAKE-AGENT READY")
         })
         .await?;
         app.stop_task_now(&id).await?;
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Stopping);
-        wait_for("stopped by the person", Duration::from_secs(30), || {
+        eventually("stopped by the person", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Stopped(StopReason::Cancelled))
         })
         .await?;
@@ -483,7 +453,7 @@ fn a_prompt_typed_into_the_terminal_passes_the_scope_check() -> TestResult {
             b"round the totals to cents in the summary\r",
         )
         .await?;
-        wait_for("the in-scope prompt", Duration::from_secs(20), || {
+        eventually("the in-scope prompt", Duration::from_secs(20), || {
             screen_contains(&app, &id, "ECHO: round the totals to cents in the summary")
         })
         .await?;
@@ -495,7 +465,7 @@ fn a_prompt_typed_into_the_terminal_passes_the_scope_check() -> TestResult {
             b"also add a dark mode to the settings page\r",
         )
         .await?;
-        wait_for("the held prompt", Duration::from_secs(20), || {
+        eventually("the held prompt", Duration::from_secs(20), || {
             screen_contains(&app, &id, "PROMPT BLOCKED")
         })
         .await?;
@@ -513,7 +483,7 @@ fn a_prompt_typed_into_the_terminal_passes_the_scope_check() -> TestResult {
 
         app.terminal_leave(&attach).await;
         app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
+        eventually("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
@@ -557,12 +527,12 @@ fn the_session_reports_its_usage_through_the_status_line() -> TestResult {
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = new_task(&app, &sandbox, &user.id, "Usage from the session").await?;
-        wait_for("the status line", Duration::from_secs(30), || {
+        eventually("the status line", Duration::from_secs(30), || {
             screen_contains(&app, &id, "STATUS → sync git:(feat/")
         })
         .await?;
         let account = AccountId::parse("a-claude")?;
-        wait_for("the usage reading", Duration::from_secs(10), || async {
+        eventually("the usage reading", Duration::from_secs(10), || async {
             app.deps
                 .store
                 .account(&account)
@@ -580,7 +550,7 @@ fn the_session_reports_its_usage_through_the_status_line() -> TestResult {
         assert_eq!(view.secondary.and_then(|w| w.used_percent), Some(12.0));
         assert!(view.observed_at.is_some());
         app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
+        eventually("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
@@ -639,7 +609,7 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
         let (sandbox, user) = seed(&app, &data).await?;
         let (id, ctx, attach) = ready(&app, &sandbox, &user, "Nested claude").await?;
         keys(&app, &ctx, &attach, b"first turn\r").await?;
-        wait_for("the echo", Duration::from_secs(15), || {
+        eventually("the echo", Duration::from_secs(15), || {
             screen_contains(&app, &id, "ECHO: first turn")
         })
         .await?;
@@ -651,7 +621,7 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
             .harness
             .claude_transcript(&home, &worktree, &original);
         let project = transcript.parent().ok_or("project dir")?.to_path_buf();
-        wait_for("the watched session", Duration::from_secs(10), || async {
+        eventually("the watched session", Duration::from_secs(10), || async {
             watched_session(&app, &ctx, &id).await.as_deref() == Some(original.as_str())
         })
         .await?;
@@ -671,7 +641,7 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
         )?;
         // More than one drift period (5 s) of watcher rounds (1 s each) after the file.
         let rounds = app.runtime(&id).transcript_rounds();
-        wait_for("seven watcher rounds", Duration::from_secs(20), || async {
+        eventually("seven watcher rounds", Duration::from_secs(20), || async {
             app.runtime(&id).transcript_rounds() >= rounds + 7
         })
         .await?;
@@ -695,23 +665,23 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
             format!("/clear {cleared}\r").as_bytes(),
         )
         .await?;
-        wait_for("the clear", Duration::from_secs(15), || {
+        eventually("the clear", Duration::from_secs(15), || {
             screen_contains(&app, &id, "CLEARED session=")
         })
         .await?;
         keys(&app, &ctx, &attach, b"after clear\r").await?;
-        wait_for("the echo after the clear", Duration::from_secs(15), || {
+        eventually("the echo after the clear", Duration::from_secs(15), || {
             screen_contains(&app, &id, "ECHO: after clear")
         })
         .await?;
-        wait_for("the adopted session", Duration::from_secs(20), || async {
+        eventually("the adopted session", Duration::from_secs(20), || async {
             attempt_session(&app, &id).await.as_deref() == Some(cleared)
                 && lineage(&app, &id)
                     .await
                     .is_ok_and(|l| l == [original.clone(), cleared.to_owned()])
         })
         .await?;
-        wait_for(
+        eventually(
             "the watched session after the clear",
             Duration::from_secs(10),
             || async { watched_session(&app, &ctx, &id).await.as_deref() == Some(cleared) },
@@ -726,7 +696,7 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
             format!("/clear {original}\r").as_bytes(),
         )
         .await?;
-        wait_for(
+        eventually(
             "the session adopted again",
             Duration::from_secs(20),
             || async {
@@ -744,7 +714,7 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
             "same attempt, no respawn"
         );
         app.stop_task_now(&id).await?;
-        wait_for("the stop", Duration::from_secs(30), || async {
+        eventually("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;

@@ -3,9 +3,9 @@
 //! §7.5, §8; AC-DSC-3, AC-COM-2, AC-COM-4, AC-GIT-3).
 
 use crate::support;
+use crate::support::git;
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -32,21 +32,6 @@ use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 const TOKEN: &str = "task-token-for-tests-0123456789abcdef";
-
-fn git(dir: &Path, args: &[&str]) -> TestResult {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .output()?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
-    }
-    Ok(())
-}
 
 struct Fixture {
     h: Harness,
@@ -2950,7 +2935,7 @@ async fn codex_goal_stop_continues_the_325_shape_and_a_red_pr_alone() -> TestRes
         .tool_steps_set(&ctx, &json!({"steps": steps}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
     red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
     told_red_run(&f, "red-at-head")?;
     let hold = f.h.github.hold_checks();
@@ -3001,7 +2986,7 @@ async fn codex_goal_stop_ends_once_its_head_moved_past_the_red_run() -> TestResu
         .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
     told_red_run(&f, "red-earlier-head")?;
     red_ordinary_run(
         &f,
@@ -3040,7 +3025,7 @@ async fn codex_goal_stop_leaves_an_untold_failure_uncharged() -> TestResult {
         .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
     told_red_run(&f, "an-older-run")?;
     red_ordinary_run(&f, "untold-red-at-head", head.trim(), 10).await?;
     busy_sandbox(&f).await?;
@@ -3078,7 +3063,7 @@ async fn codex_goal_stop_finds_its_red_run_in_a_busy_sandbox() -> TestResult {
         .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
     told_red_run(&f, "red-at-head")?;
     red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
     busy_sandbox(&f).await?;
@@ -3101,7 +3086,7 @@ async fn codex_goal_stop_yields_to_a_newer_run_of_its_pr_elsewhere() -> TestResu
         .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
     told_red_run(&f, "red-at-head")?;
     red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
     super::delivery::insert_ci_attempt(
@@ -3131,17 +3116,17 @@ async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestRe
         .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
     let head = head.trim();
     told_red_run(&f, "red-at-head")?;
     red_ordinary_run(&f, "red-at-head", head, 10).await?;
     let branch = ctx.task.branch.clone().ok_or("branch")?;
-    crate::pr_watch::git(
+    crate::support::git(
         &f.worktree,
         &["commit", "-q", "--allow-empty", "-m", "updated elsewhere"],
     )?;
-    let pushed = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
-    crate::pr_watch::git(
+    let pushed = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    crate::support::git(
         &f.worktree,
         &[
             "update-ref",
@@ -3149,7 +3134,7 @@ async fn codex_goal_stop_yields_to_a_pushed_head_past_its_red_commit() -> TestRe
             pushed.trim(),
         ],
     )?;
-    crate::pr_watch::git(&f.worktree, &["reset", "-q", "--hard", head])?;
+    crate::support::git(&f.worktree, &["reset", "-q", "--hard", head])?;
     let stop = stop_of(&f, Agent::Codex).await?;
     assert!(stop["decision"].is_null(), "{stop}");
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
@@ -3168,7 +3153,7 @@ async fn codex_goal_stop_ends_after_its_red_pr_merged() -> TestResult {
         .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
         .await?;
     install_compatibility_pull(&f).await?;
-    let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+    let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
     told_red_run(&f, "red-at-head")?;
     red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
     f.h.app
@@ -3202,7 +3187,7 @@ async fn a_red_pr_continues_no_other_harnesss_finished_goal() -> TestResult {
             .tool_step_update(&ctx, &json!({"ordinal": 1, "status": "done"}))
             .await?;
         install_compatibility_pull(&f).await?;
-        let head = crate::pr_watch::git(&f.worktree, &["rev-parse", "HEAD"])?;
+        let head = crate::support::git(&f.worktree, &["rev-parse", "HEAD"])?;
         told_red_run(&f, "red-at-head")?;
         red_ordinary_run(&f, "red-at-head", head.trim(), 10).await?;
         let stop = stop_of(&f, agent_kind).await?;
@@ -4296,7 +4281,7 @@ async fn attach_idle_run(f: &Fixture, app: &Arc<App>) -> TestResult {
     let runtime = app.runtime(&f.task);
     let before = runtime.transcript_rounds();
     app.reconcile().await?;
-    crate::first_message::wait_for(
+    crate::support::eventually(
         "idle run transcript replay",
         std::time::Duration::from_secs(15),
         || async { runtime.transcript_rounds() >= before + 2 },
@@ -4341,7 +4326,7 @@ async fn one_open_step_keeps_an_idle_session_through_digest_and_grace_parking() 
         .tool_step_update(&ctx, &json!({"ordinal":1,"status":"done"}))
         .await?;
     assert_eq!(f.h.app.park_idle_sessions_now().await, 1);
-    crate::first_message::wait_for(
+    crate::support::eventually(
         "the idle run to settle as parked",
         std::time::Duration::from_secs(15),
         || async {
