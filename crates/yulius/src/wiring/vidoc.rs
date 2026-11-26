@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::wiring::http::BodyError;
 use async_trait::async_trait;
 use serde_json::Value;
 use yulius_app::model::Secret;
@@ -48,10 +49,7 @@ impl VidocHttp {
     }
 
     async fn models(&self, key: &Secret) -> Result<(u16, Vec<u8>), VidocCheck> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::none())
+        let http = super::http::client_builder()
             .https_only(self.https_only)
             .timeout(DEADLINE)
             .build()
@@ -71,19 +69,13 @@ impl VidocHttp {
                 }
             })?;
         let status = response.status().as_u16();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|e| {
-            if e.is_timeout() {
-                VidocCheck::Timeout
-            } else {
-                VidocCheck::Unreachable
-            }
-        })? {
-            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(VidocCheck::Invalid);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = super::http::read_bounded(&mut response, MAX_RESPONSE_BYTES)
+            .await
+            .map_err(|e| match e {
+                BodyError::Read(e) if e.is_timeout() => VidocCheck::Timeout,
+                BodyError::Read(_) => VidocCheck::Unreachable,
+                BodyError::TooLarge(_) => VidocCheck::Invalid,
+            })?;
         Ok((status, bytes))
     }
 }

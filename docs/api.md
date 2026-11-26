@@ -765,8 +765,9 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   `pr_open`→`none`). `env_done` carries the environment in `environment`. `blocked` lists the
   actions of the current stage that are refused now, with the domain's reason.
 - **Spec.** The spec is read from the task worktree at the registered `spec_path`; if none is
-  registered, the first Markdown file under the project's specs directory (`yulius.toml`
-  `[docs]`, default `docs/specs`) whose frontmatter names the task is registered. Paths escaping
+  registered, the Markdown file under the project's specs directory (`yulius.toml`
+  `[docs]`, default `docs/specs`) whose frontmatter names the task is registered: the one named
+  with the task's branch slug first, else the first by name. Paths escaping
   the worktree (also via symlinks) and files over 256 KiB are refused.
 - **Open PR** pushes the task branch and opens the PR into the integration branch with the
   caller's token (the superadmin without a GitHub identity: the App's), so both are theirs on

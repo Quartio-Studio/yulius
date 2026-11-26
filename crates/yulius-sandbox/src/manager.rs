@@ -45,6 +45,11 @@ use crate::cgroup::{Delegation, Limits, SandboxGroups};
 use crate::holder::{StatePaths, alive, read_json, write_json};
 use crate::usage::Usage;
 
+mod build;
+mod docker;
+
+pub use crate::system_layer::{DOCKERD_PATHS, own_engine, system_file_text, system_has_dockerd};
+
 /// Bound on starting a holder.
 pub const START_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a CI job's end waits for its last process to leave the job's group (SPEC-504).
@@ -100,155 +105,6 @@ pub const DOCKER_NO_CGROUP: &str = "the sandbox's cgroup could not be prepared (
 /// Why: the executable could be rewritten by an engine (ADR-0151).
 pub const DOCKER_WRITABLE_EXE: &str = "the `yulius` executable is owned or writable by the \
     service user, which an engine could rewrite; an operator installs it owned by root, mode 755";
-
-/// Where a system layer has `dockerd` (`docker-ce` puts it in `usr/bin`, `docker.io` in
-/// `usr/sbin`; `usr/local/sbin` comes first on the engine's `PATH`).
-pub const DOCKERD_PATHS: [&str; 4] = [
-    "usr/local/sbin/dockerd",
-    "usr/local/bin/dockerd",
-    "usr/sbin/dockerd",
-    "usr/bin/dockerd",
-];
-
-/// Whether the system a sandbox's engine runs has `dockerd` (SPEC-199 DSY-002): the sandbox's
-/// overlay `upper` layer decides where it has an entry, else its `base`. The upper layer is the
-/// sandbox's to write, so it is walked from one directory descriptor to the next without
-/// following links (no path is looked up twice): a link at `dockerd` counts (it resolves inside
-/// the sandbox), and anything else over a path (a whiteout, a directory, a link over a parent)
-/// hides the base's.
-#[must_use]
-pub fn system_has_dockerd(base: &Path, upper: &Path) -> bool {
-    DOCKERD_PATHS
-        .iter()
-        .any(|path| upper_has(upper, path).unwrap_or_else(|| base.join(path).is_file()))
-}
-
-/// The `dockerd` a sandbox's engine runs when Docker installed in the sandbox shadows its
-/// base's (SPEC-203 HST-017): the first of [`DOCKERD_PATHS`] in the merged system comes from the
-/// upper layer, at another path than the base's own (Ubuntu's `docker.io` in `usr/sbin` over
-/// `docker-ce` in `usr/bin`). `None` when the base's runs, the base has none, or the sandbox
-/// reinstalled Docker at the base's path.
-#[must_use]
-pub fn own_engine(base: &Path, upper: &Path) -> Option<&'static str> {
-    let base_first = DOCKERD_PATHS
-        .iter()
-        .find(|path| base.join(path).is_file())?;
-    for path in DOCKERD_PATHS {
-        match upper_has(upper, path) {
-            Some(true) => return (path != *base_first).then_some(path),
-            Some(false) => {}
-            None if base.join(path).is_file() => return None,
-            None => {}
-        }
-    }
-    None
-}
-
-/// What an overlay upper layer says about the file at `relative`: `Some(true)` it provides one,
-/// `Some(false)` it hides the lower one, `None` it has no entry on the way. Never follows a link.
-#[cfg(target_os = "linux")]
-fn upper_has(upper: &Path, relative: &str) -> Option<bool> {
-    use rustix::fs::{AtFlags, FileType, Mode, OFlags, openat, statat};
-    use rustix::io::Errno;
-    let walk = OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let mut dir = openat(rustix::fs::CWD, upper, walk, Mode::empty()).ok()?;
-    let mut parts = relative.split('/').peekable();
-    while let Some(part) = parts.next() {
-        if parts.peek().is_none() {
-            return match statat(&dir, part, AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(stat) => Some(matches!(
-                    FileType::from_raw_mode(stat.st_mode),
-                    FileType::RegularFile | FileType::Symlink
-                )),
-                Err(_) => None,
-            };
-        }
-        dir = match openat(&dir, part, walk, Mode::empty()) {
-            Ok(next) => next,
-            // A link or a file (a whiteout too) over the directory hides the lower one.
-            Err(Errno::LOOP | Errno::NOTDIR) => return Some(false),
-            Err(_) => return None,
-        };
-    }
-    None
-}
-
-/// Sandboxes are Linux only: elsewhere the base decides.
-#[cfg(not(target_os = "linux"))]
-fn upper_has(_upper: &Path, _relative: &str) -> Option<bool> {
-    None
-}
-
-/// The most a sandbox's `/etc/passwd` or `/etc/group` may hold to be read.
-const MAX_SYSTEM_FILE_BYTES: u64 = 1 << 20;
-
-/// The text of `etc/<name>` of a sandbox's system (ADR-0315): its overlay `upper` layer's file
-/// where that layer has one, else its `base`'s. The upper layer is the sandbox's to write (root
-/// in it owns `/etc`), so it is walked from one handle to the next without following a link,
-/// the file is opened without following a link or waiting, and only a regular file of at most
-/// 1 MiB is read. Anything else at the name or over `etc` (a link, which
-/// would resolve inside the sandbox and not on the host; a whiteout; a larger file) gives
-/// nothing, as it hides the base's.
-#[must_use]
-pub fn system_file_text(base: &Path, upper: &Path, name: &str) -> Option<String> {
-    let in_base = || bounded_text(std::fs::File::open(base.join("etc").join(name)).ok()?);
-    match upper_file(upper, name) {
-        UpperFile::Regular(file) => bounded_text(file),
-        UpperFile::Hidden => None,
-        UpperFile::Absent => in_base(),
-    }
-}
-
-/// What a sandbox's upper layer holds at `etc/<name>`.
-enum UpperFile {
-    /// A regular file, opened.
-    Regular(std::fs::File),
-    /// Something else there, or over `etc`: the base's file does not show.
-    Hidden,
-    /// No entry: the base's file shows.
-    Absent,
-}
-
-fn upper_file(upper: &Path, name: &str) -> UpperFile {
-    use nix::errno::Errno;
-    use nix::fcntl::{OFlag, open, openat};
-    use nix::sys::stat::Mode;
-    let walk = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    let Ok(root) = open(upper, walk, Mode::empty()) else {
-        return UpperFile::Absent;
-    };
-    let etc = match openat(&root, "etc", walk, Mode::empty()) {
-        Ok(etc) => etc,
-        Err(Errno::ENOENT) => return UpperFile::Absent,
-        Err(_) => return UpperFile::Hidden,
-    };
-    let read = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
-    match openat(&etc, name, read, Mode::empty()) {
-        Ok(fd) => {
-            let file = std::fs::File::from(fd);
-            if file.metadata().is_ok_and(|meta| meta.is_file()) {
-                UpperFile::Regular(file)
-            } else {
-                UpperFile::Hidden
-            }
-        }
-        Err(Errno::ENOENT) => UpperFile::Absent,
-        Err(_) => UpperFile::Hidden,
-    }
-}
-
-/// The text of `file` when it is UTF-8 of at most [`MAX_SYSTEM_FILE_BYTES`].
-fn bounded_text(file: std::fs::File) -> Option<String> {
-    use std::io::Read as _;
-    let mut bytes = Vec::new();
-    file.take(MAX_SYSTEM_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SYSTEM_FILE_BYTES {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
-}
 
 /// Idle handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,9 +239,9 @@ impl Live {
         self.front.as_ref().map_or(0, |f| f.pid)
     }
 
-    /// Whether an engine may run (its own front's, or a SPEC-187 holder's).
+    /// Whether its front may run an engine.
     fn serves_engine(&self) -> bool {
-        self.record.engine || self.front.as_ref().is_some_and(|f| f.mode != "refuse")
+        self.front.as_ref().is_some_and(|f| f.mode != "refuse")
     }
 }
 
@@ -626,72 +482,6 @@ impl Manager {
             .join(path_name(sandbox))
     }
 
-    /// Why sandboxes get no Docker engine (SPEC-196 DKL-005), `None` when they may (each one
-    /// that has `dockerd` in its own system, SPEC-199): the setting, the cgroup delegation, and a
-    /// `yulius` executable the sandbox's root neither owns nor may write through its group or as
-    /// anyone (the engine's read-only binds are not locked, so an engine could remount and
-    /// rewrite it; ADR-0151).
-    #[must_use]
-    pub fn docker_unavailable(&self) -> Option<String> {
-        use std::os::unix::fs::MetadataExt as _;
-        if let Err(reason) = &self.config.docker {
-            return Some(reason.clone());
-        }
-        if self.config.delegation.is_none() {
-            return Some(DOCKER_NO_DELEGATION.to_owned());
-        }
-        // Owned by the sandbox's root, or writable by its group (the service group) or anyone.
-        let exe_writable = std::fs::metadata(&self.config.exe)
-            .is_ok_and(|meta| meta.uid() == self.config.uid.host || meta.mode() & 0o022 != 0);
-        exe_writable.then(|| DOCKER_WRITABLE_EXE.to_owned())
-    }
-
-    /// Whether sandboxes get a Docker engine ([`Manager::docker_unavailable`] says why not).
-    #[must_use]
-    pub fn docker(&self) -> bool {
-        self.docker_unavailable().is_none()
-    }
-
-    /// Whether `sandbox`'s runs reach a Docker engine (SPEC-187 DKR-010). Every live holder gets
-    /// a front whatever its age (SPEC-196 DKL-003), so this is the host's answer.
-    pub async fn docker_for(&self, _sandbox: &str) -> bool {
-        self.docker()
-    }
-
-    /// How `request`'s front serves its socket beside the holder of `record` (ADR-0158). Asked
-    /// at every tick, it only reads paths: the sandbox's groups are prepared when an engine front
-    /// starts ([`Manager::start_front`]).
-    fn front_mode(&self, request: &SandboxRequest, record: &HolderRecord) -> DockerServe {
-        if let Some(reason) = self.docker_unavailable() {
-            return DockerServe::Refuse { reason };
-        }
-        if record.engine {
-            let state = StatePaths::new(self.state_dir(&request.id));
-            return DockerServe::Relay {
-                socket: state.engine_socket().to_string_lossy().into_owned(),
-            };
-        }
-        let base = self.bases.path(&record.base_id);
-        if !system_has_dockerd(&base, &self.sysroot(&request.id).join("upper")) {
-            return DockerServe::Refuse {
-                reason: DOCKER_NO_DOCKERD.to_owned(),
-            };
-        }
-        match self.group_paths(&request.id) {
-            Some(groups) => DockerServe::Engine {
-                engine: self.engine_spec(request, &groups.engine_root),
-            },
-            None => DockerServe::Refuse {
-                reason: DOCKER_NO_DELEGATION.to_owned(),
-            },
-        }
-    }
-
-    /// The paths of `sandbox`'s groups, without preparing them; `None` without delegation.
-    fn group_paths(&self, sandbox: &str) -> Option<SandboxGroups> {
-        Some(self.config.delegation.as_ref()?.sandbox_paths(sandbox))
-    }
-
     /// The request of a sandbox known only from its holder's files (an adopted holder before
     /// any run asked for it): its host name and ports from `holder.json`.
     fn adopted_request(&self, sandbox: &str) -> SandboxRequest {
@@ -739,584 +529,6 @@ impl Manager {
             Vec::new()
         } else {
             self.config.forwards.keys().copied().collect()
-        }
-    }
-
-    /// Forwarded ports the front also serves on the engine's bridge: those of a holder whose
-    /// forwards listen on loopback only (started before engines; SPEC-187 specs carry `engine`,
-    /// newer ones `containers`).
-    fn bridge_forwards(&self, sandbox: &str) -> Vec<u16> {
-        // A production holder forwards nothing (SPEC-279 PDE-001).
-        if production_sandbox(sandbox).is_some() {
-            return Vec::new();
-        }
-        let spec = std::fs::read(StatePaths::new(self.state_dir(sandbox)).spec())
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-        let containers = spec
-            .as_ref()
-            .is_some_and(|s| s["containers"].as_bool() == Some(true) || !s["engine"].is_null());
-        if containers {
-            Vec::new()
-        } else {
-            self.config.forwards.keys().copied().collect()
-        }
-    }
-
-    /// Keeps `sandbox`'s front serving in the mode it should (SPEC-196 DKL-003): started when the
-    /// holder has none or it ended, replaced when the mode changed. An engine's other settings
-    /// change only with a new holder, so a running engine is never cut for them; but a front
-    /// whose engine group is gone (the sandbox's groups moved to another unit, SPEC-458 LAY-005)
-    /// is replaced, since it could start no engine again, and so is a quiet one whose engine
-    /// would start without the masks of SPEC-652.
-    async fn keep_front(&self, sandbox: &str, state: &mut SandboxState) {
-        let request = state
-            .request
-            .clone()
-            .unwrap_or_else(|| self.adopted_request(sandbox));
-        let Some(live) = state.live.as_mut() else {
-            return;
-        };
-        let net_ns = live.record.net_ns;
-        let current = live
-            .front
-            .as_ref()
-            .map(|front| (front, crate::docker_front::is_front(front.pid, net_ns)));
-        let wanted = self.front_mode(&request, &live.record);
-        // Only an engine front that runs is asked for its group: one file read per tick.
-        let engine_front = current.filter(|(front, running)| *running && front.mode == "engine");
-        let paths = StatePaths::new(self.state_dir(sandbox));
-        let moved = engine_front.is_some()
-            && engine_group_moved(
-                served_engine_group(&paths).as_deref(),
-                &wanted,
-                Path::exists,
-            );
-        // An engine front from before the masks is replaced as a moved one is, once it is quiet
-        // (no engine, no connection, read live; SPEC-652 MEM-010, review rounds 2 and 3).
-        let moved = moved
-            || engine_front.is_some_and(|(front, _)| {
-                matches!(wanted, DockerServe::Engine { .. })
-                    && engine_unguarded(served_engine_command(&paths).as_deref())
-                    && crate::front_repair::quiet(
-                        crate::front_gate::read_state(&paths.docker_state(), front.pid).as_ref(),
-                        front.pid,
-                        &paths.docker_socket(),
-                    )
-            });
-        let serve = match front_action(current, wanted, moved) {
-            FrontAction::Keep => {
-                // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
-                // from an older binary does not make it again (SPEC-201 DBX-006); a SPEC-187
-                // holder's own engine, behind a relay front, uses the same leaf.
-                if live
-                    .front
-                    .as_ref()
-                    .is_some_and(|f| f.mode == "engine" || f.mode == "relay")
-                    && let Some(groups) = self.group_paths(sandbox)
-                {
-                    match crate::cgroup::restore_leaf(&groups.engine_root) {
-                        Ok(true) => tracing::info!(sandbox, "recreated the engine's cgroup"),
-                        Ok(false) => {}
-                        Err(error) => {
-                            tracing::warn!(sandbox, %error, "cannot recreate the engine's cgroup");
-                        }
-                    }
-                }
-                return;
-            }
-            FrontAction::Start(serve) => {
-                if live.front.is_some() {
-                    tracing::warn!(
-                        sandbox,
-                        "the sandbox's Docker front ended; starting it again"
-                    );
-                }
-                serve
-            }
-            FrontAction::Replace(serve) => {
-                tracing::info!(
-                    sandbox,
-                    to = serve.kind(),
-                    "replacing the sandbox's Docker front"
-                );
-                let paths = StatePaths::new(self.state_dir(sandbox));
-                let _ = tokio::task::spawn_blocking(move || {
-                    crate::docker_front::stop(&paths, net_ns);
-                })
-                .await;
-                serve
-            }
-        };
-        live.front = None;
-        let forwards = self.bridge_forwards(sandbox);
-        match self
-            .start_front(sandbox, &live.record, serve, forwards)
-            .await
-        {
-            Ok(front) => {
-                tracing::info!(sandbox, mode = %front.mode, pid = front.pid, "sandbox Docker front serving");
-                live.front_watch.started(front.pid);
-                // A new front starts its own count toward a repair (review round 2 of slice 3).
-                live.repair = crate::front_repair::RepairWatch::default();
-                if let Some(why) = live.restart_pending.take() {
-                    self.docker_restarts.fetch_add(1, Ordering::Relaxed);
-                    self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
-                    tracing::warn!(
-                        sandbox,
-                        why = why.says(),
-                        "restarted the sandbox's Docker front, which started at a later tick"
-                    );
-                }
-                live.front = Some(front);
-            }
-            Err(error) => {
-                tracing::warn!(sandbox, %error, "cannot start the sandbox's Docker front");
-            }
-        }
-    }
-
-    /// Journals what grew in the state of `sandbox`'s front since the last tick, each kind at most
-    /// once a minute (SPEC-494 DFJ-005), and reports a full or refusing front as the sandbox's
-    /// Docker trouble (DFJ-006). A state file of an earlier front is ignored.
-    /// Returns the state read, for the repair.
-    fn watch_front(
-        &self,
-        sandbox: &str,
-        state: &mut SandboxState,
-    ) -> Option<crate::front_repair::Reading> {
-        let live = state.live.as_mut()?;
-        let front = live.front.as_ref()?;
-        let paths = StatePaths::new(self.state_dir(sandbox));
-        let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid)?;
-        let grown = live.front_watch.observe(&seen, Instant::now());
-        let gave_way = live.front_watch.new_gave_way(&seen);
-        if gave_way > 0 {
-            self.docker_event(sandbox, "gave_way", gave_way, String::new());
-        }
-        // A production holder's front (SPEC-279) serves CD deploys, which fail and say so; its
-        // name is no sandbox the panel knows, so it is journaled only.
-        let jammed = if production_sandbox(sandbox).is_none() {
-            live.front_watch.report(&seen, sandbox, &self.config.health)
-        } else {
-            let jammed = live.front_watch.jammed(&seen);
-            live.front_watch.counted(&seen);
-            jammed
-        };
-        for grew in grown {
-            tracing::warn!(
-                sandbox,
-                new = grew.new,
-                total = grew.total,
-                held = seen.held,
-                max = seen.max,
-                "the sandbox's Docker front: {}",
-                grew.what
-            );
-        }
-        Some(crate::front_repair::Reading {
-            jammed,
-            engine_running: seen.engine_running,
-            engine_busy: seen.engine_busy,
-            held: seen.held,
-        })
-    }
-
-    /// Restarts `sandbox`'s front when a repair is due and the moment is right (SPEC-494
-    /// DFJ-008, [`crate::front_repair`]), after a tick's `reading` of its state. The engine is
-    /// pinged through the front only beside a client ([`crate::front_repair::should_ping`]). A
-    /// production holder's front (SPEC-279) is journaled only: its one user is a production CD
-    /// run, which a restart would cut.
-    async fn repair_front(
-        &self,
-        sandbox: &str,
-        state: &mut SandboxState,
-        reading: Option<crate::front_repair::Reading>,
-    ) {
-        let Some(reading) = reading else {
-            // No state of this front (none written yet, or another front's): its count starts
-            // over, so a successor is not restarted for its predecessor's jam.
-            if let Some(live) = state.live.as_mut() {
-                live.repair = crate::front_repair::RepairWatch::default();
-            }
-            return;
-        };
-        if production_sandbox(sandbox).is_some() {
-            return;
-        }
-        let ping = if crate::front_repair::should_ping(&reading) {
-            let socket = StatePaths::new(self.state_dir(sandbox)).docker_socket();
-            crate::front_repair::ping(&socket).await
-        } else {
-            None
-        };
-        let ci_jobs = self
-            .config
-            .delegation
-            .as_ref()
-            .map_or(0, |delegation| delegation.ci_jobs_of(sandbox));
-        let Some(live) = state.live.as_mut() else {
-            return;
-        };
-        let now = Instant::now();
-        live.repair.observe(reading.jammed, ping, now);
-        if let Some(why) = live.repair.decide(ci_jobs, now) {
-            let _ = self.restart_front(sandbox, state, why).await;
-        }
-    }
-
-    /// Replaces `sandbox`'s front when it runs another build than this server (it was kept
-    /// across an update) and is quiet: no connection held, no engine running (SPEC-494
-    /// DFJ-010). A busy one is kept, said once a day.
-    async fn replace_outdated_front(&self, sandbox: &str, state: &mut SandboxState) {
-        let Some(live) = state.live.as_mut() else {
-            return;
-        };
-        let Some(front) = live.front.clone() else {
-            return;
-        };
-        if crate::front_repair::runs_another_build(front.pid, &self.config.exe) != Some(true) {
-            return;
-        }
-        let paths = StatePaths::new(self.state_dir(sandbox));
-        let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid);
-        if !crate::front_repair::quiet(seen.as_ref(), front.pid, &paths.docker_socket()) {
-            if live
-                .outdated_said
-                .is_none_or(|at| at.elapsed() >= crate::front_repair::STALE_SAID_EVERY)
-            {
-                live.outdated_said = Some(Instant::now());
-                tracing::info!(
-                    sandbox,
-                    pid = front.pid,
-                    "the sandbox's Docker front runs an earlier build; it is replaced once it is quiet"
-                );
-            }
-            return;
-        }
-        let _ = self
-            .restart_front(sandbox, state, crate::front_repair::Why::Outdated)
-            .await;
-    }
-
-    /// Stops `sandbox`'s front (and its engine: running containers stop, volumes stay) and
-    /// starts a new one at once, as was done by hand on 2026-11-15 (SPEC-494 DFJ-008).
-    ///
-    /// # Errors
-    /// No live holder, or no front could be started again (the next tick tries again).
-    async fn restart_front(
-        &self,
-        sandbox: &str,
-        state: &mut SandboxState,
-        why: crate::front_repair::Why,
-    ) -> Result<(), String> {
-        let live = state
-            .live
-            .as_mut()
-            .ok_or("the sandbox has no running holder: its next run starts Docker afresh")?;
-        let net_ns = live.record.net_ns;
-        // Only a front that was stopped makes a restart: one that never ran is merely started.
-        let stopped = live.front.is_some();
-        let paths = StatePaths::new(self.state_dir(sandbox));
-        let _ = tokio::task::spawn_blocking(move || {
-            crate::docker_front::stop(&paths, net_ns);
-        })
-        .await;
-        live.front = None;
-        live.repair = crate::front_repair::RepairWatch::default();
-        // This restart takes over one still pending: one new front, one count (review round 3).
-        let stopped = stopped || live.restart_pending.take().is_some();
-        self.keep_front(sandbox, state).await;
-        if !stopped {
-            // Nothing was stopped: a front that starts is no restart.
-            return if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
-                Ok(())
-            } else {
-                Err("the sandbox's Docker front did not start; the upkeep tries again".into())
-            };
-        }
-        if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
-            self.docker_restarts.fetch_add(1, Ordering::Relaxed);
-            self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
-            if why == crate::front_repair::Why::Outdated {
-                // Quiet when read: no engine ran; besides the relay front's limit (DFJ-010), only a
-                // Docker call that came between that read and the new front's `ready` failed at
-                // once (its socket missing or refused, or cut once it had connected, accepted or
-                // still waiting) and can be run again (DFJ-010).
-                tracing::info!(
-                    sandbox,
-                    why = why.says(),
-                    "replaced the sandbox's Docker front with this build's"
-                );
-            } else {
-                tracing::warn!(
-                    sandbox,
-                    why = why.says(),
-                    "restarted the sandbox's Docker front: an engine it ran stopped with it (containers stopped, volumes stay) and starts at its next call"
-                );
-            }
-            Ok(())
-        } else {
-            if let Some(live) = state.live.as_mut() {
-                live.restart_pending = Some(why);
-            }
-            tracing::warn!(
-                sandbox,
-                why = why.says(),
-                "stopped the sandbox's Docker front, which did not start again; the upkeep tries again"
-            );
-            Err("the sandbox's Docker front did not start again; the upkeep tries again".into())
-        }
-    }
-
-    /// Restarts `sandbox`'s Docker front and engine now (the Superagent's
-    /// `docker_restart`, SPEC-494 DFJ-009).
-    ///
-    /// # Errors
-    /// Why it could not: no live holder, or the new front did not start.
-    pub async fn restart_docker(&self, sandbox: &str) -> Result<(), String> {
-        let entry = self.entry(sandbox);
-        let mut state = entry.lock().await;
-        self.restart_front(sandbox, &mut state, crate::front_repair::Why::Asked)
-            .await
-    }
-
-    /// Keeps an event for the instance's measures, dropping the oldest past the bound.
-    fn docker_event(&self, sandbox: &str, kind: &'static str, count: u64, detail: String) {
-        let mut events = lock(&self.docker_events);
-        if events.len() >= DOCKER_EVENTS_MAX {
-            events.pop_front();
-        }
-        events.push_back(DockerEvent {
-            sandbox: sandbox.to_owned(),
-            kind,
-            count,
-            detail,
-        });
-    }
-
-    /// The front events kept since the last call, oldest first.
-    pub fn take_docker_events(&self) -> Vec<DockerEvent> {
-        lock(&self.docker_events).drain(..).collect()
-    }
-
-    /// Fronts restarted since the server started, by repair or on request.
-    #[must_use]
-    pub fn docker_restarts(&self) -> u64 {
-        self.docker_restarts.load(Ordering::Relaxed)
-    }
-
-    /// Starts `sandbox`'s front beside the holder of `record` and waits until it serves.
-    async fn start_front(
-        &self,
-        sandbox: &str,
-        record: &HolderRecord,
-        serve: DockerServe,
-        bridge_forwards: Vec<u16>,
-    ) -> Result<DockerFrontRecord, String> {
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-        use tokio::io::AsyncBufReadExt as _;
-        let paths = StatePaths::new(self.state_dir(sandbox));
-        std::fs::create_dir_all(paths.docker_dir()).map_err(|e| format!("docker/: {e}"))?;
-        // The sandbox's groups are prepared here, once per start: the engine's leaf must exist.
-        let groups = self.cgroup_of(sandbox);
-        let serve = match serve {
-            DockerServe::Engine { .. } if groups.is_none() => DockerServe::Refuse {
-                reason: DOCKER_NO_CGROUP.to_owned(),
-            },
-            serve => serve,
-        };
-        if matches!(serve, DockerServe::Engine { .. }) {
-            // A holder from before engines has no storage yet (review round 1).
-            let storage = self.sysroot(sandbox).join("docker");
-            std::fs::create_dir_all(&storage).map_err(|e| format!("{}: {e}", storage.display()))?;
-            // The production engine binds the production runs directory (SPEC-279 PDE-004).
-            if let Some(of) = production_sandbox(sandbox) {
-                let runs = production_runs_dir(&self.config.data_dir, of);
-                std::fs::create_dir_all(&runs).map_err(|e| format!("{}: {e}", runs.display()))?;
-            }
-        }
-        let _ =
-            std::fs::set_permissions(paths.docker_dir(), std::fs::Permissions::from_mode(0o755));
-        let reason = match &serve {
-            DockerServe::Refuse { reason } => Some(reason.clone()),
-            _ => None,
-        };
-        let mode = serve.kind();
-        let spec = DockerFrontSpec {
-            version: HOLDER_RECORD_VERSION,
-            sandbox: sandbox.to_owned(),
-            state_dir: paths.dir.to_string_lossy().into_owned(),
-            holder_pid: record.inner_pid,
-            user_ns: record.user_ns,
-            net_ns: record.net_ns,
-            mnt_ns: record.mnt_ns,
-            cgroup: groups.map(|g| g.system.to_string_lossy().into_owned()),
-            serve,
-            bridge_forwards,
-        };
-        spec.validate().map_err(|e| e.to_string())?;
-        write_json(&paths.docker_spec(), &spec).map_err(|e| e.to_string())?;
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(paths.docker_log())
-            .map_err(|e| format!("docker-front.log: {e}"))?;
-        // Detached like the holder: it outlives this server process.
-        let mut child = tokio::process::Command::new(&self.config.exe)
-            .args(["sandbox-host", "docker", "--spec"])
-            .arg(paths.docker_spec())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(log))
-            .process_group(0)
-            .kill_on_drop(false)
-            .spawn()
-            .map_err(|e| format!("sandbox-host docker: {e}"))?;
-        let stdout = child.stdout.take().ok_or("no stdout")?;
-        let line = tokio::time::timeout(
-            FRONT_START_TIMEOUT,
-            tokio::io::BufReader::new(stdout).lines().next_line(),
-        )
-        .await;
-        let line = match line {
-            Ok(Ok(Some(line))) => line,
-            Ok(_) => String::from("it exited"),
-            Err(_) => String::from("it did not report in time"),
-        };
-        if line.trim() != crate::docker_front::READY {
-            let _ = child.kill().await;
-            return Err(line.chars().take(2000).collect());
-        }
-        let pid = child.id().ok_or("the front exited")?;
-        // Reaped while this server runs; it keeps running when the server stops.
-        tokio::spawn(async move {
-            let _ = child.wait().await;
-        });
-        let front = DockerFrontRecord {
-            pid,
-            mode: mode.to_owned(),
-            reason,
-            started_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
-        };
-        write_json(&paths.docker_record(), &front).map_err(|e| e.to_string())?;
-        Ok(front)
-    }
-
-    /// Moves the Docker directory into `sandbox`'s runs that started without it (SPEC-196
-    /// DKL-004): their mount namespaces are planned here, and only those needing a bind go to
-    /// `yulius sandbox-host bind-docker`, at most [`BIND_TRIES`] times each.
-    async fn bind_docker_dirs(&self, sandbox: &str, state: &mut SandboxState) {
-        let Some(live) = state.live.as_mut() else {
-            return;
-        };
-        if live.front.is_none() {
-            return;
-        }
-        let (record, front) = (live.record.clone(), live.front_pid());
-        // Without delegation there is no engine, so no container to leave out.
-        let engine = self.group_paths(sandbox).map(|g| g.engine);
-        let known = live.bound.clone();
-        let planned = tokio::task::spawn_blocking(move || {
-            crate::docker_bind::run_namespaces(
-                record.net_ns,
-                &[record.inner_pid, front],
-                &[record.mnt_ns],
-                engine.as_deref(),
-            )
-            .into_iter()
-            .map(|(pid, mnt)| {
-                // Done with or given up: no need to read its mounts again.
-                let plan = if known.get(&mnt).is_some_and(|tries| *tries >= BIND_TRIES) {
-                    crate::docker_bind::Plan::NotARun
-                } else {
-                    std::fs::read_to_string(format!("/proc/{pid}/mountinfo"))
-                        .map_or(crate::docker_bind::Plan::NotARun, |t| {
-                            crate::docker_bind::plan(&t)
-                        })
-                };
-                (pid, mnt, plan)
-            })
-            .collect::<Vec<_>>()
-        })
-        .await
-        .unwrap_or_default();
-        let pids = bind_plan(&mut live.bound, &planned);
-        if pids.is_empty() {
-            return;
-        }
-        let paths = StatePaths::new(self.state_dir(sandbox));
-        let mut command = tokio::process::Command::new(&self.config.exe);
-        command
-            .args(["sandbox-host", "bind-docker", "--spec"])
-            .arg(paths.docker_spec());
-        for (pid, _) in &pids {
-            command.arg("--pid").arg(pid.to_string());
-        }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let output = match command.spawn() {
-            Ok(child) => tokio::time::timeout(BIND_TIMEOUT, child.wait_with_output()).await,
-            Err(error) => {
-                tracing::warn!(sandbox, %error, "cannot start bind-docker");
-                return;
-            }
-        };
-        let text = match output {
-            Ok(Ok(output)) => {
-                if !output.status.success() {
-                    tracing::warn!(sandbox, error = %String::from_utf8_lossy(&output.stderr).trim(), "bind-docker failed");
-                }
-                String::from_utf8_lossy(&output.stdout).into_owned()
-            }
-            _ => String::new(),
-        };
-        for line in text.lines() {
-            if line.starts_with("bound") {
-                tracing::info!(sandbox, %line, "gave a running run the sandbox's Docker directory");
-            } else if line.starts_with("failed") {
-                tracing::warn!(sandbox, %line, "cannot give a run the sandbox's Docker directory");
-            }
-        }
-        bind_record(&mut live.bound, &pids, &text);
-    }
-
-    /// How the holder of `request` starts its Docker engine, in `cgroup` (SPEC-187).
-    fn engine_spec(&self, request: &SandboxRequest, cgroup: &Path) -> EngineSpec {
-        let state = StatePaths::new(self.state_dir(&request.id));
-        let text = |path: &Path| path.to_string_lossy().into_owned();
-        let view = crate::engine::EngineView {
-            bwrap: text(&self.config.bwrap),
-            exe: text(&self.config.exe),
-            hostname: request.hostname.clone(),
-            state_dir: text(&state.dir),
-            system_root: text(&state.root()),
-            data_dir: text(&self.config.data_dir),
-            sandbox_dir: text(&request.dir),
-            storage: text(&self.sysroot(&request.id).join("docker")),
-            cgroup: text(cgroup),
-        };
-        let mut command = vec![
-            text(&self.config.exe),
-            "sandbox-exec".into(),
-            "--engine".into(),
-            "--cgroup".into(),
-            text(cgroup),
-            "--guard".into(),
-            serde_json::to_string(&crate::engine::engine_guard(&view)).unwrap_or_default(),
-            "--".into(),
-        ];
-        command.extend(crate::engine::bwrap_argv(&view));
-        EngineSpec {
-            command,
-            cgroup: text(cgroup),
-            idle_secs: self.config.idle.stop_after.as_secs().clamp(60, 86_400),
         }
     }
 
@@ -1816,7 +1028,6 @@ impl Manager {
             base = %record.base_id,
             holder = record.inner_pid,
             egress = record.slirp_pid.is_some(),
-            docker = record.engine,
             "sandbox holder started"
         );
         Ok(record)
@@ -1936,13 +1147,6 @@ impl Manager {
             guard.stale = Some(record);
             false
         }
-    }
-
-    /// The Docker front `sandbox`'s live holder has: its pid, mode and refusal reason.
-    pub async fn docker_front(&self, sandbox: &str) -> Option<DockerFrontRecord> {
-        let entry = self.entry(sandbox);
-        let state = entry.lock().await;
-        state.live.as_ref()?.front.clone()
     }
 
     /// Processes in `net_ns` other than `exclude` (the holder and its Docker front): the
@@ -2088,210 +1292,6 @@ impl Manager {
         });
     }
 
-    /// Prunes `sandbox`'s Docker engine when it runs, through its own control socket: build cache
-    /// and unused images (SPEC-187 DKR-006). The bytes credited are the engine's figure, at most
-    /// the engine storage last measured (0 when unmeasured or not among the largest consumers, so
-    /// the other caches are pruned as before): the engine controls its answer. Never through the sandbox's socket, which would
-    /// start a stopped engine and reset its idle time, keeping it and the holder up for as long
-    /// as the disk is under pressure. `None` without a live holder serving one, with the engine
-    /// stopped, or when it could not prune.
-    ///
-    /// The sandbox's running production engine is pruned the same way (SPEC-279 PDE-006),
-    /// credited up to the production files measured; the sum is returned.
-    pub async fn prune_engine(&self, sandbox: &str) -> Option<u64> {
-        let own = self.prune_one(sandbox, sandbox, "containers").await;
-        let production = match production_sandbox(sandbox) {
-            Some(_) => None,
-            None => {
-                let name = production_holder(sandbox);
-                // Only a production holder this server knows (no empty entry is made).
-                if lock(&self.sandboxes).contains_key(&name) {
-                    self.prune_one(&name, sandbox, "production").await
-                } else {
-                    None
-                }
-            }
-        };
-        match (own, production) {
-            (None, None) => None,
-            (own, production) => Some(own.unwrap_or(0).saturating_add(production.unwrap_or(0))),
-        }
-    }
-
-    /// The control socket of `sandbox`'s engine while its holder serves a running one.
-    async fn engine_socket(&self, sandbox: &str) -> Option<PathBuf> {
-        let entry = self.entry(sandbox);
-        let state = entry.lock().await;
-        if !state.live.as_ref()?.serves_engine() {
-            return None;
-        }
-        Some(
-            StatePaths::new(self.state_dir(sandbox))
-                .engine_control()
-                .join(yulius_contracts::sandbox::ENGINE_SOCKET),
-        )
-    }
-
-    /// What the networks of `sandbox`'s running engine take of its address pools (SPEC-497
-    /// HBA-003). `None` with no running engine or no answer (an engine stopped for idleness
-    /// refuses the connection: logged at debug, review round 1); never through the sandbox's
-    /// socket, which would start a stopped engine.
-    pub async fn engine_networks(&self, sandbox: &str) -> Option<crate::engine::Networks> {
-        let socket = self.engine_socket(sandbox).await?;
-        match crate::engine::networks(&socket).await {
-            Ok(networks) => Some(networks),
-            Err(error) => {
-                tracing::debug!(sandbox, %error, "cannot count the Docker engine's networks");
-                None
-            }
-        }
-    }
-
-    /// CI job `job` of `sandbox` ended (SPEC-504 CLB-004): its group goes (one that still holds
-    /// a process stays for the sweep), and the containers and networks labelled with it are
-    /// removed from the sandbox's running engine while its group holds no process. A stopped
-    /// engine is not started for it: the sweep takes them once it runs again.
-    pub async fn ci_job_ended(&self, sandbox: &str, job: &str) {
-        let Some(delegation) = self.config.delegation.as_ref() else {
-            return;
-        };
-        // Its ptyhost leaves the group a moment after it reported the job's end (review round 3).
-        let deadline = Instant::now() + JOB_EXIT_WAIT;
-        while delegation.ci_job_running(sandbox, job) == Some(true) && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        delegation.end_ci_job_group(sandbox, job);
-        if crate::cgroup::ci_job_group_name(job).is_none() {
-            return;
-        }
-        // Only while its group holds no process, asked for each container and network: the
-        // same job id may run again at once (a run queued again after a restart), and its new
-        // attempt's must stay (review round 2). A group that still holds one waits for the
-        // sweep.
-        let delegation = delegation.clone();
-        let name = sandbox.to_owned();
-        let ended = move |job: &str| delegation.ci_job_running(&name, job) == Some(false);
-        self.remove_ci_leftovers(
-            sandbox,
-            &crate::engine::Jobs::OneEnded(job, &ended),
-            "job-end",
-        )
-        .await;
-    }
-
-    /// Removes from `sandbox`'s running engine what CI jobs that ended left (SPEC-504 CLB-005):
-    /// the containers and networks labelled with a job whose group holds no process (gone or
-    /// empty; one that cannot be read counts as running), and the job groups emptied long ago.
-    /// Each upkeep pass, so first after a server starts.
-    pub async fn sweep_ci_leftovers(&self, sandbox: &str) {
-        let Some(delegation) = self.config.delegation.clone() else {
-            return;
-        };
-        let name = sandbox.to_owned();
-        let ended = move |job: &str| delegation.ci_job_running(&name, job) == Some(false);
-        self.remove_ci_leftovers(sandbox, &crate::engine::Jobs::Ended(&ended), "sweep")
-            .await;
-        if let Some(delegation) = self.config.delegation.clone() {
-            let sandbox = sandbox.to_owned();
-            let _ =
-                tokio::task::spawn_blocking(move || delegation.sweep_ci_job_groups(&sandbox)).await;
-        }
-    }
-
-    /// [`crate::engine::remove_ci_leftovers`] on `sandbox`'s running engine, recorded for the
-    /// instance's measures as found `when` (`job-end` or `sweep`).
-    async fn remove_ci_leftovers(&self, sandbox: &str, jobs: &crate::engine::Jobs<'_>, when: &str) {
-        let Some(socket) = self.engine_socket(sandbox).await else {
-            return;
-        };
-        let removal = crate::engine::remove_ci_leftovers(&socket, jobs).await;
-        let removed = removal.removed;
-        if !removed.is_empty() {
-            tracing::info!(
-                sandbox,
-                containers = removed.containers,
-                networks = removed.networks,
-                when,
-                "removed what CI jobs left in the sandbox's Docker engine"
-            );
-            // Counted also when a later call failed (review round 1).
-            self.docker_event(
-                sandbox,
-                "ci_leftovers",
-                u64::from(removed.containers),
-                format!("{} {} {when}", removed.containers, removed.networks),
-            );
-        }
-        if let Some(error) = removal.error {
-            // A stopped engine refuses its control socket at every pass: not worth a warning.
-            if removed.is_empty() {
-                tracing::debug!(sandbox, %error, when, "cannot remove CI jobs' leftovers now");
-            } else {
-                tracing::warn!(sandbox, %error, when, "removed only part of what CI jobs left");
-            }
-        }
-    }
-
-    /// Removes the networks of `sandbox`'s running engine that no container used for 10
-    /// minutes ([`crate::engine::prune_networks`]); how many.
-    pub async fn prune_engine_networks(&self, sandbox: &str) -> Option<u32> {
-        let socket = self.engine_socket(sandbox).await?;
-        match crate::engine::prune_networks(&socket).await {
-            Ok(removed) => {
-                if removed > 0 {
-                    tracing::info!(
-                        sandbox,
-                        removed,
-                        "pruned the Docker engine's unused networks"
-                    );
-                }
-                Some(removed)
-            }
-            Err(error) => {
-                tracing::debug!(sandbox, %error, "cannot prune the Docker engine's networks");
-                None
-            }
-        }
-    }
-
-    /// Prunes the running engine of the holder `name`, credited up to the consumer `label` of
-    /// `measured_in`'s last measurement.
-    async fn prune_one(&self, name: &str, measured_in: &str, label: &str) -> Option<u64> {
-        let socket = {
-            let entry = self.entry(name);
-            let state = entry.lock().await;
-            if !state.live.as_ref()?.serves_engine() {
-                return None;
-            }
-            StatePaths::new(self.state_dir(name))
-                .engine_control()
-                .join(yulius_contracts::sandbox::ENGINE_SOCKET)
-        };
-        let measured = {
-            let entry = self.entry(measured_in);
-            let state = entry.lock().await;
-            state.usage.as_ref().map_or(0, |(usage, _)| {
-                usage
-                    .largest
-                    .iter()
-                    .find(|(consumer, _)| consumer == label)
-                    .map_or(0, |(_, bytes)| *bytes)
-            })
-        };
-        let sandbox = name;
-        match crate::engine::prune(&socket).await {
-            Ok(reported) => {
-                let bytes = reported.min(measured);
-                tracing::info!(sandbox, freed = %human(bytes), "pruned the sandbox's Docker engine");
-                Some(bytes)
-            }
-            Err(error) => {
-                tracing::warn!(sandbox, %error, "cannot prune the sandbox's Docker engine");
-                None
-            }
-        }
-    }
-
     /// The refusal when the sandbox is over its quota. A reading older than [`QUOTA_RECHECK`]
     /// that says "over" is replaced by a fresh measurement first (space may have been freed).
     async fn quota_refusal(
@@ -2350,115 +1350,6 @@ impl Manager {
             let mut state = entry.lock().await;
             state.measuring = false;
             state.usage = Some((usage, Instant::now()));
-        });
-    }
-
-    fn maybe_build(self: &Arc<Self>, in_use: Vec<String>) {
-        if !self.config.auto_build || self.building.load(Ordering::SeqCst) {
-            return;
-        }
-        let current = self.bases.current();
-        let base_lacks_dockerd = current.as_ref().is_some_and(|base| {
-            crate::docker_status::has_dockerd(Path::new("/"))
-                && !crate::docker_status::has_dockerd(&self.bases.path(&base.id))
-        });
-        let fingerprint = {
-            let mut build = lock(&self.build);
-            let due = fingerprint_due(
-                build.checked.map(|at| at.elapsed()),
-                current.is_some(),
-                base_lacks_dockerd,
-            );
-            if !due {
-                return;
-            }
-            build.checked = Some(Instant::now());
-            crate::base::fingerprint(Path::new("/"), &self.config.sudo_shim)
-        };
-        let wanted = match &current {
-            None => true,
-            Some(base) if base.fingerprint == fingerprint => {
-                let mut build = lock(&self.build);
-                build.pending = None;
-                build.pending_at_ms = None;
-                false
-            }
-            Some(_) => {
-                let mut build = lock(&self.build);
-                match &build.pending {
-                    Some((seen, since)) if *seen == fingerprint => {
-                        since.elapsed() >= REBUILD_DEBOUNCE
-                    }
-                    _ => {
-                        build.pending = Some((fingerprint, Instant::now()));
-                        build.pending_at_ms = Some(epoch_ms());
-                        // Check again after the debounce instead of waiting a full interval.
-                        build.checked =
-                            Instant::now().checked_sub(FINGERPRINT_EVERY - REBUILD_DEBOUNCE);
-                        false
-                    }
-                }
-            }
-        };
-        if wanted {
-            self.spawn_build(in_use);
-        }
-    }
-
-    /// Starts a base build as a child process (when none runs).
-    pub fn spawn_build(self: &Arc<Self>, in_use: Vec<String>) {
-        if self.building.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        lock(&self.build).building_since_ms = Some(epoch_ms());
-        let started = Instant::now();
-        let manager = Arc::clone(self);
-        tokio::spawn(async move {
-            tracing::info!("building the sandbox base (a copy of the host system)");
-            let mut command = tokio::process::Command::new(&manager.config.exe);
-            command
-                .args(["sandbox-base", "build", "--data-dir"])
-                .arg(&manager.config.data_dir);
-            if !in_use.is_empty() {
-                command.arg("--keep").arg(in_use.join(","));
-            }
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .process_group(0)
-                .kill_on_drop(true);
-            let result = match command.spawn() {
-                Ok(child) => {
-                    match tokio::time::timeout(BUILD_TIMEOUT, child.wait_with_output()).await {
-                        Ok(Ok(output)) if output.status.success() => Ok(()),
-                        Ok(Ok(output)) => Err(String::from_utf8_lossy(&output.stderr)
-                            .trim()
-                            .chars()
-                            .take(2000)
-                            .collect()),
-                        Ok(Err(error)) => Err(error.to_string()),
-                        Err(_) => Err("the base build timed out".to_owned()),
-                    }
-                }
-                Err(error) => Err(error.to_string()),
-            };
-            match &result {
-                Ok(()) => {
-                    tracing::info!(base = ?manager.bases.current().map(|b| b.id), "sandbox base ready")
-                }
-                Err(error) => tracing::warn!(%error, "sandbox base build failed"),
-            }
-            let mut build = lock(&manager.build);
-            if result.is_ok() {
-                build.last_build = Some(started.elapsed());
-            }
-            build.last_error = result.err();
-            build.pending = None;
-            build.pending_at_ms = None;
-            build.building_since_ms = None;
-            drop(build);
-            manager.building.store(false, Ordering::SeqCst);
         });
     }
 
@@ -2548,17 +1439,6 @@ fn smoke_runs(sandbox: &str) -> bool {
     yulius_domain::leftovers::smoke_pid(sandbox).is_some_and(crate::holder::exists)
 }
 
-/// What [`Manager::keep_front`] does with a sandbox's front.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum FrontAction {
-    /// It serves as it should.
-    Keep,
-    /// None runs: start one.
-    Start(DockerServe),
-    /// One runs in another mode: stop it, then start this one.
-    Replace(DockerServe),
-}
-
 /// Whether [`Manager::tick`] stops a live holder: never while a run holds a lease; a retired
 /// sandbox's once it was retired for [`RETIRE_GRACE`], whatever else still runs in it (SPEC-206
 /// RMV-004); any other once nothing runs in it and it was idle for `stop_after` (a minute when
@@ -2577,131 +1457,6 @@ fn holder_stops(
                 && (idle_for >= stop_after || (superseded && idle_for >= Duration::from_secs(60)))))
 }
 
-/// The front decision (SPEC-196 DKL-003) from the current front (its record, whether it still
-/// runs) and the wanted mode. The wanted mode needs no cgroup write, so a failed one never cuts
-/// a running engine.
-///
-/// `moved` ([`engine_group_moved`]): the group an engine front starts its engine in is gone,
-/// because the sandbox's groups moved to another unit (SPEC-458 LAY-005). The move ended the
-/// engine, so replacing its front cuts nothing, and the next engine starts in the group of now.
-fn front_action(
-    current: Option<(&DockerFrontRecord, bool)>,
-    wanted: DockerServe,
-    moved: bool,
-) -> FrontAction {
-    let running = current
-        .filter(|(_, running)| *running)
-        .map(|(front, _)| front);
-    let reason = match &wanted {
-        DockerServe::Refuse { reason } => Some(reason),
-        _ => None,
-    };
-    match running {
-        Some(front) if moved && front.mode == "engine" && wanted.kind() == "engine" => {
-            FrontAction::Replace(wanted)
-        }
-        Some(front) if front.mode == wanted.kind() && front.reason.as_ref() == reason => {
-            FrontAction::Keep
-        }
-        // `dockerd` gone from the sandbox's system for a moment (a package swap) never cuts a
-        // running engine and its containers (SPEC-199); a new holder decides again.
-        Some(front) if front.mode == "engine" && reason.is_some_and(|r| r == DOCKER_NO_DOCKERD) => {
-            FrontAction::Keep
-        }
-        Some(_) => FrontAction::Replace(wanted),
-        None => FrontAction::Start(wanted),
-    }
-}
-
-/// The engine command of the front of `paths`, from the spec it was started with; `None` for a
-/// front that serves no engine of its own, or without a readable spec.
-fn served_engine_command(paths: &StatePaths) -> Option<Vec<String>> {
-    match read_json::<DockerFrontSpec>(&paths.docker_spec())
-        .ok()?
-        .serve
-    {
-        DockerServe::Engine { engine } => Some(engine.command),
-        _ => None,
-    }
-}
-
-/// Whether a front serves an engine started without the masks of the sandbox's harness folders:
-/// its command has no `--guard` (a front from before SPEC-652 reads its engine command once at
-/// its start). Such a front is replaced once it is quiet, so the next engine starts masked
-/// (MEM-010).
-fn engine_unguarded(command: Option<&[String]>) -> bool {
-    command.is_some_and(|command| !command.iter().any(|arg| arg == "--guard"))
-}
-
-/// The group the front of `paths` starts its engine in, from the spec it was started with;
-/// `None` for a front that serves no engine of its own, or without a readable spec.
-fn served_engine_group(paths: &StatePaths) -> Option<String> {
-    match read_json::<DockerFrontSpec>(&paths.docker_spec())
-        .ok()?
-        .serve
-    {
-        DockerServe::Engine { engine } => Some(engine.cgroup),
-        _ => None,
-    }
-}
-
-/// Whether a front that starts its engine in `served` does so in a group that is gone while the
-/// sandbox's engine group is another one now (`wanted`): the sandbox's groups moved to another
-/// unit (ADR-0298). A group that is still there (`exists`) may hold a running engine and is
-/// never given up.
-fn engine_group_moved(
-    served: Option<&str>,
-    wanted: &DockerServe,
-    exists: impl Fn(&Path) -> bool,
-) -> bool {
-    match (served, wanted) {
-        (Some(served), DockerServe::Engine { engine }) => {
-            served != engine.cgroup && !exists(Path::new(served))
-        }
-        _ => false,
-    }
-}
-
-/// Which runs `bind-docker` should get now (SPEC-196 DKL-004), from `found` (one pid per mount
-/// namespace, with its [`Plan`](crate::docker_bind::Plan)), updating `known`: namespaces that
-/// ended are forgotten (their inode numbers are reused), those needing nothing are done, and one
-/// is given up after [`BIND_TRIES`] attempts.
-fn bind_plan(
-    known: &mut HashMap<u64, u8>,
-    found: &[(u32, u64, crate::docker_bind::Plan)],
-) -> Vec<(u32, u64)> {
-    known.retain(|mnt, _| found.iter().any(|(_, m, _)| m == mnt));
-    let mut pids = Vec::new();
-    for (pid, mnt, plan) in found {
-        if known.get(mnt).is_some_and(|tries| *tries >= BIND_TRIES) {
-            continue;
-        }
-        if *plan == crate::docker_bind::Plan::Bind {
-            pids.push((*pid, *mnt));
-        } else {
-            known.insert(*mnt, BIND_DONE);
-        }
-    }
-    pids
-}
-
-/// Records the helper's `output` for the runs it was given: bound or skipped ones are done,
-/// others (failed, or missing from the output) took one more attempt.
-fn bind_record(known: &mut HashMap<u64, u8>, tried: &[(u32, u64)], output: &str) {
-    let outcomes: HashMap<u32, bool> = output
-        .lines()
-        .filter_map(crate::docker_bind::Outcome::parse)
-        .collect();
-    for (pid, mnt) in tried {
-        let tries = known.entry(*mnt).or_insert(0);
-        if outcomes.get(pid) == Some(&true) {
-            *tries = BIND_DONE;
-        } else {
-            *tries = tries.saturating_add(1);
-        }
-    }
-}
-
 /// A sandbox's usage: its directory, split by consumer, its system layer (`sysroot/upper`), its
 /// Docker engine's storage (`sysroot/docker`, SPEC-187 DKR-006) and its production holder's
 /// system layer and engine storage (`production`, SPEC-279 PDE-006) as one each.
@@ -2716,6 +1471,7 @@ fn measure_sandbox(dir: &Path, sysroot: &Path, production: &Path) -> Usage {
 
 #[cfg(test)]
 mod tests {
+    use super::docker::*;
     use super::*;
 
     /// SPEC-203 HST-016: a base without the host's `dockerd` is checked at every tick, not every
@@ -2821,7 +1577,7 @@ mod tests {
         Ok(crate::cgroup::prepare(&unit)?)
     }
 
-    fn live_record(engine: bool) -> HolderRecord {
+    fn live_record() -> HolderRecord {
         HolderRecord {
             version: HOLDER_RECORD_VERSION,
             sandbox: "s1".into(),
@@ -2835,8 +1591,20 @@ mod tests {
             boot_id: "b".into(),
             started_at_ms: 0,
             system_root: "/r".into(),
-            engine,
+            engine: false,
         }
+    }
+
+    /// A live holder whose front serves an engine.
+    fn engine_live(record: HolderRecord) -> Live {
+        let mut live = Live::new(record, Vec::new());
+        live.front = Some(DockerFrontRecord {
+            pid: 0,
+            mode: "engine".into(),
+            reason: None,
+            started_at_ms: 0,
+        });
+        live
     }
 
     /// SPEC-494 DFJ-005/006 (review round 2): the upkeep reads the state file of the front it
@@ -2865,7 +1633,7 @@ mod tests {
             engine_running: true,
             engine_busy: false,
         };
-        let mut live = Live::new(live_record(true), Vec::new());
+        let mut live = Live::new(live_record(), Vec::new());
         // This server started it: its refusals are all new.
         live.front_watch.started(77);
         live.front = Some(DockerFrontRecord {
@@ -2894,7 +1662,7 @@ mod tests {
         );
         // A holder dropped, by any path, leaves no Docker trouble of its sandbox (its boot id
         // is not this host's: nothing is signalled).
-        manager.stop_holder("s1", &live_record(true)).await;
+        manager.stop_holder("s1", &live_record()).await;
         assert!(health.troubles().is_empty(), "{:?}", health.troubles());
         Ok(())
     }
@@ -2957,9 +1725,8 @@ while True:
     fn adopting(
         data: &Path,
         docker: Result<(), String>,
-        engine: bool,
     ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
-        adopting_as(data, "s1", docker, engine)
+        adopting_as(data, "s1", docker)
     }
 
     /// [`adopting`] for the holder of `sandbox`.
@@ -2967,7 +1734,6 @@ while True:
         data: &Path,
         sandbox: &str,
         docker: Result<(), String>,
-        engine: bool,
     ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
         use std::os::unix::fs::MetadataExt as _;
         let exe = data.join("fake-yulius");
@@ -2995,7 +1761,7 @@ while True:
             net_ns: ns("net")?,
             mnt_ns: ns("mnt")?,
             boot_id: crate::holder::boot_id(),
-            ..live_record(engine)
+            ..live_record()
         };
         write_json(&state.record(), &record)?;
         Ok(manager)
@@ -3033,34 +1799,21 @@ while True:
 
     /// SPEC-201 DBX-006 (#614): a restart of `yulius.service` prunes an idle engine's empty
     /// leaf while the holder and its front keep running. The next upkeep tick brings it back,
-    /// even for a front from an older binary, which no update replaces. Review round 1 (major):
-    /// also for a SPEC-187 holder, whose own engine uses the same leaf behind a relay front.
+    /// even for a front from an older binary, which no update replaces.
     #[tokio::test]
     async fn a_kept_engine_front_gets_its_pruned_leaf_back()
     -> Result<(), Box<dyn std::error::Error>> {
-        for (holder_engine, mode) in [(false, "engine"), (true, "relay")] {
-            kept_front_restores_the_leaf(holder_engine, mode).await?;
-        }
-        Ok(())
-    }
-
-    async fn kept_front_restores_the_leaf(
-        holder_engine: bool,
-        mode: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), holder_engine)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
-        assert_eq!(front.mode, mode);
+        assert_eq!(front.mode, "engine");
         let groups = manager.group_paths("s1").ok_or("no delegation")?;
         let leaf = groups.engine_root;
         assert!(leaf.is_dir());
-        if !holder_engine {
-            // SPEC-483 C4: the front starts the engine in the root below the engine's group.
-            let served = served_engine_group(&StatePaths::new(manager.state_dir("s1")));
-            assert_eq!(served.as_deref(), Some(leaf.to_string_lossy().as_ref()));
-        }
+        // SPEC-483 C4: the front starts the engine in the root below the engine's group.
+        let served = served_engine_group(&StatePaths::new(manager.state_dir("s1")));
+        assert_eq!(served.as_deref(), Some(leaf.to_string_lossy().as_ref()));
         // A restart of the service prunes both empty groups.
         std::fs::remove_dir(&leaf)?;
         std::fs::remove_dir(&groups.engine)?;
@@ -3072,12 +1825,9 @@ while True:
         assert_eq!(
             front_of(&manager).await.map(|f| f.pid),
             Some(front.pid),
-            "{mode}: the running front is kept"
+            "the running front is kept"
         );
-        assert!(
-            leaf.is_dir(),
-            "{mode}: the engine's root and group are back"
-        );
+        assert!(leaf.is_dir(), "the engine's root and group are back");
         kill(front.pid);
         Ok(())
     }
@@ -3088,7 +1838,7 @@ while True:
     async fn a_front_full_for_long_is_restarted_when_no_ci_job_runs()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let long_ago = Instant::now()
@@ -3145,7 +1895,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::front_repair::Reading;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         // The front's socket, answered by the test: every ping is seen, and refused (503).
@@ -3214,7 +1964,7 @@ while True:
     async fn a_successor_front_is_not_restarted_for_its_predecessors_jam()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let long_ago = Instant::now()
@@ -3247,7 +1997,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let paths = StatePaths::new(manager.state_dir("s1"));
@@ -3312,7 +2062,7 @@ while True:
     async fn an_asked_restart_that_stopped_nothing_is_not_counted_later()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         // No front can start from the beginning.
         put_executable(&data.path().join("fake-yulius"), "#!/bin/sh\necho broken\n")?;
         assert_eq!(manager.adopt().await, 1);
@@ -3353,7 +2103,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let name = production_holder("s1");
-        let manager = adopting_as(data.path(), &name, Ok(()), false)?;
+        let manager = adopting_as(data.path(), &name, Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let long_ago = Instant::now()
             .checked_sub(crate::front_repair::REPAIR_AFTER * 2)
@@ -3385,7 +2135,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let paths = StatePaths::new(manager.state_dir("s1"));
@@ -3445,7 +2195,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let first = front_of(&manager).await.ok_or("no front")?;
         let busy = DockerFrontState {
@@ -3519,7 +2269,7 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_contracts::sandbox::DockerFrontState;
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
         let state = DockerFrontState {
@@ -3562,7 +2312,7 @@ while True:
         let name = production_holder("s1");
         let paths = StatePaths::new(manager.state_dir(&name));
         std::fs::create_dir_all(&paths.dir)?;
-        let mut live = Live::new(live_record(true), Vec::new());
+        let mut live = Live::new(live_record(), Vec::new());
         live.front_watch.started(77);
         live.front = Some(DockerFrontRecord {
             pid: 77,
@@ -3600,7 +2350,7 @@ while True:
     async fn an_adopted_holder_from_before_engines_gains_an_engine_front()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
         assert_eq!(front.mode, "engine");
@@ -3631,7 +2381,7 @@ while True:
         assert_eq!(ask_front(&manager).await?, "mode:engine:");
 
         // Another server process with Docker off adopts the holder and its running front.
-        let off = adopting(data.path(), Err(DOCKER_OFF.into()), false)?;
+        let off = adopting(data.path(), Err(DOCKER_OFF.into()))?;
         assert_eq!(off.adopt().await, 1);
         let refusing = front_of(&off).await.ok_or("no front")?;
         assert_eq!(refusing.mode, "refuse");
@@ -3649,13 +2399,13 @@ while True:
         );
         assert_eq!(ask_front(&off).await?, format!("mode:refuse:{DOCKER_OFF}"));
         // And the next with Docker on: the engine again, the refusal gone.
-        let on = adopting(data.path(), Ok(()), false)?;
+        let on = adopting(data.path(), Ok(()))?;
         assert_eq!(on.adopt().await, 1);
         let back = front_of(&on).await.ok_or("no front")?;
         assert_eq!(back.mode, "engine");
         assert_eq!(ask_front(&on).await?, "mode:engine:");
         // An unchanged front is kept across server restarts.
-        let same = adopting(data.path(), Ok(()), false)?;
+        let same = adopting(data.path(), Ok(()))?;
         assert_eq!(same.adopt().await, 1);
         assert_eq!(front_of(&same).await.map(|f| f.pid), Some(back.pid));
         kill(back.pid);
@@ -3675,10 +2425,10 @@ while True:
         // production holder.
         let smoke = format!("docker-smoke-{}", std::process::id());
         let production = production_holder(&smoke);
-        let own = adopting_as(data.path(), &smoke, Err(DOCKER_OFF.into()), false)?;
-        adopting_as(data.path(), &production, Ok(()), false)?;
+        let own = adopting_as(data.path(), &smoke, Err(DOCKER_OFF.into()))?;
+        adopting_as(data.path(), &production, Ok(()))?;
         // The server beside it has Docker on and a sandbox of its own.
-        let server = adopting(data.path(), Ok(()), false)?;
+        let server = adopting(data.path(), Ok(()))?;
         // From here fronts run: nothing returns or asserts until they are ended below.
         let own_adopted = own.adopt_one(&smoke).await;
         let refusing = own.docker_front(&smoke).await;
@@ -3721,7 +2471,7 @@ while True:
         let pid = ended.id();
         ended.wait()?;
         let left = format!("docker-smoke-{pid}");
-        let restarted = adopting_as(data.path(), &left, Ok(()), false)?;
+        let restarted = adopting_as(data.path(), &left, Ok(()))?;
         std::fs::remove_dir_all(server.state_dir(&smoke))?;
         std::fs::remove_dir_all(server.state_dir(&production))?;
         let adopted = restarted.adopt().await;
@@ -3736,25 +2486,21 @@ while True:
         Ok(())
     }
 
-    /// SPEC-196 DKL-002/005: a SPEC-187 holder serving its own engine gets a relay to it; a
-    /// missing prerequisite a refusal that names it; and runs see the Docker directory.
+    /// SPEC-196 DKL-002/005: a holder gets an engine front, a missing prerequisite a refusal
+    /// that names it; and runs see the Docker directory.
     #[tokio::test]
     async fn the_front_mode_follows_the_holder_and_the_prerequisites()
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let request = request(data.path());
-        let on = adopting(data.path(), Ok(()), true)?;
+        let on = adopting(data.path(), Ok(()))?;
         assert!(matches!(
-            on.front_mode(&request, &live_record(true)),
-            DockerServe::Relay { socket } if socket.ends_with("runtime/sandboxes/s1/docker.sock")
-        ));
-        assert!(matches!(
-            on.front_mode(&request, &live_record(false)),
+            on.front_mode(&request, &live_record()),
             DockerServe::Engine { .. }
         ));
         // Review round 1 (low): a system without `dockerd` (SPEC-199 DSY-003: the agent can
         // install it in the sandbox, or an operator on the host for new bases).
-        let mut older = live_record(false);
+        let mut older = live_record();
         older.base_id = "base-0".into();
         assert_eq!(
             on.front_mode(&request, &older),
@@ -3773,9 +2519,9 @@ while True:
         ] {
             assert!(DOCKER_NO_DOCKERD.contains(needle), "{needle}");
         }
-        let off = adopting(data.path(), Err(DOCKER_OFF.into()), true)?;
+        let off = adopting(data.path(), Err(DOCKER_OFF.into()))?;
         assert_eq!(
-            off.front_mode(&request, &live_record(true)),
+            off.front_mode(&request, &live_record()),
             DockerServe::Refuse {
                 reason: DOCKER_OFF.into()
             }
@@ -3823,9 +2569,9 @@ while True:
     -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
         let request = request(data.path());
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         let mode = |base: &str| {
-            let mut record = live_record(false);
+            let mut record = live_record();
             record.base_id = base.into();
             manager.front_mode(&request, &record)
         };
@@ -3879,10 +2625,10 @@ while True:
     #[tokio::test]
     async fn deciding_a_front_prepares_no_cgroup() -> Result<(), Box<dyn std::error::Error>> {
         let data = tempfile::tempdir()?;
-        let manager = adopting(data.path(), Ok(()), false)?;
+        let manager = adopting(data.path(), Ok(()))?;
         let mut request = request(data.path());
         request.id = "s2".into();
-        let serve = manager.front_mode(&request, &live_record(false));
+        let serve = manager.front_mode(&request, &live_record());
         assert!(matches!(serve, DockerServe::Engine { .. }), "{serve:?}");
         let unit = manager.config.delegation.as_ref().map(|d| d.unit.clone());
         let group = unit.ok_or("delegated")?.join("sandboxes/s2");
@@ -3970,30 +2716,6 @@ while True:
             front_action(Some((&refusing, true)), refuse("off"), true),
             FrontAction::Keep
         );
-    }
-
-    /// SPEC-652 MEM-010 (review rounds 2 and 3): a front started before the engine's masks (its
-    /// engine command has no `--guard`) is one to replace once quiet; a guarded front stays.
-    #[test]
-    fn an_unguarded_engine_front_is_replaced_once_its_engine_stopped() {
-        let old = vec![
-            "/y".to_owned(),
-            "sandbox-exec".into(),
-            "--engine".into(),
-            "--".into(),
-        ];
-        let new = vec![
-            "/y".to_owned(),
-            "sandbox-exec".into(),
-            "--engine".into(),
-            "--guard".into(),
-            "[]".into(),
-            "--".into(),
-        ];
-        // Whether it is quiet is `front_repair::quiet`'s live read (its own tests).
-        assert!(engine_unguarded(Some(&old)));
-        assert!(!engine_unguarded(Some(&new)));
-        assert!(!engine_unguarded(None));
     }
 
     /// SPEC-458 LAY-005: a front's engine group counts as moved only when the front was given
@@ -4117,13 +2839,11 @@ while True:
         assert!(manager.docker(), "the setting with the delegation");
         assert!(manager.docker_for("s1").await, "its next holder serves one");
         let entry = manager.entry("s1");
-        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
+        entry.lock().await.live = Some(Live::new(live_record(), Vec::new()));
         assert!(
             manager.docker_for("s1").await,
             "a holder from before engines gains one"
         );
-        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
-        assert!(manager.docker_for("s1").await);
         Ok(())
     }
 
@@ -4315,13 +3035,13 @@ while True:
             }
         });
         let entry = manager.entry("s1");
-        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
+        entry.lock().await.live = Some(Live::new(live_record(), Vec::new()));
         manager.ci_job_ended("s1", "j1").await;
         assert!(
             deleted.lock().map_err(|_| "poisoned")?.is_empty(),
             "no engine"
         );
-        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
+        entry.lock().await.live = Some(engine_live(live_record()));
         manager.ci_job_ended("s1", "j1").await;
         assert_eq!(
             deleted.lock().map_err(|_| "poisoned")?.clone(),
@@ -4396,14 +3116,14 @@ while True:
         std::fs::create_dir_all(state.engine_control())?;
         let (front, front_hits) = fake_api(tokio::net::UnixListener::bind(state.engine_socket())?);
         let entry = manager.entry("s1");
-        entry.lock().await.live = Some(Live::new(live_record(false), Vec::new()));
+        entry.lock().await.live = Some(Live::new(live_record(), Vec::new()));
         assert_eq!(
             manager.prune_engine("s1").await,
             None,
             "a holder without an engine"
         );
         assert_eq!(manager.engine_networks("s1").await, None, "no engine");
-        entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
+        entry.lock().await.live = Some(engine_live(live_record()));
         assert_eq!(manager.prune_engine("s1").await, None, "a stopped engine");
         assert_eq!(
             manager.engine_networks("s1").await,
@@ -4760,7 +3480,7 @@ while True:
     /// are this process's, so it reads as alive and stopping it ends only the child). The child
     /// is reaped in the background; returns its pid.
     fn adopting_child(data: &Path) -> Result<(Arc<Manager>, u32), Box<dyn std::error::Error>> {
-        let manager = adopting(data, Err(DOCKER_OFF.into()), false)?;
+        let manager = adopting(data, Err(DOCKER_OFF.into()))?;
         let mut child = std::process::Command::new("sleep").arg("600").spawn()?;
         let pid = child.id();
         std::thread::spawn(move || child.wait());
@@ -5123,7 +3843,7 @@ while True:
             "no spec: an old holder"
         );
         assert!(manager.bridge_forwards("s1.prod").is_empty());
-        let record = live_record(false);
+        let record = live_record();
         for name in ["s1", "s1.prod"] {
             std::fs::create_dir_all(manager.state_dir(name)).unwrap_or_else(|e| panic!("{e}"));
         }
@@ -5202,13 +3922,10 @@ while True:
         std::fs::create_dir_all(state.engine_control())?;
         let control = state.engine_control().join("docker.sock");
         let (engine, hits) = fake_api(tokio::net::UnixListener::bind(&control)?);
-        manager.entry("s1.prod").lock().await.live = Some(Live::new(
-            HolderRecord {
-                sandbox: "s1.prod".into(),
-                ..live_record(true)
-            },
-            Vec::new(),
-        ));
+        manager.entry("s1.prod").lock().await.live = Some(engine_live(HolderRecord {
+            sandbox: "s1.prod".into(),
+            ..live_record()
+        }));
         manager.entry("s1").lock().await.usage = Some((
             crate::usage::Usage {
                 bytes: 5_000,

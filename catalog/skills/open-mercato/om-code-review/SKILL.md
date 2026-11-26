@@ -55,8 +55,8 @@ uncommitted changes.
 4. **Breaking-change gate.** Check every changed file against exported APIs, HTTP routes and
    response shapes, event names, CLI flags, database schema and config formats. A break without
    a deprecation path is a blocker. If the repository has a `BACKWARD_COMPATIBILITY.md`, every
-   touched surface is checked against it. A change that contradicts an active decision record
-   without a superseding record in the same diff is a blocker.
+   touched surface is checked against it. A change that contradicts an active architectural decision
+   record without updating or superseding it in the same diff is a blocker.
 5. **Checklists.** Apply `references/review-checklist.md`; if the repository has a
    `CODE_REVIEW.md`, apply it in addition (it extends, never replaces).
 6. **Tests.** Changed behavior is covered by unit and, for risky boundaries, integration tests;

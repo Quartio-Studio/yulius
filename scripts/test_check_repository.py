@@ -2,8 +2,9 @@
 from pathlib import Path
 import tempfile
 import re
+import subprocess
 import unittest
-from check_repository import delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
+from check_repository import branch_decision_changes, new_decision_errors, delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error, tool_version
 
 
 def package(name, layer, dependencies=()):
@@ -198,6 +199,71 @@ class RepositoryContracts(unittest.TestCase):
             self.assertIn("0007-second.md", errors[0])
             (decisions / "README.md").write_text("- [0006](0006-first.md): First\n- [0007](0007-second.md): Second\n")
             self.assertEqual(decision_errors(decisions), [])
+
+    def test_a_new_decision_names_two_rejected_alternatives(self):
+        adr = "# 0009. Choice\n\n## Alternatives\n\n- Keep it: {}\n\n## Consequences\n\n- One\n- Two\n"
+        one = {"docs/decisions/0009-choice.md": adr.format("too slow.")}
+        errors = new_decision_errors(one, ["src/lib.rs"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("at least two", errors[0])
+        for second in ("too slow.\n- Write it: no reader.", "too slow.\n* Write it: no reader.",
+                       "too slow.\n2. Write it: no reader."):
+            self.assertEqual(new_decision_errors({"docs/decisions/0009-choice.md": adr.format(second)},
+                                                 ["src/lib.rs"]), [])
+
+    def test_a_branch_adds_at_most_one_decision(self):
+        adr = "# {0}. Choice\n\n## Alternatives\n\n- A: no.\n- B: no.\n"
+        two = {f"docs/decisions/{n}-choice.md": adr.format(n) for n in ("0009", "0010")}
+        errors = new_decision_errors(two, ["src/lib.rs"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("one decision record", errors[0])
+        self.assertEqual(new_decision_errors({}, ["src/lib.rs"]), [])
+
+    def test_a_web_ui_only_change_records_no_decision(self):
+        added = {"docs/decisions/0009-choice.md": "# 0009. Choice\n\n## Alternatives\n\n- A: no.\n- B: no.\n"}
+        web = ["crates/yulius-server/web/assets/styles.css", "docs/product.md", *added]
+        errors = new_decision_errors(added, web)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("web UI", errors[0])
+        self.assertEqual(len(new_decision_errors(added, [*web, "e2e/tests/menus.e2e.ts"])), 1)
+        self.assertEqual(new_decision_errors(added, [*web, "crates/yulius-app/src/lib.rs"]), [])
+        self.assertEqual(new_decision_errors(added, ["docs/product.md", *added]), [])
+
+    def test_branch_decision_changes_compare_with_the_integration_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git = lambda *args: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                               cwd=root, check=True, capture_output=True, text=True)
+            git("init", "-q", "-b", "dev")
+            (root / "docs/decisions").mkdir(parents=True)
+            (root / "docs/decisions/0001-old.md").write_text("# 0001. Old\n")
+            (root / "old.rs").write_text("fn moved() {}\n" * 20)
+            git("add", ".")
+            git("commit", "-qm", "base")
+            self.assertIsNone(branch_decision_changes(root, "dev"))
+            git("update-ref", "refs/remotes/origin/dev", "HEAD")
+            self.assertEqual(branch_decision_changes(root, "dev"), ({}, []))
+            (root / "docs/decisions/0002-new.md").write_text("# 0002. New\n")
+            (root / "app.js").write_text("1\n")
+            git("add", "app.js")
+            git("mv", "old.rs", "new.rs")
+            git("commit", "-qm", "branch")
+            (root / "docs/decisions/0001-old.md").write_text("# 0001. Old, refined\n")
+            added, changed = branch_decision_changes(root, "dev")
+            self.assertEqual(added, {"docs/decisions/0002-new.md": "# 0002. New\n"})
+            self.assertEqual(sorted(changed), ["app.js", "docs/decisions/0001-old.md", "docs/decisions/0002-new.md",
+                                               "new.rs", "old.rs"])
+            # A merge candidate stacks several members on origin/dev: each was checked on its own.
+            git("add", "-A")
+            git("commit", "-qm", "member one")
+            git("update-ref", "refs/remotes/origin/dev", "HEAD")
+            for n in ("0003", "0004"):
+                (root / f"docs/decisions/{n}-member.md").write_text(f"# {n}. Member\n")
+                git("add", ".")
+                git("commit", "-qm", f"member {n}")
+            self.assertEqual(len(branch_decision_changes(root, "dev")[0]), 2)
+            self.assertIsNone(branch_decision_changes(root, "dev", "train/abc"))
+            self.assertIsNotNone(branch_decision_changes(root, "dev", "pr/1770"))
 
 
 

@@ -30,7 +30,7 @@ process and the lens. You decide autonomously: nobody answers questions for you.
    smallest scope that still ships something working, no new public contract, dependency or
    schema unless needed, the project's existing primitives over inventions, "not now" for
    "should it also do X?". Never default in a way that weakens security, data scoping, a
-   documented compatibility contract or an active decision record. Record every answer in
+   documented compatibility contract or an active architectural decision record. Record every answer in
    Decisions as "assumed (reversible): ... because ...". Mark a default with large rewrite risk
    as an assumption to revisit, and keep going.
 5. **Research.** Challenge the requirements against open-source leaders in the domain: what do
@@ -69,7 +69,7 @@ limits); Phasing; Implementation plan; Decisions (including the resolved open qu
    clients, cache, event bus); inventions need a stated reason.
 4. **Contracts and compatibility:** which public surfaces change (APIs, events, schemas, config
    formats)? Every breaking change has a migration or deprecation path. If the repository has a
-   `BACKWARD_COMPATIBILITY.md`, it is the authority; active decision records are the second.
+   `BACKWARD_COMPATIBILITY.md`, it is the authority; active architectural decision records are the second.
 5. **Reversibility:** every state change has an undo or rollback described as carefully as the
    execute path.
 6. **Boundaries and coupling:** cross-module effects go through the project's decoupling

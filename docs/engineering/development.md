@@ -20,6 +20,9 @@ versions are in `.config/tools.toml`, with the zig release (version and SHA-256 
 that compiles dependencies' vendored C for the macOS check; on Linux bootstrap downloads it once
 per home cache (`scripts/zig_install.py`, verified before it is unpacked) and links
 `.tools/bin/zig`, `macos-cc` and `macos-ar` (`scripts/zig_macos.py`); doctor checks them.
+Under Yulius CI (`YULIUS_CI=1`) `scripts/dev` runs `scripts/bootstrap.py --install-rustup`
+itself before the gate, once per job (`YULIUS_BOOTSTRAPPED` marks it for nested calls), so each CI job's command is just `scripts/dev <gate>`, and the gate prints
+its `::yulius-stage` lines.
 Bootstrap installs tools from locked crates.io
 packages into ignored `.tools/`, skips matching installed versions and can be rerun
 after failure. It does not change `rustup default`. `--install-rustup` installs rustup
@@ -40,6 +43,7 @@ On the instance, bootstrap installs the optional pinned mbx executable. A fresh 
 | --- | --- |
 | `scripts/dev doctor` | Compiler/tool versions and Python prerequisite |
 | `scripts/dev quick` | The checks of seconds, first in `ci` and `checks` (after `doctor`): the repository contracts (`scripts/check_repository.py`) and `cargo fmt --check`; run it before each commit you publish. In `ci` and `checks` the checker's Python tests then run beside the Rust gates (ADR-0363) |
+| `scripts/dev quality` | The pull request's `quality` job: doctor, quick and the checker's Python tests, each in its stage. It compiles nothing; the `lint` job's Clippy compiles every target |
 | `scripts/dev check` | Local Markdown links, no merge conflict marker lines outside vendored assets, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, one integration test binary for the composition crate, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`), instructions that tell an agent to merge by hand, promote or poll; checker regression tests; locked all-target compilation |
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |

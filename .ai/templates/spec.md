@@ -39,8 +39,9 @@ where a person must look (UI).
 
 ## Decisions
 
-Each choice with the alternatives and why; a lasting one is an ADR in `docs/decisions/`. Open
-questions are decided with a reversible default and recorded here.
+Each choice with the alternatives and why; an ADR in `docs/decisions/` only for a choice of how
+the system is built or run that someone may want to reverse. Open questions are decided with a
+reversible default and recorded here.
 
 <!-- Before `status: done`: every Plan item ticked and an `## Evidence` section with the
 commands run and their results. A skipped gate is not a passing gate; test names are not
