@@ -1,4 +1,4 @@
-//! A subscription's name and the email of its Claude account (SPEC-244): the email is read from
+//! A subscription's name and the email of its Claude account: the email is read from
 //! Claude's profile when a sign-in stores a credential and once for subscriptions signed in
 //! before; only administrators rename; every view that names a subscription carries its email.
 
@@ -239,7 +239,7 @@ async fn signed_in_account(
     Ok(())
 }
 
-/// SPEC-483 SGN-002: the background round asks Claude for the address only of a subscription that
+/// The background round asks Claude for the address only of a subscription that
 /// works. One that needs a new sign-in is not asked, whether it reads `relogin` or `error`: its
 /// credential is the one Claude refused or the one a sign-in did not replace.
 #[tokio::test]
@@ -273,7 +273,7 @@ async fn the_round_asks_no_address_of_a_subscription_that_needs_a_sign_in() -> T
     Ok(())
 }
 
-/// SUB-003: a sign-in stores the email Claude's profile gives for the new credential; a later
+/// A sign-in stores the email Claude's profile gives for the new credential; a later
 /// sign-in whose profile is refused drops it (it may be another Claude account), and the sign-in
 /// itself succeeds either way.
 #[tokio::test]
@@ -363,7 +363,7 @@ async fn a_sign_in_stores_the_email_of_its_claude_account() -> TestResult {
     Ok(())
 }
 
-/// SPEC-464 UCL-004: a model's limit Claude reported to a sign-in is that sign-in's. No usage
+/// A model's limit Claude reported to a sign-in is that sign-in's. No usage
 /// reading ends it before its reset, so a new sign-in of the subscription (another Claude
 /// account, or the same one with credits again) drops it; the subscription's own 5-hour and
 /// weekly readings stay until the next reading replaces them.
@@ -440,7 +440,7 @@ impl UsageProbe for ReadingProbe {
         })
     }
 
-    /// Asked about a stored limit by a refresh (SPEC-473): the model is still refused, with no
+    /// Asked about a stored limit by a refresh: the model is still refused, with no
     /// reset named, so the limit stays as it is stored.
     async fn model_answer(
         &self,
@@ -462,7 +462,7 @@ impl UsageProbe for ReadingProbe {
     }
 }
 
-/// SPEC-464 UCL-004: a new sign-in takes the lock every change of the stored usage takes. A
+/// A new sign-in takes the lock every change of the stored usage takes. A
 /// provider's reading of the subscription is held once it has read the stored usage, which
 /// still has the previous sign-in's model limit; the sign-in finishes meanwhile; the reading
 /// goes on. Unlocked, the sign-in would drop the limit during the hold and the reading would
@@ -557,7 +557,7 @@ async fn a_sign_in_during_a_usage_reading_still_drops_the_models_limit() -> Test
     Ok(())
 }
 
-/// SUB-004: subscriptions signed in before emails were read get theirs once from the background
+/// Subscriptions signed in before emails were read get theirs once from the background
 /// round. A definite answer (an email, none, a refusal, something that is not an address) is not
 /// asked again; a temporary failure is, after its back-off; a known email is left alone.
 #[tokio::test]
@@ -696,8 +696,8 @@ async fn task_on(
     Ok(task.id)
 }
 
-/// SUB-001, SUB-002, SUB-005: an administrator's rename persists and every view that names the
-/// subscription shows the new name, with the email for administrators (UI-022); anyone else is
+/// An administrator's rename persists and every view that names the
+/// subscription shows the new name, with the email for administrators; anyone else is
 /// refused the rename and sees the new name without the email.
 #[tokio::test]
 async fn only_administrators_rename_and_every_view_shows_name_and_email() -> TestResult {
@@ -742,7 +742,7 @@ async fn only_administrators_rename_and_every_view_shows_name_and_email() -> Tes
         "{}",
         empty.body
     );
-    // An instance administrator manages subscriptions as the superadmin does (ACC-009).
+    // An instance administrator manages subscriptions as the superadmin does.
     let renamed = call(
         &h.router,
         Method::PATCH,
@@ -809,7 +809,7 @@ async fn only_administrators_rename_and_every_view_shows_name_and_email() -> Tes
         detail.body["attempts"][0]["account_email"],
         "pawel@example.com"
     );
-    // A member who reads the task sees the subscription's name without its email (UI-022).
+    // A member who reads the task sees the subscription's name without its email.
     let seen = call(
         &h.router,
         Method::GET,
@@ -869,7 +869,7 @@ impl UsageProbe for RacedProfile {
     }
 }
 
-/// SUB-003: the old sign-in's answer never lands on the new credential; the new sign-in's email
+/// The old sign-in's answer never lands on the new credential; the new sign-in's email
 /// stays unknown until it is read for that credential.
 #[tokio::test]
 async fn an_answer_for_an_older_sign_in_is_not_stored() -> TestResult {
@@ -900,7 +900,7 @@ async fn an_answer_for_an_older_sign_in_is_not_stored() -> TestResult {
     Ok(())
 }
 
-/// SPEC-463 EML-003, EML-005: an administrator types a subscription's email, changes it with the
+/// An administrator types a subscription's email, changes it with the
 /// name and removes it. Every view that names the subscription shows it to administrators only.
 /// Anyone else is refused, a value that is not an address is refused, and a refused request
 /// writes nothing. The audit trail says that the email changed, never the address.
@@ -976,7 +976,7 @@ async fn an_administrator_types_changes_and_removes_a_subscriptions_email() -> T
         "a refused change is not audited"
     );
 
-    // An instance administrator manages subscriptions as the superadmin does (ACC-009).
+    // An instance administrator manages subscriptions as the superadmin does.
     let mut events = h.app.events.subscribe();
     let typed = call(
         &h.router,
@@ -1021,7 +1021,7 @@ async fn an_administrator_types_changes_and_removes_a_subscriptions_email() -> T
     let with_email = Some((json!("Agent TEAM"), json!("team@example.com")));
     let accounts = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
     assert_eq!(named(&accounts.body), with_email);
-    // EML-006: the account view says which emails a person typed and which Claude gave.
+    // The account view says which emails a person typed and which Claude gave.
     let typed_by_person = |label: &str| -> Option<(Value, Value)> {
         accounts
             .body
@@ -1066,7 +1066,7 @@ async fn an_administrator_types_changes_and_removes_a_subscriptions_email() -> T
         detail.body["attempts"][0]["account_email"],
         "team@example.com"
     );
-    // A member who reads the task sees the subscription's name without its email (UI-022).
+    // A member who reads the task sees the subscription's name without its email.
     let seen = call(
         &h.router,
         Method::GET,
@@ -1142,7 +1142,7 @@ async fn answered(
     tokio::time::timeout(Duration::from_secs(10), wait).await?
 }
 
-/// SPEC-463 EML-004: what a person typed outlives the subscription's sign-ins and Claude's
+/// What a person typed outlives the subscription's sign-ins and Claude's
 /// answers, and costs no further request. Once it is removed, the background round asks Claude
 /// again and Claude's answer shows.
 #[tokio::test]

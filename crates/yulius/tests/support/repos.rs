@@ -984,7 +984,7 @@ pub const OWNER: &str = "Quartio-Studio";
 
 impl World {
     /// A configured instance owned by [`OWNER`] (`org` or `user`), with a connected Claude
-    /// subscription that has no capacity left: starts pass the account gate (SPEC-246) and then
+    /// subscription that has no capacity left: starts pass the account gate and then
     /// wait without a process, as there is no process host here.
     pub async fn new(owner_kind: &str) -> Result<Self, BoxError> {
         let world = Self::without_claude(owner_kind).await?;

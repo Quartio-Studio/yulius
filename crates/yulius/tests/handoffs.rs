@@ -1,4 +1,4 @@
-//! Tasks hand work to another sandbox (SPEC-512 part 5, #1106, ADR-0395): the instance switch
+//! Tasks hand work to another sandbox: the instance switch
 //! (off by default, ask, automatic), a sandbox's opt-out, `sandbox_handoff`'s checks and bounds,
 //! the owner's answer in a browser, provenance, the outcome told back and the audit.
 
@@ -143,7 +143,7 @@ async fn audits(w: &World, sandbox: &str) -> Result<Vec<String>, Error> {
     Ok(w.h.store.audit_details(sandbox, "task.handoff", 50).await?)
 }
 
-/// SPEC-512 HOF-001, HOF-003: off by default: no task agent is served `sandbox_handoff` and a
+/// Off by default: no task agent is served `sandbox_handoff` and a
 /// call is an unknown tool; an instance administrator turns it on; others may not.
 #[tokio::test]
 async fn handoffs_are_off_by_default_and_set_by_an_instance_administrator() -> TestResult {
@@ -376,7 +376,7 @@ async fn automatic_creates_the_task_as_the_owner_within_the_checks() -> TestResu
     Ok(())
 }
 
-/// SPEC-512 HOF-003: a chain goes at most `max_depth` deep, never back to one of its sandboxes,
+/// A chain goes at most `max_depth` deep, never back to one of its sandboxes,
 /// and an owner's handoffs a day are bounded.
 #[tokio::test]
 async fn depth_cycles_and_the_daily_bound_are_refused() -> TestResult {
@@ -608,7 +608,7 @@ async fn ask_stores_a_request_the_owner_answers_in_a_browser() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 HOF-005: a target's outcome waits until it ended; a source that ended is not told
+/// A target's outcome waits until it ended; a source that ended is not told
 /// (nothing to tell), once.
 #[tokio::test]
 async fn an_outcome_waits_for_the_targets_end() -> TestResult {
@@ -653,7 +653,7 @@ async fn an_outcome_waits_for_the_targets_end() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 HOF-004 (review round 1): two approvals at once create one task; the other is told
+/// Two approvals at once create one task; the other is told
 /// it was answered meanwhile.
 #[tokio::test]
 async fn two_approvals_at_once_create_one_task() -> TestResult {
@@ -701,7 +701,7 @@ async fn two_approvals_at_once_create_one_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 HOF-003 (review round 1): every refusal is audited, also invisible text and an
+/// Every refusal is audited, also invisible text and an
 /// agent secret of the source sandbox; a full hour of tools refuses in automatic mode without
 /// leaving a request, and is not counted in the day.
 #[tokio::test]
@@ -814,7 +814,7 @@ async fn every_refusal_is_audited_and_a_full_hour_leaves_no_request() -> TestRes
     Ok(())
 }
 
-/// SPEC-512 HOF-003 (review round 1): an agent calls the tool over MCP once it is served.
+/// An agent calls the tool over MCP once it is served.
 #[tokio::test]
 async fn the_tool_is_called_over_mcp() -> TestResult {
     let w = world().await?;

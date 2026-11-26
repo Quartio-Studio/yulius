@@ -108,7 +108,7 @@ fn doctor_fails_on_a_data_dir_too_long_for_session_sockets() -> TestResult {
     Ok(())
 }
 
-/// SPEC-205 AC-7: a malformed file is refused before anything is asked or sent, naming the line
+/// A malformed file is refused before anything is asked or sent, naming the line
 /// and never the value.
 #[test]
 fn secrets_import_refuses_a_malformed_file_without_showing_values() -> TestResult {
@@ -143,7 +143,7 @@ fn secrets_import_refuses_a_malformed_file_without_showing_values() -> TestResul
     Ok(())
 }
 
-/// SPEC-460 MIG-001, MIG-003: the move's command explains itself, reads a recorded move
+/// The move's command explains itself, reads a recorded move
 /// without root, and refuses what cannot be a run before it touches anything.
 #[test]
 fn instance_migrate_explains_itself_and_refuses_what_is_not_a_run() -> TestResult {
@@ -163,7 +163,7 @@ fn instance_migrate_explains_itself_and_refuses_what_is_not_a_run() -> TestResul
     ] {
         assert!(text.contains(option), "{option} is not in the help: {text}");
     }
-    // SPEC-465 WCP-013: the bound is whole minutes, at least one.
+    // The bound is whole minutes, at least one.
     for bound in ["0", "soon"] {
         let out = Command::new(EXE)
             .args([

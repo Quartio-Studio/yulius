@@ -1,4 +1,4 @@
-//! Permanent task deletion (SPEC-001 TSK-009, AC-TSK-8): write users delete resting tasks with
+//! Permanent task deletion: write users delete resting tasks with
 //! their records and directories; live tasks and read users are refused.
 
 use crate::support;
@@ -42,7 +42,7 @@ async fn write_users_delete_resting_tasks_with_their_records() -> TestResult {
     .await?;
     assert_eq!(fb.status, StatusCode::NO_CONTENT, "{:?}", fb.body);
 
-    // AC-ANL-2: feedback is stored per user and shown with the task; a second answer replaces
+    // Feedback is stored per user and shown with the task; a second answer replaces
     // the first; a read user may answer too; an unknown verdict is refused.
     for (who, body) in [
         (
@@ -111,7 +111,7 @@ async fn write_users_delete_resting_tasks_with_their_records() -> TestResult {
     Ok(())
 }
 
-/// Yulius runs Codex beside Claude Code (SPEC-503 CDX-001): a task may name either harness,
+/// Yulius runs Codex beside Claude Code: a task may name either harness,
 /// another harness is refused, and there is still no setting for harness switching.
 #[tokio::test]
 async fn tasks_run_claude_code_or_codex() -> TestResult {
@@ -129,7 +129,7 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
     .await?;
     assert_eq!(codex.status, StatusCode::CREATED, "{:?}", codex.body);
     assert_eq!(codex.body["harness"], "codex");
-    // A Claude model is not Codex's (SPEC-503): refused before the task exists.
+    // A Claude model is not Codex's: refused before the task exists.
     let claude_model = call(
         &h.router,
         Method::POST,
@@ -144,7 +144,7 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
         "{:?}",
         claude_model.body
     );
-    // A Codex task that would start needs a Codex account, and says so (SPEC-246 CLA-002).
+    // A Codex task that would start needs a Codex account, and says so.
     let unaccounted = call(
         &h.router,
         Method::POST,
@@ -181,7 +181,7 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
         "{:?}",
         other.body
     );
-    // SPEC-505 AGY-001: an Antigravity task that would start needs an Antigravity account, and
+    // An Antigravity task that would start needs an Antigravity account, and
     // takes a Gemini model only.
     let antigravity = call(
         &h.router,
@@ -234,7 +234,7 @@ async fn tasks_run_claude_code_or_codex() -> TestResult {
     Ok(())
 }
 
-/// SPEC-039: closing a finished task for its deletion when its session already ended by itself
+/// Closing a finished task for its deletion when its session already ended by itself
 /// (between the Done check and the close) is not a conflict: the task rests and can go.
 #[tokio::test]
 async fn closing_a_task_whose_session_already_ended_is_not_a_conflict() -> TestResult {
@@ -321,7 +321,7 @@ async fn notice(
     tokio::time::timeout(std::time::Duration::from_secs(10), wait).await?
 }
 
-/// SPEC-065 END-001, END-002 (#284): a stopped run whose host cannot be terminated is not
+/// A stopped run whose host cannot be terminated is not
 /// recorded as ended: it stays live, the failure is said on the task, and deletion is refused
 /// with nothing deleted. Once the host can be terminated, stopping again ends it.
 #[tokio::test]
@@ -371,7 +371,7 @@ async fn a_stopped_run_whose_host_cannot_be_terminated_stays_live_and_blocks_del
     Ok(())
 }
 
-/// SPEC-065 END-001, END-002 (#284): closing a Done task for its deletion when its host cannot
+/// Closing a Done task for its deletion when its host cannot
 /// be terminated answers at once that the session could not be ended; the run stays live and
 /// the task needs attention.
 #[tokio::test]
@@ -406,7 +406,7 @@ async fn a_closed_run_whose_host_cannot_be_terminated_is_a_conflict_and_stays_li
         task.activity,
         Some(yulius_domain::task::Activity::NeedsAttention)
     );
-    // The task says why to whoever opens it (SPEC-472 ATN-004).
+    // The task says why to whoever opens it.
     let why = support::attention(&h.app, "t1").await?;
     assert_eq!(why["kind"], "yulius", "{why}");
     let problem = why["problem"].as_str().unwrap_or_default();
@@ -420,7 +420,7 @@ async fn a_closed_run_whose_host_cannot_be_terminated_is_a_conflict_and_stays_li
     Ok(())
 }
 
-/// SPEC-065 END-004 (#290): the wait looks again every second even while unrelated events keep
+/// The wait looks again every second even while unrelated events keep
 /// arriving: a run that ends without its task's update being published is still seen.
 #[tokio::test]
 async fn the_close_recheck_fires_while_unrelated_events_keep_arriving() -> TestResult {
@@ -480,7 +480,7 @@ async fn the_close_recheck_fires_while_unrelated_events_keep_arriving() -> TestR
     Ok(())
 }
 
-/// SPEC-065 END-006 (#290): a task that is switching when it is closed for deletion was never
+/// A task that is switching when it is closed for deletion was never
 /// closed: it is refused at once with the stop-first message, not after the whole bound.
 #[tokio::test]
 async fn closing_a_switching_task_for_deletion_is_refused_at_once() -> TestResult {
@@ -497,12 +497,12 @@ async fn closing_a_switching_task_for_deletion_is_refused_at_once() -> TestResul
     let Err(yulius_app::error::AppError::Conflict(why)) = closed else {
         return Err(format!("expected a conflict, got {closed:?}").into());
     };
-    // The same close serves an archive (SPEC-153 OLC-004): the message names no action.
+    // The same close serves an archive: the message names no action.
     assert_eq!(why, "the task is changing state; stop the task first");
     Ok(())
 }
 
-/// SPEC-065 END-001 (review): a task left `stopping` with no live run (its records were cut
+/// A task left `stopping` with no live run (its records were cut
 /// between the attempt and the task) is not stuck: stopping it again lets it rest.
 #[tokio::test]
 async fn stopping_a_task_left_stopping_without_a_run_lets_it_rest() -> TestResult {

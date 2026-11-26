@@ -57,7 +57,7 @@ pub(crate) async fn start_with(
 /// their pace while minutes pass for the server. Start it behind and move it forward. A hook's
 /// send time, which its client stamps on the system clock, reads with the offset in force when
 /// it was sent, so it keeps its order with the server's times also when it arrives late, after
-/// a move (SPEC-636; it used to read as its arrival, #1615).
+/// a move (SPEC-636; it used to read as its arrival).
 pub(crate) struct ShiftedClock(std::sync::Mutex<Vec<(i64, i64)>>);
 
 impl ShiftedClock {

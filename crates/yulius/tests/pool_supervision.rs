@@ -2,7 +2,7 @@
 //! agent, a scripted usage probe and real git worktrees (SPEC-001 ROT-004/010, AC-ROT-9..11,
 //! AC-ROT-14; SPEC-002 ADR-17). The fake agent has no hooks, so its turn boundary is the end of
 //! a turn in its transcript; hook holds are covered by `subscription_pool.rs`. MCP servers reach
-//! every run on every subscription (MCP-004, AC-MCP-3).
+//! every run on every subscription.
 
 use crate::support;
 use crate::support::eventually;
@@ -31,7 +31,7 @@ use yulius_domain::task::TaskStatus;
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::crypto::MasterKeyCrypto;
 
-/// AC-ROT-9: a new task starts on the subscription whose capacity expires first.
+/// A new task starts on the subscription whose capacity expires first.
 #[test]
 fn a_new_task_starts_on_the_capacity_that_expires_first() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1050,7 +1050,7 @@ fn a_goal_continuation_budget_resets_when_an_owners_message_is_delivered() -> Te
     Ok(())
 }
 
-/// AC-ROT-11: every subscription exhausted → new tasks wait before starting (no process); a
+/// Every subscription exhausted → new tasks wait before starting (no process); a
 /// subscription added later resumes them oldest first, one stagger apart, on it.
 #[test]
 fn a_new_subscription_resumes_waiting_tasks_oldest_first_and_staggered() -> TestResult {
@@ -1115,7 +1115,7 @@ fn a_new_subscription_resumes_waiting_tasks_oldest_first_and_staggered() -> Test
     Ok(())
 }
 
-/// AC-ROT-11: a task paused on an exhausted subscription resumes on another one whose window
+/// A task paused on an exhausted subscription resumes on another one whose window
 /// reset: a native resume of the same session there, with no prompt.
 #[test]
 fn a_paused_task_resumes_on_the_subscription_with_capacity_by_native_resume() -> TestResult {
@@ -1214,7 +1214,7 @@ fn run_mcp(
     Ok((serde_json::from_str(&text)?, text, secrets))
 }
 
-/// AC-MCP-3 (MCP-004): MCP servers configured in Yulius reach every run, whichever subscription
+/// MCP servers configured in Yulius reach every run, whichever subscription
 /// it runs on. Each run gets its own `mcp.json` (`--mcp-config`, strict) with the configured
 /// servers and their secrets only as `${VAR}` references, and the values in the run's
 /// environment. After the task moves to another subscription by native resume, the new run has
@@ -1450,10 +1450,10 @@ async fn personal_and_shared_servers(
     Ok((fleet, fleet_id))
 }
 
-/// SPEC-483 RST-001: Yulius restarts while a run holds its owner's personal MCP server. The new
+/// Yulius restarts while a run holds its owner's personal MCP server. The new
 /// server still knows it (the run directory says whose servers the run was started with): only
 /// the owner messages the session, and a hand-over restarts it with the new owner's servers,
-/// as before the restart (SPEC-332 MSC-009).
+/// as before the restart.
 #[test]
 fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1508,7 +1508,7 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
             Some(run.id.clone()),
             "the same run, reattached"
         );
-        // Bob does not message the administrator's session (SPEC-490 OWN-004), which holds
+        // Bob does not message the administrator's session, which holds
         // the administrator's server.
         let caller = yulius_app::coordination::ProjectCaller {
             sandbox: sandbox.clone(),
@@ -1544,7 +1544,7 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
     Ok(())
 }
 
-/// SPEC-483 RST-001 (review): the old server stopped in the middle of a hand-over's restart of
+/// The old server stopped in the middle of a hand-over's restart of
 /// the run, so the reattached run holds the servers of someone who is no longer the task's
 /// holder (here the run's record names Bob while the task is the administrator's). The new
 /// server restarts the run at once.
@@ -1652,7 +1652,7 @@ fn reattach_for_new_owner(revoked: bool) -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 RST-001 (review): the reattached run that holds another person's servers sits at a
+/// The reattached run that holds another person's servers sits at a
 /// usage limit. How it is resumed is read from its transcript, which the new server replays
 /// first: the restart waits for that and resumes the run past the limit (the interrupted turn
 /// continued, on a subscription with room), not into the limit's error.
@@ -1959,7 +1959,7 @@ async fn spend_blind_retry(
     ))
 }
 
-/// SPEC-332 MSC-004, MSC-009: a person's task run gets their personal MCP server, a task an
+/// A person's task run gets their personal MCP server, a task an
 /// automation of theirs started does not, and a hand-over restarts a live run holding the previous
 /// owner's personal server, resuming it with the new owner's servers.
 #[test]
@@ -2014,7 +2014,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             .await?
             .id;
         // Its launch files, not only its attempt: the attempt is recorded before the spawn writes
-        // them (#1084).
+        // them.
         eventually("the automation's run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = automated.clone();
@@ -2193,7 +2193,7 @@ impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
     }
 }
 
-/// SPEC-195 VDK-005: with an instance Vidoc key, an agent run of a sandbox without its own
+/// With an instance Vidoc key, an agent run of a sandbox without its own
 /// `VIDOC_API_KEY` gets that variable as the placeholder (the egress proxy adds the key), never
 /// the key.
 #[test]
@@ -2238,7 +2238,7 @@ fn an_agent_run_gets_the_instance_vidoc_key_as_a_placeholder() -> TestResult {
     })
 }
 
-/// SPEC-338 VOF-002: a run of a project whose Vidoc switch is off gets `YULIUS_VIDOC=off`, so its
+/// A run of a project whose Vidoc switch is off gets `YULIUS_VIDOC=off`, so its
 /// scan says "disabled", and not the instance key as `VIDOC_API_KEY`.
 #[test]
 fn a_switched_off_project_runs_without_vidoc() -> TestResult {
@@ -2280,7 +2280,7 @@ fn a_switched_off_project_runs_without_vidoc() -> TestResult {
         let shown = screen(&app, &id);
         assert!(shown.contains("ENV YULIUS_VIDOC=set len=3"), "{shown}");
         assert!(!shown.contains("ENV VIDOC_API_KEY=set"), "{shown}");
-        // SPEC-359 VSB-006: where the switch is, to turn it on again or point to it.
+        // Where the switch is, to turn it on again or point to it.
         let record =
             yulius_app::ports::store::SandboxStore::sandbox(app.deps.store.as_ref(), &sandbox)
                 .await?
@@ -2294,7 +2294,7 @@ fn a_switched_off_project_runs_without_vidoc() -> TestResult {
     })
 }
 
-/// SPEC-356 VIO-002: with Vidoc switched off for the instance, a run of a project whose own switch
+/// With Vidoc switched off for the instance, a run of a project whose own switch
 /// is on gets `YULIUS_VIDOC=off` and not the instance key as `VIDOC_API_KEY`.
 #[test]
 fn a_run_follows_the_instance_vidoc_switch() -> TestResult {
@@ -2342,7 +2342,7 @@ fn a_run_follows_the_instance_vidoc_switch() -> TestResult {
     })
 }
 
-/// SPEC-275 VAR-004, VAR-002: a task run gets the project's variables in its environment, in
+/// A task run gets the project's variables in its environment, in
 /// plain; an agent secret of the same name (created after the variable) wins with its
 /// placeholder.
 #[test]
@@ -2383,7 +2383,7 @@ fn a_task_run_gets_the_project_variables() -> TestResult {
                 var("OVH_ENDPOINT", "ovh-ca"),
                 var("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"),
                 var("SHOP_TOKEN", "plain"),
-                // Review round 1: Yulius's own environment wins over a variable of its name.
+                // Yulius's own environment wins over a variable of its name.
                 var("RUST_TEST_THREADS", "123456789"),
             ],
             false,
@@ -2456,11 +2456,11 @@ fn a_task_run_gets_the_project_variables() -> TestResult {
     })
 }
 
-/// SPEC-095 PMC-001/002/005: the servers of the repository's `.mcp.json` join the sandbox's MCP
+/// The servers of the repository's `.mcp.json` join the sandbox's MCP
 /// servers before the run, audited, and reach the run like any server configured in Yulius. One
 /// already configured (here turned off) is left as it is. Agents can write the file, so a variable
 /// it names, even as `${secret:…}`, reaches the server as the agent secret's placeholder, never as
-/// its value: the egress proxy puts the value in on the secret's bound hosts only (ADR-20).
+/// its value: the egress proxy puts the value in on the secret's bound hosts only.
 #[test]
 fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
     const APIFY_TOKEN: &str = "synthetic-apify-token-95-0123456789abcdef";
@@ -2608,7 +2608,7 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-10: a pause survives a Yulius restart — the new server reattaches the paused run,
+/// A pause survives a Yulius restart — the new server reattaches the paused run,
 /// keeps it paused, and resumes it in place once capacity returns.
 #[test]
 fn a_pause_survives_a_server_restart() -> TestResult {
@@ -2683,7 +2683,7 @@ fn a_pause_survives_a_server_restart() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-10, SPEC-034: a turn the CLI itself interrupted with a usage limit, with every
+/// A turn the CLI itself interrupted with a usage limit, with every
 /// subscription exhausted, pauses at the limit; it resumes on the subscription that recovers by a
 /// native resume that steps the transcript back over the limit and lets Claude Code continue the
 /// turn itself: no prompt, nothing typed, no "Continue.".
@@ -2831,7 +2831,7 @@ fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
         let _ = refresh(&app, &user, "a-first").await;
         let record = app.deps.store.account(&refused).await?.ok_or("account")?;
         assert_eq!(record.status, AccountStatus::Relogin);
-        // Nor does it erase why (SPEC-447 MOV-005).
+        // Nor does it erase why.
         assert!(
             record
                 .last_error
@@ -2847,7 +2847,7 @@ fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
     Ok(())
 }
 
-/// SPEC-034: a turn the limit cut on the only subscription resumes when that subscription
+/// A turn the limit cut on the only subscription resumes when that subscription
 /// recovers, on the same subscription, past the limit: a native resume of the same session with
 /// no prompt, and nothing typed into the paused process (it used to get "Continue.").
 #[test]
@@ -2965,7 +2965,7 @@ fn resume_live_limit(reattach: bool) -> TestResult {
     Ok(())
 }
 
-/// SPEC-034 (review): a person's switch of a task paused at a usage limit resumes it past the
+/// A person's switch of a task paused at a usage limit resumes it past the
 /// limit too, with no prompt and the transcript stepped back.
 #[test]
 fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
@@ -3027,7 +3027,7 @@ fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
     Ok(())
 }
 
-/// SPEC-072 LRS-001 (#276): Claude Code continues the turn a limit cut by itself at the reset
+/// Claude Code continues the turn a limit cut by itself at the reset
 /// ("continuing automatically") before the resume loop acts: the `limit` pause ends as
 /// overtaken and the task runs; capacity returning later starts no second run, so nothing
 /// terminates the turn the CLI continued.
@@ -3036,7 +3036,7 @@ fn a_turn_the_cli_continues_by_itself_ends_the_limit_pause() -> TestResult {
     the_cli_continuation_ends_the_limit_pause(false)
 }
 
-/// SPEC-072 LRS-001 (review): a continuation that is only the answer ending the turn (no tool
+/// A continuation that is only the answer ending the turn (no tool
 /// call, so no agent work) ends the `limit` pause too.
 #[test]
 fn a_continuation_that_only_answers_ends_the_limit_pause() -> TestResult {
@@ -3121,7 +3121,7 @@ fn the_cli_continuation_ends_the_limit_pause(answer_only: bool) -> TestResult {
     Ok(())
 }
 
-/// SPEC-072 LRS-002 (#277): the switch after a usage limit is refused before it ends the session
+/// The switch after a usage limit is refused before it ends the session
 /// (the other subscription's credential cannot be opened), so the task stays at its limit with no
 /// pause; a person's switch once the subscription works again still resumes past the limit: no
 /// prompt, the interrupted turn continued, the transcript stepped back.
@@ -3264,7 +3264,7 @@ async fn indexed_bytes(app: &App, doc: &str) -> Result<u64, Box<dyn std::error::
         .indexed_bytes)
 }
 
-/// SPEC-072 LRS-003 (#278): a resume past a limit whose transcript has nothing to step back
+/// A resume past a limit whose transcript has nothing to step back
 /// (no limit record left) leaves the transcript and its search index alone.
 #[test]
 fn a_resume_past_a_limit_keeps_the_index_of_a_transcript_it_did_not_rewrite() -> TestResult {
@@ -3325,7 +3325,7 @@ fn a_resume_past_a_limit_keeps_the_index_of_a_transcript_it_did_not_rewrite() ->
     Ok(())
 }
 
-/// SPEC-034 LIM-003, SPEC-072 LRS-004 (#278): a person's switch of a task at its limit when no
+/// A person's switch of a task at its limit when no
 /// subscription has capacity ends the session and finds nothing to launch on, so the task waits in
 /// a `limit` pause without a process; when capacity returns, that pause resumes past the limit (a
 /// continued resume without a prompt), and the transcript it rewrote is indexed again.
@@ -3461,7 +3461,7 @@ async fn slot_holder(
     Ok(holder)
 }
 
-/// SPEC-483 QST-001: a `limit` pause without a process becomes resumable while every session
+/// A `limit` pause without a process becomes resumable while every session
 /// slot is taken, so its start waits in the queue. When the slot frees, the queue starts it as
 /// that start was to be: past the limit (the transcript stepped back, the interrupted turn
 /// continued), not as a plain resume that sits at the limit's error. The subscription is the
@@ -3551,10 +3551,10 @@ fn a_resume_past_a_limit_that_waits_in_the_queue_is_still_one() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 QST-001: a person continues a task on a subscription they chose while every session
+/// A person continues a task on a subscription they chose while every session
 /// slot is taken. The start waits in the queue, also across a restart of Yulius, and runs on
 /// that subscription when the slot frees, not on the one the pool would choose ("Continue on…"
-/// never lands elsewhere unsaid, SPEC-447 MOV-002).
+/// never lands elsewhere unsaid).
 #[test]
 fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -3672,7 +3672,7 @@ fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResul
     Ok(())
 }
 
-/// SPEC-483 QST-001 (review): the subscription a person chose fills up while the task waits in
+/// The subscription a person chose fills up while the task waits in
 /// the queue. When the slot frees, the task is not failed for it (its person is no longer
 /// looking): the choice is given up, said in the task's terminal, and the pool places the task.
 #[test]
@@ -3856,7 +3856,7 @@ fn a_resume_that_finds_the_queue_full_keeps_its_pause() -> TestResult {
     Ok(())
 }
 
-/// SPEC-072 LRS-001 (review): after a Yulius restart the reattached run's transcript is read again
+/// After a Yulius restart the reattached run's transcript is read again
 /// from its start. A usage limit that Claude Code's own continuation already overtook is history:
 /// it does not mark the subscription limited again, pause the task or switch it.
 #[test]
@@ -3944,7 +3944,7 @@ fn a_restart_does_not_replay_a_limit_the_cli_continued_past() -> TestResult {
     Ok(())
 }
 
-/// SPEC-072 LRS-001 (review round 2): Yulius is down while the task waits at its limit, and
+/// Yulius is down while the task waits at its limit, and
 /// Claude Code continues the turn by itself meanwhile. The reattached run's replay ends the
 /// `limit` pause, so capacity returning starts no second run and nothing ends the continued turn.
 #[test]

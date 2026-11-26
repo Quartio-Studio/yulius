@@ -1,4 +1,4 @@
-//! Rollback in CD end to end (SPEC-415, ADR-0263): a test project whose `yulius.toml` defines
+//! Rollback in CD end to end: a test project whose `yulius.toml` defines
 //! `rollback` and `migrations`, deployed and rolled back with the real Git adapter and the real
 //! detached ptyhost running its scripts. This is the live drill on a test project: deploys record
 //! releases, the dev drill runs by itself, a person rolls back in one request, production waits
@@ -183,7 +183,7 @@ impl Fixture {
         }
     }
 
-    /// Bob deploys production, which deploys dev first to prove it (SPEC-438): dev's run.
+    /// Bob deploys production, which deploys dev first to prove it: dev's run.
     async fn proving(&self) -> BoxResult<Value> {
         let started = self.deploy(&self.bob, "prod", Some("app")).await?;
         assert_eq!(started.status, StatusCode::OK, "{}", started.body);
@@ -241,7 +241,7 @@ fn releases(part: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// AC1, AC2 (RBK-010..013, RBK-020, RBK-024, RBK-030): two dev deploys record two releases; the
+/// Two dev deploys record two releases; the
 /// second is drilled by itself (back to v1, verify, forward to v2, verify); a person rolls back to
 /// the previous release in one request and forward again; each is audited.
 #[tokio::test]
@@ -377,7 +377,7 @@ async fn dev_rolls_back_to_a_kept_release_and_its_drill_runs_by_itself() -> Test
     Ok(())
 }
 
-/// AC3, AC5 (RBK-031): production is refused until rollback is configured and the drill of the
+/// Production is refused until rollback is configured and the drill of the
 /// commit it would deploy passed; it never drills itself.
 #[tokio::test]
 async fn production_deploys_wait_for_a_proven_rollback() -> TestResult {
@@ -477,7 +477,7 @@ async fn production_deploys_wait_for_a_proven_rollback() -> TestResult {
     Ok(())
 }
 
-/// SPEC-438 AC1, AC4 (PDF-001, PDF-002, PDF-004): dev moved on since its drill; a person's
+/// Dev moved on since its drill; a person's
 /// production deploy deploys dev at that commit, waits for its drill (shown, and a second
 /// production deploy is refused meanwhile), then deploys production by itself.
 #[tokio::test]
@@ -543,7 +543,7 @@ async fn a_production_deploy_proves_its_rollback_on_dev_first() -> TestResult {
     Ok(())
 }
 
-/// SPEC-438 AC2, AC3 (PDF-003, PDF-005): the drill production waited for fails, so production
+/// The drill production waited for fails, so production
 /// does not deploy and its run says why; a failed drill at the same tree is then refused as before.
 #[tokio::test]
 async fn production_does_not_deploy_when_the_drill_it_waited_for_fails() -> TestResult {
@@ -592,7 +592,7 @@ async fn production_does_not_deploy_when_the_drill_it_waited_for_fails() -> Test
     Ok(())
 }
 
-/// SPEC-438 review: production waits for exactly what was asked. A dev deploy that fails ends
+/// Production waits for exactly what was asked. A dev deploy that fails ends
 /// the wait; a dev that moved on meanwhile is refused as "moved since you looked"; a person who
 /// lost administration meanwhile does not deploy production. Each is a production run saying why,
 /// audited, with `main` unmoved.
@@ -695,7 +695,7 @@ fn git_contains(f: &Fixture, branch: &str, sha: &str) -> TestResult {
     Ok(())
 }
 
-/// AC4 (RBK-021, RBK-041): an agent rolls dev back with `cd_rollback` and is refused production;
+/// An agent rolls dev back with `cd_rollback` and is refused production;
 /// production is an administrator's with the slug typed, and never promotes.
 #[tokio::test]
 async fn agents_roll_back_dev_and_people_roll_back_production() -> TestResult {
@@ -781,7 +781,7 @@ async fn agents_roll_back_dev_and_people_roll_back_production() -> TestResult {
     Ok(())
 }
 
-/// AC5 (RBK-003, RBK-011, RBK-022, RBK-030): parts keep their own releases; a barrier makes the
+/// Parts keep their own releases; a barrier makes the
 /// drill only redeploy the new release, and a rollback past it is refused with its reason.
 #[tokio::test]
 async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
@@ -844,7 +844,7 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
         "the page says why before the button: {}",
         parts[1]
     );
-    // Review M4: a secret printed in a barrier is redacted before it is kept.
+    // A secret printed in a barrier is redacted before it is kept.
     assert!(
         parts[1]["releases"][0]["barrier"]
             .as_str()
@@ -900,7 +900,7 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
     assert_eq!(parts[0]["current"], "e1");
     assert_eq!(releases(&parts[1]), ["i3", "i2", "i1"]);
 
-    // Review M2: a deploy that ships no part still drills the parts with an earlier release, so
+    // A deploy that ships no part still drills the parts with an earlier release, so
     // production at its commit can be proven.
     let before = f.rollbacks().len();
     push(
@@ -915,7 +915,7 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
     Ok(())
 }
 
-/// Review M1: a drill that fails after going back leaves dev on the earlier release, which the
+/// A drill that fails after going back leaves dev on the earlier release, which the
 /// page says, and rolling forward to the new release is offered and works.
 #[tokio::test]
 async fn a_failed_drill_says_where_it_left_dev() -> TestResult {
@@ -940,7 +940,7 @@ async fn a_failed_drill_says_where_it_left_dev() -> TestResult {
     Ok(())
 }
 
-/// Review (low): a drill that cannot start (here its secret was no longer allowed when the deploy
+/// A drill that cannot start (here its secret was no longer allowed when the deploy
 /// ended) is recorded as an error saying why, audited, and production stays refused.
 #[tokio::test]
 async fn a_drill_that_cannot_start_is_recorded() -> TestResult {
@@ -1001,7 +1001,7 @@ async fn a_drill_that_cannot_start_is_recorded() -> TestResult {
     Ok(())
 }
 
-/// Review round 2: a release deployed again without its barrier (the migration ran the first
+/// A release deployed again without its barrier (the migration ran the first
 /// time) keeps the barrier, so the release before it stays blocked.
 #[tokio::test]
 async fn a_redeployed_release_keeps_its_barrier() -> TestResult {
@@ -1128,14 +1128,14 @@ async fn the_superagent_releases_production_once_its_person_types_the_slug() -> 
     let bobs = superagent("u-bob", "bob")?;
     let alices = superagent("u-alice", "alice")?;
 
-    // Which environments wait for the person: production-stage ones (REL-003).
+    // Which environments wait for the person: production-stage ones.
     assert!(f.h.app.superagent_production(&bobs, "prod").await?);
     // A name the project does not define reads as no production (its own call refuses it).
     assert!(!f.h.app.superagent_production(&bobs, "nope").await?);
     assert!(f.h.app.superagent_production(&bobs, "production").await?);
     assert!(!f.h.app.superagent_production(&bobs, "dev").await?);
 
-    // Refused before anyone is asked (REL-002).
+    // Refused before anyone is asked.
     let refusals = [
         (
             &alices,
@@ -1235,7 +1235,7 @@ async fn the_superagent_releases_production_once_its_person_types_the_slug() -> 
     assert_eq!(run["state"], "passed", "{}", run["output"]);
     assert_eq!(f.mark("prod")?, "v2");
 
-    // A second release, then a production rollback through the panel (REL-001).
+    // A second release, then a production rollback through the panel.
     push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
     f.deployed(&f.alice, "dev", None).await?;
     f.drill(2).await?;

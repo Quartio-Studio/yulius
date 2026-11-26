@@ -1,4 +1,4 @@
-//! A run's metrics with real processes (SPEC-087 MET-001, MET-002, MET-004): supervisor →
+//! A run's metrics with real processes: supervisor →
 //! detached `yulius ptyhost` → fake agent writing a Claude Code shaped transcript. Tokens, turns
 //! and active time come from the run's own transcript lines and its sub-agents' transcripts, so
 //! a Yulius restart reads them again instead of starting the run's figures from nothing.
@@ -75,7 +75,7 @@ async fn attempts(app: &App, id: &TaskId) -> Vec<yulius_app::model::AttemptRecor
     app.deps.store.attempts(id).await.unwrap_or_default()
 }
 
-/// SPEC-087 MET-001, MET-002, MET-004: a resumed run's tokens, turns and active time — its
+/// A resumed run's tokens, turns and active time — its
 /// sub-agent's tokens included — survive a Yulius restart. The reattached run reads its own
 /// transcript lines again; it used to read from the end and save nothing over them, which left
 /// dozens of runs on the instance with no tokens and no active time.
@@ -219,7 +219,7 @@ fn signal(pid: u32, signal: nix::sys::signal::Signal) -> TestResult {
     Ok(())
 }
 
-/// SPEC-143 RDM-001 (#385): a run whose agent exits while Yulius is down, its host gone too, is
+/// A run whose agent exits while Yulius is down, its host gone too, is
 /// ended by the next start's reconciliation, with no watcher of that process having read it. Its
 /// figures come from its transcript — the lines written while Yulius was down included — and are
 /// never replaced by the empty snapshot of a run nobody watched.
@@ -228,7 +228,7 @@ fn a_run_that_ends_while_yulius_is_down_keeps_its_metrics() -> TestResult {
     ends_while_down(HostAfterExit::Gone)
 }
 
-/// SPEC-143 RDM-001 (#385, review round 1): the agent exits while Yulius is down and its host
+/// The agent exits while Yulius is down and its host
 /// still lingers (30 s) to hand the exit over: the next start reattaches and gets the exit at once,
 /// before its watcher has read the run's transcript. The run is counted, not saved empty.
 #[test]

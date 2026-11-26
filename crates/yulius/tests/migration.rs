@@ -1,4 +1,4 @@
-//! A move asked from Settings → Instance (SPEC-470 MVB-020 to MVB-023), through the API with a
+//! A move asked from Settings → Instance, through the API with a
 //! fake of the root helper's files: what the superadmin is told, what is written for root, what
 //! is refused and what is audited. The real helper: `src/migrate_helper/tests.rs`; the real
 //! files: `src/wiring/migrate_files.rs`.
@@ -297,7 +297,7 @@ const GOOD: [(&str, HostOutcome); 3] = [
     ("downtime", HostOutcome::Ok),
 ];
 
-/// MVB-020, MVB-021: only the superadmin sees a move or asks for one, and a write needs the
+/// Only the superadmin sees a move or asks for one, and a write needs the
 /// session's CSRF token.
 #[tokio::test]
 async fn only_the_superadmin_sees_and_asks_for_a_move() -> TestResult {
@@ -331,7 +331,7 @@ async fn only_the_superadmin_sees_and_asks_for_a_move() -> TestResult {
     Ok(())
 }
 
-/// MVB-020 to MVB-022: a plan is written once for root with the values the person gave, is
+/// A plan is written once for root with the values the person gave, is
 /// audited, and its state is told from the helper's files.
 #[tokio::test]
 async fn a_plan_is_written_for_root_audited_and_followed() -> TestResult {
@@ -449,7 +449,7 @@ async fn a_plan_is_written_for_root_audited_and_followed() -> TestResult {
     Ok(())
 }
 
-/// MVB-021: a move is the plan the person saw: the same values, shown to its end without a
+/// A move is the plan the person saw: the same values, shown to its end without a
 /// failure and without a key still to add, at most an hour ago, and the host typed.
 #[tokio::test]
 async fn a_move_needs_the_plan_that_was_shown_and_the_typed_host() -> TestResult {
@@ -644,7 +644,7 @@ async fn a_field_outside_the_rules_is_refused_before_anything_is_written() -> Te
     Ok(())
 }
 
-/// MVB-021, MVB-022: an abort needs a recorded move; it may arrive while a run is in flight,
+/// An abort needs a recorded move; it may arrive while a run is in flight,
 /// which it stops, and it is audited with the move it is of.
 #[tokio::test]
 async fn an_abort_is_of_the_recorded_move_and_may_stop_a_run() -> TestResult {
@@ -743,7 +743,7 @@ async fn an_abort_is_of_the_recorded_move_and_may_stop_a_run() -> TestResult {
     Ok(())
 }
 
-/// MVB-021, MVB-023: nothing is asked of a move while an update or restart runs, and neither
+/// Nothing is asked of a move while an update or restart runs, and neither
 /// starts while a move's request waits or its run is in flight.
 #[tokio::test]
 async fn updates_and_moves_refuse_each_other() -> TestResult {
@@ -810,7 +810,7 @@ async fn updates_and_moves_refuse_each_other() -> TestResult {
     Ok(())
 }
 
-/// SPEC-483 MOV-001: a helper whose report is a minute old is lost only once systemd says its
+/// A helper whose report is a minute old is lost only once systemd says its
 /// service ended. While the service still runs its command (a copy that saturates the disk
 /// keeps the report from being written), or systemd cannot say, the move is in flight: no
 /// update or restart, and nothing that continues a stopped move is offered.
@@ -907,7 +907,7 @@ async fn a_silent_helper_is_lost_only_once_its_service_ended() -> TestResult {
     Ok(())
 }
 
-/// MVB-020: a request nobody takes is said after 20 s and can be asked again; a helper that
+/// A request nobody takes is said after 20 s and can be asked again; a helper that
 /// stopped reporting is lost after 60 s; a request too old to be taken is removed.
 #[tokio::test]
 async fn an_unanswered_request_and_a_silent_helper_are_said() -> TestResult {
@@ -996,7 +996,7 @@ async fn an_unanswered_request_and_a_silent_helper_are_said() -> TestResult {
     Ok(())
 }
 
-/// MVB-020: a run the command refuses changes nothing, the recorded move's checklist
+/// A run the command refuses changes nothing, the recorded move's checklist
 /// included. It stays, said to be an earlier run's and never read as this run's, and what is
 /// recorded can still be aborted.
 #[tokio::test]
@@ -1074,7 +1074,7 @@ async fn a_refused_run_keeps_the_recorded_moves_checklist() -> TestResult {
     Ok(())
 }
 
-/// MVB-020: a run that was refused wrote no checklist: the helper refused the request, or the
+/// A run that was refused wrote no checklist: the helper refused the request, or the
 /// command refused before it changed anything (exit 2). One that is there is another run's,
 /// also when it was written in the very second the refused run began.
 #[tokio::test]
@@ -1149,7 +1149,7 @@ async fn a_refused_run_has_no_checklist_of_its_own() -> TestResult {
     Ok(())
 }
 
-/// MVB-021: an abort the command refused because nothing is recorded leaves nothing to abort;
+/// An abort the command refused because nothing is recorded leaves nothing to abort;
 /// one that did not complete can be asked again.
 #[tokio::test]
 async fn an_abort_that_found_nothing_is_not_offered_again() -> TestResult {
@@ -1201,7 +1201,7 @@ async fn an_abort_that_found_nothing_is_not_offered_again() -> TestResult {
     Ok(())
 }
 
-/// MVB-021: of two asks at once (two tabs, two superadmins) one is written; the other is told
+/// Of two asks at once (two tabs, two superadmins) one is written; the other is told
 /// that a request waits, however long the write takes.
 #[tokio::test]
 async fn of_two_asks_at_once_one_is_written() -> TestResult {
@@ -1223,7 +1223,7 @@ async fn of_two_asks_at_once_one_is_written() -> TestResult {
     Ok(())
 }
 
-/// MVB-020: on the host a move arrived at, its checklist; and a checklist written after the
+/// On the host a move arrived at, its checklist; and a checklist written after the
 /// helper's last run is the command line's.
 #[tokio::test]
 async fn the_view_tells_what_arrived_and_what_was_run_on_the_host() -> TestResult {
@@ -1287,7 +1287,7 @@ async fn the_view_tells_what_arrived_and_what_was_run_on_the_host() -> TestResul
     Ok(())
 }
 
-/// MVB-020, MVB-021: without the helper nothing can be asked, and a request that cannot be
+/// Without the helper nothing can be asked, and a request that cannot be
 /// written is said.
 #[tokio::test]
 async fn without_the_helper_nothing_is_asked() -> TestResult {
@@ -1337,7 +1337,7 @@ async fn without_the_helper_nothing_is_asked() -> TestResult {
     Ok(())
 }
 
-/// MVB-022: nothing is asked of root that the audit log does not hold: the entry is written
+/// Nothing is asked of root that the audit log does not hold: the entry is written
 /// before the request.
 #[tokio::test]
 async fn an_ask_is_audited_before_its_request_is_written() -> TestResult {

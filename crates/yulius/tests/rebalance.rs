@@ -1,4 +1,4 @@
-//! Moving idle tasks off a nearly used-up subscription before it runs out (SPEC-629): placement
+//! Moving idle tasks off a nearly used-up subscription before it runs out: placement
 //! past a harness's rebalance threshold, idle moves, pins and "nothing has room", with real
 //! processes as in `subscription_moves.rs`.
 
@@ -33,7 +33,7 @@ fn agent() -> FakeAgentOptions {
     }
 }
 
-/// RBL-002, AC-1: a new task goes to the subscription below 95 %, although the one at 96 %,
+/// A new task goes to the subscription below 95 %, although the one at 96 %,
 /// whose week resets in an hour, has the better use-it-or-lose-it score.
 #[test]
 fn a_new_task_keeps_off_a_subscription_past_the_threshold() -> TestResult {
@@ -87,7 +87,7 @@ async fn idle(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// One rebalance notice as posted (SPEC-624): (the person it went to, key, title, detail).
+/// One rebalance notice as posted: (the person it went to, key, title, detail).
 type Told = (Option<String>, String, String, Option<String>);
 
 /// The rebalance notices posted so far.
@@ -126,14 +126,14 @@ async fn run_on(
     idle(app, id).await
 }
 
-/// RBL-005, AC-4: a task a person moved with "Run on…" is pinned there; parked while its
+/// A task a person moved with "Run on…" is pinned there; parked while its
 /// subscription reads 96 %, it resumes on its pin, where the pool would place it elsewhere.
 #[test]
 fn a_pinned_parked_task_resumes_on_its_pin() -> TestResult {
     pinned_parked_task_resumes(96.0)
 }
 
-/// RBL-005: a parked task whose pin is at 100 % resumes where the pool places it, and that
+/// A parked task whose pin is at 100 % resumes where the pool places it, and that
 /// ends the pin.
 #[test]
 fn a_parked_task_whose_pin_is_full_resumes_where_the_pool_places_it() -> TestResult {
@@ -229,7 +229,7 @@ async fn idle_on_a_full_first(
     Ok((id, user))
 }
 
-/// RBL-003, AC-2: an idle task on a subscription at 96 % moves at the next pass to the one at
+/// An idle task on a subscription at 96 % moves at the next pass to the one at
 /// 30 %, in the same session; its info lists the switch with why.
 #[test]
 fn an_idle_task_leaves_a_subscription_past_the_threshold() -> TestResult {
@@ -245,7 +245,7 @@ fn an_idle_task_leaves_a_subscription_past_the_threshold() -> TestResult {
         let pass = app.rebalance_now().await;
         assert_eq!(pass.moved, 1, "{pass:?}");
         live_run(&app, &id, 2).await?;
-        // Told once (RBL-006): its terminal, and its person's notification center.
+        // Told once: its terminal, and its person's notification center.
         // The switch's own lines say that the session goes on; this one says why, once.
         let said: Vec<String> = notices(&mut watch)
             .into_iter()
@@ -296,7 +296,7 @@ fn an_idle_task_leaves_a_subscription_past_the_threshold() -> TestResult {
     Ok(())
 }
 
-/// RBL-003, AC-3: a task mid-turn stays through a pass; once its turn ended, the next pass
+/// A task mid-turn stays through a pass; once its turn ended, the next pass
 /// moves it.
 #[test]
 fn a_task_mid_turn_stays_until_its_turn_ends() -> TestResult {
@@ -326,7 +326,7 @@ fn a_task_mid_turn_stays_until_its_turn_ends() -> TestResult {
     Ok(())
 }
 
-/// RBL-005, AC-4: a task a person moved with "Run on…" stays on that subscription through
+/// A task a person moved with "Run on…" stays on that subscription through
 /// passes while it reads 96 %; a plain move by the pool ends the pin.
 #[test]
 fn a_pinned_task_stays_on_its_subscription() -> TestResult {
@@ -365,7 +365,7 @@ fn a_pinned_task_stays_on_its_subscription() -> TestResult {
     Ok(())
 }
 
-/// RBL-007, AC-5: with every other subscription at or above 95 %, an idle task on one at 97 %
+/// With every other subscription at or above 95 %, an idle task on one at 97 %
 /// stays, and its terminal and its person are told once; later passes tell nothing more until
 /// the episode ends, when one has room again and the task moves.
 #[test]
@@ -432,7 +432,7 @@ fn nothing_has_room_is_told_once() -> TestResult {
     Ok(())
 }
 
-/// RBL-005: a pin ends once the pool moves the task to another subscription (here as at a usage
+/// A pin ends once the pool moves the task to another subscription (here as at a usage
 /// limit): back on the old one later, it is not pinned there by chance.
 #[test]
 fn the_pools_move_ends_a_pin() -> TestResult {
@@ -461,7 +461,7 @@ fn the_pools_move_ends_a_pin() -> TestResult {
     Ok(())
 }
 
-/// RBL-003: an idle task a person left a draft in, or paused, is kept where it is: a restart
+/// An idle task a person left a draft in, or paused, is kept where it is: a restart
 /// would lose the draft or end the pause.
 #[test]
 fn a_draft_or_a_persons_pause_keeps_an_idle_task() -> TestResult {
@@ -494,7 +494,7 @@ fn a_draft_or_a_persons_pause_keeps_an_idle_task() -> TestResult {
     Ok(())
 }
 
-/// RBL-005: a pin naming another subscription than the one the task runs on ended when it left
+/// A pin naming another subscription than the one the task runs on ended when it left
 /// it: the pass clears it, also when the move goes back to that subscription.
 #[test]
 fn the_pass_ends_a_pin_the_task_left() -> TestResult {
@@ -521,7 +521,7 @@ fn the_pass_ends_a_pin_the_task_left() -> TestResult {
     Ok(())
 }
 
-/// RBL-003: a prompt that arrives while the switch is prepared wins: the move's claim of the
+/// A prompt that arrives while the switch is prepared wins: the move's claim of the
 /// idle state it read is a conflict, the run stays and nothing is cut.
 #[test]
 fn a_turn_that_starts_while_the_move_is_prepared_keeps_its_run() -> TestResult {
@@ -577,7 +577,7 @@ async fn done_goal_on_a_full_first(
     Ok(id)
 }
 
-/// RBL-003, RBL-004: a goal session would get its goal typed again by a restart, so it is never
+/// A goal session would get its goal typed again by a restart, so it is never
 /// moved idle: with parking off it stays where it is, nothing typed and no switch recorded; with
 /// parking on it is parked, told once, and its resume is placed off the full subscription.
 #[test]
@@ -614,7 +614,7 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
                 let told = rebalanced(&mut events);
                 assert_eq!(told.len(), 1, "{told:?}");
                 assert_eq!(told[0].2, "#1 Idle parked off Claude a-first");
-                // The parked screen says why, for whoever opens the task later (RBL-006).
+                // The parked screen says why, for whoever opens the task later.
                 eventually("the parked screen", Duration::from_secs(30), || async {
                     screen(&app, &id)
                         .replace('\n', "")
@@ -642,7 +642,7 @@ fn an_idle_goal_session_is_parked_not_restarted() -> TestResult {
     Ok(())
 }
 
-/// RBL-003: an idle goal session that parking's own facts keep (quiet for less than the
+/// An idle goal session that parking's own facts keep (quiet for less than the
 /// rebalance's minute, under a 30-minute grace period) stays through passes without a single
 /// pull request read: the pass asks the local facts before a park reads GitHub.
 #[test]
@@ -697,7 +697,7 @@ fn a_goal_session_parking_keeps_costs_no_github_reads() -> TestResult {
     Ok(())
 }
 
-/// RBL-001: at 98 a harness's rebalance is off: an idle task on a subscription at 98.5 % stays
+/// At 98 a harness's rebalance is off: an idle task on a subscription at 98.5 % stays
 /// for the turn boundary and the limit to move, as before.
 #[test]
 fn at_98_the_rebalance_is_off() -> TestResult {

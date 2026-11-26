@@ -1,4 +1,4 @@
-//! A task's live transcript for the people who watch it (SPEC-179 WAT-001, AC-WAT-1): the tail of
+//! A task's live transcript for the people who watch it: the tail of
 //! the latest session, reading on from `end` as the file grows, an unchanged file answered without
 //! reading it, redaction as on session pages, read access, and a task without a session.
 
@@ -289,7 +289,7 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
     Ok(())
 }
 
-/// SPEC-483 slice 36 (QB5): a watcher's next poll goes on from where its last read ended, without
+/// A watcher's next poll goes on from where its last read ended, without
 /// reading the transcript's earlier lines again. A transcript is append-only (one rewritten in
 /// place is read afresh), so a newline slipped into an earlier line after a read does not
 /// renumber the lines read after it, which a read from the start would.
@@ -342,7 +342,7 @@ async fn a_watcher_s_next_poll_reads_only_what_was_written_since() -> TestResult
     Ok(())
 }
 
-/// SPEC-525 (#1440): a watcher of someone else's Codex task reads its session. The rollout's lines
+/// A watcher of someone else's Codex task reads its session. The rollout's lines
 /// read as nothing before, so the watch view said "Codex is starting…" for the whole run.
 #[tokio::test]
 async fn a_watcher_reads_a_codex_task_s_rollout() -> TestResult {

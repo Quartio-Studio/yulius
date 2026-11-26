@@ -1,4 +1,4 @@
-//! A task's agent reads the status of its project's other tasks, read-only (SPEC-625, ADR-0460):
+//! A task's agent reads the status of its project's other tasks, read-only:
 //! owner, delivery, claims, waits and screen; never another project's; never more than its owner
 //! may view; never a personal task's free text unless it holds the same person's secrets; and no
 //! way to steer a task.
@@ -59,7 +59,7 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
         ("t6", "s1", "u-alice", ALICE_TWO),
         ("t4", "s2", "u-bob", BOB_WEB),
     ] {
-        // Alice's t1 asks for something only she should read when it is personal (AC-4).
+        // Alice's t1 asks for something only she should read when it is personal.
         let prompt = if id == "t1" {
             "PRIVATE prompt"
         } else {
@@ -191,7 +191,7 @@ async fn transcript(w: &World, id: &str, mark: &str) -> TestResult {
     Ok(())
 }
 
-/// SPEC-625 AC-1 (PSV-001): alice's task reads bob's task of the same project: its owner, its
+/// Alice's task reads bob's task of the same project: its owner, its
 /// pull request and stage, its claims, what it waits for and its screen, in its record and in
 /// the text its agent reads.
 #[tokio::test]
@@ -273,7 +273,7 @@ async fn a_task_reads_a_neighbours_owner_delivery_claims_waits_and_screen() -> T
     Ok(())
 }
 
-/// SPEC-625 PSV-001: a task shows the claims it holds while live or waiting to start (a chained
+/// A task shows the claims it holds while live or waiting to start (a chained
 /// task holds the paths it was created with); an ended task's, which nothing released, are not
 /// shown.
 #[tokio::test]
@@ -306,7 +306,7 @@ async fn only_the_claims_a_task_still_holds_are_shown() -> TestResult {
     Ok(())
 }
 
-/// SPEC-625 AC-2 (PSV-002): a task of another project is not found by id, its claims never show
+/// A task of another project is not found by id, its claims never show
 /// among a neighbour's, and no list shows it.
 #[tokio::test]
 async fn a_task_never_reads_another_projects_tasks() -> TestResult {
@@ -332,7 +332,7 @@ async fn a_task_never_reads_another_projects_tasks() -> TestResult {
     Ok(())
 }
 
-/// SPEC-625 AC-3 (PSV-003): a task reads only while its owner may view the project: a disabled
+/// A task reads only while its owner may view the project: a disabled
 /// owner's task, or one whose owner lost read access, is refused.
 #[tokio::test]
 async fn a_task_reads_only_what_its_owner_may_view() -> TestResult {
@@ -344,7 +344,7 @@ async fn a_task_reads_only_what_its_owner_may_view() -> TestResult {
     for (name, args) in [
         ("tasks_list", json!({})),
         ("task_get", json!({"number": alice_task})),
-        // A fork reads the task too (SPEC-628).
+        // A fork reads the task too.
         ("task_fork", json!({"number": alice_task})),
     ] {
         let (refused, error) = tool(&w, BOB, name, args).await?;
@@ -387,7 +387,7 @@ fn shows(value: &Value) -> String {
     value.to_string()
 }
 
-/// SPEC-625 AC-4 (PSV-004): with alice's personal secret in the project, bob's task and the
+/// With alice's personal secret in the project, bob's task and the
 /// automation's task see none of her task's request, plan texts, claim notes, question or
 /// screen, nor its transcript; her other task, which holds the same secret, sees them.
 #[tokio::test]
@@ -612,7 +612,7 @@ async fn a_personal_tasks_free_text_stays_with_tasks_holding_the_same_secrets() 
     Ok(())
 }
 
-/// SPEC-625 AC-5 (PSV-005): reading a neighbour changes nothing of it, the read says it is
+/// Reading a neighbour changes nothing of it, the read says it is
 /// read-only, and a task's agent is served no tool that messages or steers another task.
 #[tokio::test]
 async fn reading_a_neighbour_changes_nothing_and_no_steering_tool_is_served() -> TestResult {
@@ -687,7 +687,7 @@ async fn reading_a_neighbour_changes_nothing_and_no_steering_tool_is_served() ->
         .ok_or("task_get")?;
     assert!(described.contains("read-only"), "{described}");
     assert!(described.contains("only a person"), "{described}");
-    // SPEC-625 AC-6: the server's instructions say to read, not to ask a person to relay.
+    // The server's instructions say to read, not to ask a person to relay.
     let init = call(
         &w.h.internal,
         Method::POST,

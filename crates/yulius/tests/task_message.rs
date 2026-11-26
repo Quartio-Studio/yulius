@@ -1,4 +1,4 @@
-//! Messages to tasks (SPEC-230): the Superagent's `task_message` types a message into a running
+//! Messages to tasks: the Superagent's `task_message` types a message into a running
 //! task's session (real processes: supervisor → detached `yulius ptyhost` → fake agent), or adds
 //! it to the request of a task that has not started, and refuses what cannot take one.
 
@@ -71,7 +71,7 @@ async fn running(app: &Arc<App>, data: &Path) -> Result<(TaskId, ProjectCaller),
     Ok((id, superagent(&sandbox, &user, "admin")))
 }
 
-/// SPEC-483 slice 5 (review round 4, ADR-0317): a running task whose screen became unknown (a
+/// A running task whose screen became unknown (a
 /// secret stopped opening, output was dropped) gets no message typed, and its person learns it:
 /// the first refusal flags the task with what to do, once, however many messages follow.
 #[test]
@@ -185,7 +185,7 @@ fn a_message_kept_out_of_a_withheld_screen_flags_the_task_once() -> TestResult {
     Ok(())
 }
 
-/// AC-1, AC-2, AC-7 (TMS-003, TMS-005, TMS-006): a running task gets the message in its session,
+/// A running task gets the message in its session,
 /// labelled, multi-line, with no escape sequence of the text reaching the TUI; the answer says
 /// `sent`, the audit names the Superagent without the text, and the task's open `needs_you` ends.
 #[test]
@@ -244,7 +244,7 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
     })
 }
 
-/// The audit rows of answers to `id`'s `needs_you` (SPEC-516 NYA-005), as (actor, detail).
+/// The audit rows of answers to `id`'s `needs_you`, as (actor, detail).
 fn answers_audited(data: &Path, id: &TaskId) -> Result<Vec<(String, Value)>, Error> {
     let db = rusqlite::Connection::open(data.join("yulius.db"))?;
     let mut query = db.prepare(
@@ -309,7 +309,7 @@ fn region_asked() -> NeedsYouRecord {
     }
 }
 
-/// SPEC-516 NYA-004 (review round 1): a run started with its owner's personal MCP server holds
+/// A run started with its owner's personal MCP server holds
 /// it until it restarts, also once the server is deleted. A teammate's answer is kept out of it;
 /// the owner's own answer goes in, labelled as theirs and audited as the owner's.
 #[test]
@@ -385,7 +385,7 @@ fn a_run_holding_the_owners_personal_server_takes_only_the_owners_answer() -> Te
     })
 }
 
-/// SPEC-516 AC-1 (NYA-001, NYA-002, NYA-003, NYA-005): bob, who may work in the project but
+/// Bob, who may work in the project but
 /// does not own the task, answers what its agent asked. The agent gets one labelled answer that
 /// names him as not the owner, the request ends, the task stays admin's (no control request, no
 /// giver), and the audit names him without the text.
@@ -536,7 +536,7 @@ fn a_remote_message_names_the_persons_own_agent() -> TestResult {
     })
 }
 
-/// SPEC-427 GSA-003: a message the person's Global Superagent sends over the remote tools is
+/// A message the person's Global Superagent sends over the remote tools is
 /// labelled as the Superagent's, not as the person's own agent, and audited as
 /// `superagent:<login>`.
 #[test]
@@ -600,7 +600,7 @@ fn a_global_superagent_message_names_the_superagent() -> TestResult {
     })
 }
 
-/// AC-3 (TMS-004): a person who typed into the task's terminal in the last minute owns its
+/// A person who typed into the task's terminal in the last minute owns its
 /// prompt box: nothing is typed, and the Superagent is told why.
 #[test]
 fn a_persons_draft_keeps_the_message_out() -> TestResult {
@@ -738,7 +738,7 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
             read_alone(&app, &id, "half a thought")
         })
         .await?;
-        // The minute after their Enter passes (DRF-002), and the same message is typed.
+        // The minute after their Enter passes, and the same message is typed.
         clock.shift(MINUTE + 1_000);
         let answer = app.tool_task_message(&caller, &message).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
@@ -827,9 +827,9 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
             Err(AppError::Invalid(_))
         ));
 
-        // A prompt Yulius held for the person's decision is back in the box (TSK-013): it is
+        // A prompt Yulius held for the person's decision is back in the box: it is
         // theirs to decide on its card, and no message carries it to the agent (review round
-        // 1, F6).
+        // 1).
         let held = yulius_app::intake::HoldRecord {
             id: "h-1".into(),
             task_id: id.clone(),
@@ -914,8 +914,8 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 TCT-006 (review round 1, F1): a draft typed before a restart of the server is
-/// known from its mark alone (SPEC-480 DRF-009), and a prompt Yulius types does not end such
+/// A draft typed before a restart of the server is
+/// known from its mark alone, and a prompt Yulius types does not end such
 /// a draft. The owner's message sent past it does: it carried the text to the agent, so the
 /// mark leaves the run's folder and the next plain message is typed. It used to answer "the
 /// box is empty again" while every later message was refused for the same draft.
@@ -1050,7 +1050,7 @@ fn the_owner_closes_out_an_idle_task() -> TestResult {
     })
 }
 
-/// SPEC-490 OWN-002, OWN-005 (review round 1): a person who does not own a task closes it out
+/// A person who does not own a task closes it out
 /// too; its audit names them and the owner, and its terminal says who closed it.
 #[test]
 fn someone_else_closes_out_an_idle_task_and_is_named() -> TestResult {
@@ -1127,7 +1127,7 @@ fn someone_else_closes_out_an_idle_task_and_is_named() -> TestResult {
     })
 }
 
-/// SPEC-480 AC2, AC4 (DRF-003, DRF-005, DRF-006, DRF-007): a message of Yulius's own (here the
+/// A message of Yulius's own (here the
 /// MCP watch's `/mcp reconnect yulius`, a command) waits for a person's draft. Two minutes
 /// after their last key nothing is typed and nobody is told; eleven minutes after it the task
 /// is flagged with the reason and its terminal says so, once. After the person sent their text
@@ -1242,7 +1242,7 @@ async fn idle_full_screen(
     let (id, caller) = running(&app, data).await?;
     turn_ended(&app, &id).await?;
     // Its Stop settles the task before Yulius records the answer: a test that flags the task
-    // next must not meet that Stop still at work (#1615).
+    // next must not meet that Stop still at work.
     let run_dir = app
         .deps
         .store
@@ -1272,7 +1272,7 @@ async fn turn_ended(app: &App, id: &TaskId) -> TestResult {
     .await
 }
 
-/// What of a prompt reaches Yulius late, after its turn ended, as on a loaded host (#1615).
+/// What of a prompt reaches Yulius late, after its turn ended, as on a loaded host.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Late {
     /// Nothing: the steps run on their own.
@@ -1361,7 +1361,7 @@ impl HeldLine {
     }
 }
 
-/// The mark of a possible draft in the folder of `id`'s live run (SPEC-480 DRF-009).
+/// The mark of a possible draft in the folder of `id`'s live run.
 async fn draft_mark(app: &App, id: &TaskId) -> Result<std::path::PathBuf, Error> {
     let run_dir = app.deps.store.live_attempt(id).await?.ok_or("run")?.run_dir;
     Ok(Path::new(&run_dir).join("person-typed"))
@@ -1370,7 +1370,7 @@ async fn draft_mark(app: &App, id: &TaskId) -> Result<std::path::PathBuf, Error>
 /// A key that leaves nothing in the prompt box: Backspace in an empty one.
 const KEY_WITHOUT_TEXT: &[u8] = b"\x7f";
 
-/// SPEC-572 AC1: a person presses a key that leaves nothing in the
+/// A person presses a key that leaves nothing in the
 /// prompt box (Escape, an arrow, an answered dialog; here Backspace). Within the minute a
 /// message is kept out as for anyone at the keyboard. After it, the screen shows the box
 /// empty and the message is typed: the agent reads it as a prompt of its own, and the possible
@@ -1464,7 +1464,7 @@ fn a_message_of_yulius_is_typed_into_a_box_a_key_left_empty() -> TestResult {
     Ok(())
 }
 
-/// SPEC-572 AC2: with the prompt box on screen, text a person typed into it
+/// With the prompt box on screen, text a person typed into it
 /// and left there holds a message of Yulius's own as SPEC-480 requires: eleven minutes later
 /// nothing is typed, the task is flagged and its terminal says so. The person then clears the
 /// text and sends nothing. Within the minute the command still waits; after it the next pass
@@ -1474,7 +1474,7 @@ fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
     draft_held_until_cleared(Late::Nothing)
 }
 
-/// #1615: on a loaded host a prompt's submit hook reaches Yulius after its client gave up, the
+/// On a loaded host a prompt's submit hook reaches Yulius after its client gave up, the
 /// agent ended its turn, and the steps of SPEC-572 AC2 flagged the held message and cleared the
 /// box. That submit was sent before the turn's Stop, so it changes nothing: the flag stands
 /// through the keyboard minute and ends with the hold. On the test's shifted clock its send time
@@ -1572,7 +1572,7 @@ fn draft_held_until_cleared(late: Late) -> TestResult {
     Ok(())
 }
 
-/// SPEC-572 AC3: a box seen empty ends the hold by itself, with no prompt hook to do it
+/// A box seen empty ends the hold by itself, with no prompt hook to do it
 /// (a command Claude Code runs without one, a CLI without hooks; here an agent that runs none):
 /// a possible draft is flagged, its person clears it, and the pass that types the command has
 /// by then ended the flag and removed the draft's mark.
@@ -1650,7 +1650,7 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
     Ok(())
 }
 
-/// SPEC-572 AC3: a key typed after the screen was read, while the hold's
+/// A key typed after the screen was read, while the hold's
 /// mark and flag are ended, is a possible draft of its own: the hold is judged again before
 /// anything is pasted, and the message is refused. The paste used to go in behind that key.
 #[test]
@@ -1734,7 +1734,7 @@ fn a_stash_hint_that_replaces_the_empty_box_proof_keeps_the_mark() -> TestResult
     })
 }
 
-/// SPEC-572 AC3: after a restart of the server the possible draft is
+/// After a restart of the server the possible draft is
 /// known from its mark alone, and the screen is the process host's snapshot of what the
 /// session showed. Clearing an old draft just before restart still holds the message
 /// for the typing minute. After a real repaint and the minute, it arrives alone.
@@ -2395,7 +2395,7 @@ fn the_codex_rate_limit_picker_holds_messages_until_it_is_dismissed() -> TestRes
     })
 }
 
-/// Review round 1: a person's hold (SPEC-480) after a refused Codex write is no delivery
+/// A person's hold after a refused Codex write is no delivery
 /// problem. Only a refusal of the write itself counts towards raising PR news.
 #[test]
 fn a_key_that_dismisses_the_codex_picker_raises_no_pr_news_request() -> TestResult {
@@ -2918,9 +2918,9 @@ fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult
     Ok(())
 }
 
-/// SPEC-230 TMS-004: a Superagent's message never goes into Claude Code's folder-trust dialog
+/// A Superagent's message never goes into Claude Code's folder-trust dialog
 /// of a goal run (whose goal is its launch prompt, so no first message is being typed): only a
-/// person answers it (ONE-005). The call is refused and nothing is typed.
+/// person answers it. The call is refused and nothing is typed.
 #[test]
 fn a_superagent_message_is_not_typed_into_a_trust_prompt() -> TestResult {
     let (_dir, data) = data_dir()?;
@@ -2962,7 +2962,7 @@ fn a_superagent_message_is_not_typed_into_a_trust_prompt() -> TestResult {
     Ok(())
 }
 
-/// AC-8 (TMS-004): a run that is running but whose Claude Code session has not started (no
+/// A run that is running but whose Claude Code session has not started (no
 /// SessionStart yet) refuses the message: typed before its prompt box reads, it would be lost or
 /// answer a trust dialog about to show. Nothing is typed.
 #[test]
@@ -3567,7 +3567,7 @@ async fn refusal(
     }
 }
 
-/// AC-4 (TMS-002): a task that has not started takes the message into its request, as a queued
+/// A task that has not started takes the message into its request, as a queued
 /// message of its person.
 #[tokio::test]
 async fn a_task_that_has_not_started_gets_the_message_in_its_request() -> TestResult {
@@ -3600,7 +3600,7 @@ async fn a_task_that_has_not_started_gets_the_message_in_its_request() -> TestRe
     Ok(())
 }
 
-/// AC-5 (TMS-004, TMS-005): a task that is neither waiting to start nor running, an empty text,
+/// A task that is neither waiting to start nor running, an empty text,
 /// a task of another project and a person who may only read are refused; nothing changes.
 #[tokio::test]
 async fn what_cannot_take_a_message_is_refused() -> TestResult {
@@ -3671,7 +3671,7 @@ async fn what_cannot_take_a_message_is_refused() -> TestResult {
     Ok(())
 }
 
-/// SPEC-512 ANS-003 (#1418): bob, whom the request names, answers it through his own agent: the
+/// Bob, whom the request names, answers it through his own agent: the
 /// message reaches the agent as his labelled answer, the request ends, the task stays admin's.
 #[test]
 fn a_named_person_answers_through_their_own_agent() -> TestResult {
@@ -3730,7 +3730,7 @@ fn a_named_person_answers_through_their_own_agent() -> TestResult {
     })
 }
 
-/// SPEC-512 ANS-004 (review of part 2): an answer ends the question it answered only: one the
+/// An answer ends the question it answered only: one the
 /// agent asked while the answer was being typed stays open.
 #[test]
 fn an_answer_leaves_a_question_asked_while_it_was_typed() -> TestResult {

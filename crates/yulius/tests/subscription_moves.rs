@@ -53,7 +53,7 @@ fn a_continued_task_never_runs_on_its_deleted_subscription() -> TestResult {
         let ctx = ctx(&app, &user).await?;
         stop(&app, &id).await?;
         app.delete_account(&ctx, "a-first").await?;
-        // Asked for by name, the removed one is refused, saying so (MOV-002).
+        // Asked for by name, the removed one is refused, saying so.
         let named = app
             .continue_task(
                 &ctx,
@@ -215,7 +215,7 @@ fn deleting_the_last_subscription_makes_its_task_wait_for_one() -> TestResult {
     Ok(())
 }
 
-/// A subscription Claude refuses (#1138) while the only other one is gone: the task waits and
+/// A subscription Claude refuses while the only other one is gone: the task waits and
 /// needs a person; signing a subscription in again would end that.
 #[test]
 fn a_refused_last_subscription_leaves_the_task_needing_you() -> TestResult {
