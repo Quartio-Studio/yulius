@@ -9,7 +9,7 @@ status: done
 
 Carry out five findings of the November 2026 audit of Yulius's own CI and CD (L3), one pull
 request each, delivered in order: F7 + F11, F1, F2, F8(a) + F12, F5 + F6. Less code doing the
-same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev).
+same thing; behaviour unchanged (F2's drop of prove-on-dev was reverted, see Decisions).
 
 ## Context
 
@@ -84,4 +84,4 @@ same thing; behaviour unchanged except for the capability F2 drops (prove-on-dev
 - PR5 #1814 (F5) merged at 4bc54191f.
 - PR6 reverts #1799 on dev at 4bc54191f: the proving slot passes through `cd_prepare` into the
   split `cd_resolve_target`; 5037 tests (the three prove-on-dev tests back) and the CD e2e spec
-  (28) passed.
+  (28) passed, and after merging dev at 98fc78089 the CD, rollback and staging tests (132).
