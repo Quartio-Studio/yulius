@@ -2070,3 +2070,88 @@ async fn names_that_could_never_answer_are_refused_with_why() -> TestResult {
     assert!(f.h.store.task_needs_you(&f.task.id).await?.is_none());
     Ok(())
 }
+
+/// The answer of `/internal/git-credential` to the run with task token `token`.
+async fn agent_credential(
+    h: &Harness,
+    token: &str,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com", "path": "acme/repo.git"})),
+        &Creds {
+            bearer: Some(token.into()),
+            ..Creds::default()
+        },
+    )
+    .await
+}
+
+/// [`fixture`] with the GitHub App installed, so a run may be issued its agent token.
+async fn fixture_with_app() -> Result<Fixture, Box<dyn std::error::Error>> {
+    let f = fixture().await?;
+    f.h.store.init_instance("https://yulius.test", "x").await?;
+    crate::support::configure_github_app(&f.h).await?;
+    f.h.store.set_installation(Some(7)).await?;
+    Ok(f)
+}
+
+/// SPEC-675 L4Q3-001, L4Q3-002, ADR-0481: disabling a task's owner stops the task, and its run
+/// is refused a git credential from then on.
+#[tokio::test]
+async fn a_disabled_owners_run_gets_no_git_credential_and_stops() -> TestResult {
+    let f = fixture_with_app().await?;
+    let admin = crate::support::setup_superadmin_creds(&f.h).await?;
+    let before = agent_credential(&f.h, "tt").await?;
+    assert_eq!(before.status, 200, "{}", before.body);
+
+    let disable = call(
+        &f.h.router,
+        Method::PATCH,
+        "/api/admin/users/u-a",
+        Some(json!({"disabled": true})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(disable.status, 200, "{}", disable.body);
+    let refused = agent_credential(&f.h, "tt").await?;
+    // Refused as a person's own git is after a disable (`workspace_git_credential`).
+    assert_eq!(refused.status, 401, "{}", refused.body);
+    assert!(refused.body.get("token").is_none(), "{}", refused.body);
+    let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
+    assert!(task.status.is_resting(), "{:?}", task.status);
+    assert_eq!(audited(&f.h, "t1", "task.stopped").await?, 1);
+    Ok(())
+}
+
+/// SPEC-675 L4Q3-001: an owner who lost write access to the project no longer has their run
+/// issued a git credential; Bob, who may still write, gets one for his own task.
+#[tokio::test]
+async fn an_owner_down_to_read_access_has_their_run_refused_a_git_credential() -> TestResult {
+    let f = fixture_with_app().await?;
+    let mut bobs = f.task.clone();
+    bobs.id = TaskId::parse("t2")?;
+    bobs.number = 2;
+    bobs.owner = UserId::parse("u-b")?;
+    f.h.store.insert_task(&bobs).await?;
+    seed_live_attempt(&f.h, "t2", "tt2").await?;
+
+    f.h.github.set_perm("alice", "acme/repo", perms("read"));
+    f.h.store
+        .put_access(
+            &UserId::parse("u-a")?,
+            &f.task.sandbox_id,
+            yulius_domain::permission::AccessLevel::Read,
+            f.h.app.now(),
+        )
+        .await?;
+    let refused = agent_credential(&f.h, "tt").await?;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(refused.body.get("token").is_none(), "{}", refused.body);
+    let bob = agent_credential(&f.h, "tt2").await?;
+    assert_eq!(bob.status, 200, "{}", bob.body);
+    assert_eq!(bob.body["token"], "agent-inst");
+    Ok(())
+}
