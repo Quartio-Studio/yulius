@@ -45,7 +45,7 @@ PR 0.
 - [x] Split delivery.rs: independent review answered
 - [x] Queue: queue_readiness and armed_snapshot
 - [x] Queue: bring_armed_up_to_date for both drivers
-- [ ] Queue: independent review answered
+- [x] Queue: independent review answered
 - [ ] Merge: preview_merge vs adds_to agreement test
 - [ ] Merge: merge_or_arm and base_relation
 - [ ] Merge: independent review answered
@@ -116,7 +116,8 @@ PR 1, the split of `delivery.rs` (audit L2 F8, CLN-002):
   in the next commit.
 
 PR 2, the queue's readiness rule and armed slot (audit L2 F2 + F5, CLN-002):
-- `queue_readiness` (Working, Shells, Dirty, NotRunning, MovedOn, Ready, in that order) replaces
+- `queue_readiness` (Working, Shells, NotRunning, then the worktree's MovedOn, Dirty and MovedOn
+  at the head; cheapest first) replaces
   the copies in the armed-merge pass, `keep_armed_current`, `candidate_wait_note`, the train's
   member step and candidate pick (`train_ready`), and `pr_watch`'s `armed_wait_reason`;
   `agent_idle` replaces the two copies in parking. `bring_armed_up_to_date` (merge plus span)
@@ -127,6 +128,13 @@ PR 2, the queue's readiness rule and armed slot (audit L2 F2 + F5, CLN-002):
   uncommitted-changes check as clean, the rest of the queue as dirty; both now say dirty.
 - Product lines +226 / −221: the copies were short inline expressions, so the gain is one rule
   instead of eight, not size.
-- `scripts/cargo nextest run -p yulius-app`: 740 passed; `-p yulius --test main`: 2829 passed;
-  clippy `-p yulius-app --all-targets -D warnings`: clean. Hand mutation: without the
-  background-shell check in `queue_readiness`, two `antigravity_armed_merge` tests fail.
+- `scripts/cargo nextest run -p yulius-app`: 740 passed; `-p yulius --test main`: 2830 passed;
+  clippy `-p yulius-app -p yulius --all-targets -D warnings`: clean. Hand mutations: without the
+  background-shell check in `queue_readiness`, two `antigravity_armed_merge` tests fail; with the
+  old clean default for a failed read, the new test
+  `stalled_armed_green_pr_with_an_unreadable_worktree_says_uncommitted` fails (generic sentence).
+- Independent review (Fable 5.2) approved `6ccb58f7a`; its notes are answered in the next commit:
+  NotRunning before any Git read (no new `git status` for a task held for capacity), the
+  `MovedOn` doc, no unused derives on `ArmedSnapshot`, the new test, and the stalled-PR test now
+  pins its "turn as working" sentence. `crates/yulius/tests/antigravity_armed_merge.rs` is
+  claimed beside task #657's `crates/yulius/tests/**`, for these two additions only.
