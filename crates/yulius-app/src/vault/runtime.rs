@@ -1680,12 +1680,6 @@ mod tests {
         rules: &[(&str, &str)],
     ) -> (VaultSecretRecord, AgentPayload) {
         let record = VaultSecretRecord {
-            id: format!("id-{name}"),
-            section: crate::ports::vault::VaultSection::Agent,
-            sandbox_id: None,
-            owner_id: None,
-            name: name.into(),
-            description: String::new(),
             hosts: vec!["api.example.com".into()],
             rules: rules
                 .iter()
@@ -1694,25 +1688,7 @@ mod tests {
                 })
                 .collect(),
             injection: injection.into(),
-            header_name: None,
-            fields: vec!["value".into()],
-            envelope: crate::ports::Envelope {
-                kek_id: 1,
-                wrapped_key: Vec::new(),
-                ciphertext: Vec::new(),
-            },
-            created_by: "u".into(),
-            created_at: yulius_domain::time::Timestamp(1),
-            updated_by: "u".into(),
-            updated_at: yulius_domain::time::Timestamp(1),
-            value_updated_at: yulius_domain::time::Timestamp(1),
-            last_used_at: None,
-            requested_hosts: Vec::new(),
-            requested_by: None,
-            env_files: crate::ports::vault::EnvFiles::No,
-            env_requested_by: None,
-            cd_prod: false,
-            auto_allow: false,
+            ..crate::vault::test_record(&format!("id-{name}"), name)
         };
         assert_eq!(
             record.rules.len(),
@@ -1744,14 +1720,14 @@ mod tests {
     /// dropped, the one secret that adds a missing header adds it, and `used` is sorted.
     #[test]
     fn a_request_is_forwarded_with_its_secrets_applied() {
-        let secrets = [bound("TOKEN", "bearer", &[]), bound("KEY", "none", &[])];
+        let secrets = [bound("ATOKEN", "bearer", &[]), bound("ZKEY", "none", &[])];
         let req = request(
             "GET",
-            "/v1?key=yulius-secret-KEY",
+            "/v1?key=yulius-secret-ZKEY",
             &[
                 ("proxy-authorization", "x"),
                 ("accept-encoding", "gzip"),
-                ("x-a", "1"),
+                ("x-a", "yulius-secret-ZKEY"),
             ],
         );
         let Decided::Forward {
@@ -1762,19 +1738,20 @@ mod tests {
         else {
             panic!("not forwarded");
         };
-        assert_eq!(path_and_query, "/v1?key=value-of-KEY");
+        assert_eq!(path_and_query, "/v1?key=value-of-ZKEY");
         assert_eq!(
             headers,
             vec![
-                ("x-a".to_owned(), b"1".to_vec()),
+                ("x-a".to_owned(), b"value-of-ZKEY".to_vec()),
                 (
                     "authorization".to_owned(),
-                    b"Bearer value-of-TOKEN".to_vec()
+                    b"Bearer value-of-ATOKEN".to_vec()
                 ),
                 ("accept-encoding".to_owned(), b"identity".to_vec()),
             ]
         );
-        assert_eq!(used, vec!["KEY".to_owned(), "TOKEN".to_owned()]);
+        // Used twice and found before the injected one: sorted and deduplicated.
+        assert_eq!(used, vec!["ATOKEN".to_owned(), "ZKEY".to_owned()]);
     }
 
     #[test]
