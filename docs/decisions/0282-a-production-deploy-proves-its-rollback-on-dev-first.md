@@ -2,13 +2,8 @@
 
 ## Status
 
-Superseded on 2026-11-26 (audit L3 F2): a refused production deploy no longer deploys dev
-first; the refusal says to get that commit deployed on dev, and the drill follows by itself.
-Proving could not succeed where dev is the merge-first staging target, which changes only to a
-merged revision whose full gate passed, and none of the instance projects checked had a
-production table it could prove. Was: accepted, specified in
-[SPEC-438](../../.ai/specs/SPEC-438-something-is-fucked-up-with-deployment-f.md); task #420, issue
-#1115. Amends [ADR-0263](0263-rollback-redeploys-a-kept-release-and-a-dev-drill-proves-it-before-production.md)
+Accepted. Specified in [SPEC-438](../../.ai/specs/SPEC-438-something-is-fucked-up-with-deployment-f.md);
+task #420, issue #1115. Amends [ADR-0263](0263-rollback-redeploys-a-kept-release-and-a-dev-drill-proves-it-before-production.md)
 (the production gate itself is unchanged).
 
 ## Context

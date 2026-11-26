@@ -1098,7 +1098,7 @@ restart is recorded as `error` and never run again by itself.
 
 | Method and path | Access | Result |
 | --- | --- | --- |
-| `GET /api/sandboxes/{sid}/cd` | read | `CdOverview`; each environment's `deploy_action` `{label, enabled, why?, reason?}` is its Deploy button for the caller ("Deploy dev", "Deploy production…"; `reason` `administrator`, `write`, `nothing` or `running`), decided once on the server: the page renders it, and a task's `needs_you` card whose `action` names a button disabled for the task's owner, and for every person in `who`, is refused (422) with why and what works for that reason (SPEC-650 PST-007) |
+| `GET /api/sandboxes/{sid}/cd` | read | `CdOverview`; each environment's `deploy_action` `{label, enabled, why?, reason?}` is its Deploy button for the caller ("Deploy dev", "Deploy production…"; `reason` `administrator`, `write`, `nothing`, `running` or `waiting`), decided once on the server: the page renders it, and a task's `needs_you` card whose `action` names a button disabled for the task's owner, and for every person in `who`, is refused (422) with why and what works for that reason (SPEC-650 PST-007) |
 | `POST /api/sandboxes/{sid}/cd/{env}/deploy`, a dev-stage `env` | write | the running `CdRun` |
 | `POST /api/sandboxes/{sid}/cd/{env}/deploy`, a production-stage `env` (`production` is `prod`) | admin, `{"confirm": "<slug>", "expect": "<sha>", "confirm_ms": 4200}` | the running `CdRun` after the promotion |
 | `POST /api/sandboxes/{sid}/cd/{env}/staging`, the merge-first staging target | write | `CdStagingRequest` (`asked_by`, `scheduled`, `waiting`): a person's request for the verified integration head, deployed once its full gate passed or, when it is red, the next green revision (or a passing rerun of it); a repeat answers with the pending request, or with a verified one while staging still contains that revision, and otherwise (a failed deploy, a cancel, a rollback) records a new request, deployed as the one asking now (SPEC-650). The target's plain `…/deploy` is refused (409) naming it |
@@ -1122,6 +1122,7 @@ CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "s
                  "rollback": CdRollback}
 CdRollback = {"command": "<rollback>"|null (not configured), "migrations", "drill_environment",
               "drill": CdRun|null (its newest drill), "blocked": "<why a production deploy is refused>"|null,
+              "waiting": "<the production deploy waiting for dev's deploy and drill, SPEC-438>"|null,
               "not_needed": "<why it needs no rollback: no deploy command, SPEC-418>"|null,
               "parts": [{"name": ""|"<part>", "current", "previous" (what "Roll back to previous" goes to),
                          "releases": [{"release", "commit", "deployed_at", "requested_by", "current",
@@ -1187,6 +1188,16 @@ production-stage deploy whose table has a `deploy` is refused (`conflict`, audit
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
 While a different dev commit is drilling, the latest completed drill can supply that proof if it
 passed for the confirmed tree. [ADR-0425](decisions/0425-pin-a-production-deploy-to-verified-dev.md)
+A person's production deploy refused only for that (the newest drill is missing or ran at another
+tree, none runs, the drill environment has `deploy` and `rollback` at the integration head, whose
+tree is the one production deploys, and its newest deploy is of another commit) deploys the drill
+environment instead, as that person, detached from the request:
+the answer is that dev run, whose note says production follows (SPEC-438). Once that deploy and
+its drill passed, Yulius starts the production deploy as the person (access read again, the
+confirmed commit as `expect`); otherwise an ended production run in `error` with reason
+"production did not deploy: <why>" is recorded and audited `cd.refused`. While it waits, the
+production rollback's `waiting` says so and another production deploy is refused with it; a
+restart forgets the wait.
 
 ## Stages (pipeline measurements)
 

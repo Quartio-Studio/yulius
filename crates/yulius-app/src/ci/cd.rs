@@ -51,6 +51,7 @@ use yulius_domain::time::Timestamp;
 
 use super::OUTPUT_BYTES;
 use super::exec::{DiskBound, Ended, RunLog, Sink, ci_join};
+use super::prove::ProveOnDev;
 use super::rollback::steps_text;
 use super::staging::staging_text;
 use crate::auth::{AuthContext, rfc3339};
@@ -205,6 +206,8 @@ pub(crate) enum CdRequest<'a> {
         expected: Option<&'a str>,
         /// How long the person kept the confirmation open, in milliseconds.
         confirm_ms: Option<u64>,
+        /// A deploy of the drill environment proving a production deploy's rollback (SPEC-438).
+        proving: Option<Proving<'a>>,
     },
     /// Deploy exactly `revision` of the integration branch, a dev-stage environment only: a
     /// merged revision whose full gate passed, for the staging queue (SPEC-575 MFS-003).
@@ -231,6 +234,14 @@ pub(crate) enum CdRequest<'a> {
         /// How long the person kept the confirmation open, in milliseconds.
         confirm_ms: Option<u64>,
     },
+}
+
+/// A dev deploy started to prove a production deploy's rollback (SPEC-438): its run id, chosen
+/// before it starts so the waiting production deploy is bound to it, and its note.
+#[derive(Clone, Copy)]
+pub(crate) struct Proving<'a> {
+    pub(crate) run_id: &'a str,
+    pub(crate) note: &'a str,
 }
 
 /// Longest confirmation wait recorded, in milliseconds.
@@ -931,14 +942,15 @@ impl App {
             confirmation: req.confirm.as_deref(),
         };
         let run = self
-            .cd_start(
+            .cd_start_or_prove(
                 &sandbox,
                 &env,
                 requester,
-                &CdActor::Person(&ctx.user),
+                &ctx.user,
                 CdRequest::Deploy {
                     expected: req.expect.as_deref(),
                     confirm_ms: req.confirm_ms,
+                    proving: None,
                 },
             )
             .await?;
@@ -1006,6 +1018,7 @@ impl App {
             CdRequest::Deploy {
                 expected: None,
                 confirm_ms: None,
+                proving: None,
             },
         )
         .await
@@ -1020,6 +1033,21 @@ impl App {
         requester: Requester<'_>,
         actor: &CdActor<'_>,
         request: CdRequest<'_>,
+    ) -> AppResult<CdRunRecord> {
+        self.cd_begin(sandbox, env, requester, actor, request, None)
+            .await
+    }
+
+    /// [`App::cd_start`]; with `prove`, a production deploy refused only for a rollback a dev
+    /// deploy can prove says how there (SPEC-438).
+    pub(super) async fn cd_begin(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        env: &str,
+        requester: Requester<'_>,
+        actor: &CdActor<'_>,
+        request: CdRequest<'_>,
+        prove: Option<&mut Option<ProveOnDev>>,
     ) -> AppResult<CdRunRecord> {
         let requested = self.now();
         // A playground has no deploy: its Git stays on the server (SPEC-099).
@@ -1046,20 +1074,37 @@ impl App {
         // What the checks resolve the stage to: a production-stage refusal is audited, as
         // production's always was; a dev-stage failure is not a refused production deploy.
         let mut resolved = fixed;
+        let preset = match &request {
+            CdRequest::Deploy {
+                proving: Some(proving),
+                ..
+            } => Some(proving.run_id.to_owned()),
+            _ => None,
+        };
         let (prepared, confirm_ms) = match request {
             CdRequest::Deploy {
                 expected,
                 confirm_ms,
+                proving,
             } => (
                 self.cd_prepare(
                     sandbox,
                     env,
                     (requester, actor),
                     expected,
-                    &mut resolved,
+                    (&mut resolved, prove),
                     None,
                 )
-                .await,
+                .await
+                .map(|mut prepared| {
+                    if let Some(Proving { note, .. }) = proving {
+                        prepared.note = Some(match prepared.note.take() {
+                            Some(own) => format!("{note}; {own}"),
+                            None => note.to_owned(),
+                        });
+                    }
+                    prepared
+                }),
                 confirm_ms,
             ),
             CdRequest::DeployRevision { revision, note } => (
@@ -1068,7 +1113,7 @@ impl App {
                     env,
                     (requester, actor),
                     None,
-                    &mut resolved,
+                    (&mut resolved, None),
                     Some(revision),
                 )
                 .await
@@ -1128,7 +1173,7 @@ impl App {
             }
         };
         let run = CdRunRecord {
-            id: self.deps.crypto.new_id(),
+            id: preset.unwrap_or_else(|| self.deps.crypto.new_id()),
             sandbox_id: sandbox.id.clone(),
             environment: env.to_owned(),
             stage: prepared.stage,
@@ -1410,14 +1455,21 @@ impl App {
         env: &str,
         (requester, actor): (Requester<'_>, &CdActor<'_>),
         expected: Option<&str>,
-        resolved: &mut Option<CdStage>,
+        (resolved, prove): (&mut Option<CdStage>, Option<&mut Option<ProveOnDev>>),
         revision: Option<&str>,
     ) -> AppResult<Prepared> {
         // One deploy at a time reads and writes a sandbox's mirror (round 2, L-b).
         let mirror_lock = mirror_lock(&sandbox.id);
         let _mirror = mirror_lock.lock().await;
         let (profile, token, stage, branch, sha, target, observed_integration) = self
-            .cd_resolve_target(sandbox, env, requester, expected, resolved, revision)
+            .cd_resolve_target(
+                sandbox,
+                env,
+                requester,
+                expected,
+                (resolved, prove),
+                revision,
+            )
             .await?;
         let asker = match actor {
             CdActor::Agent(ctx) => Some(*ctx),
@@ -1467,7 +1519,7 @@ impl App {
         env: &str,
         requester: Requester<'_>,
         expected: Option<&str>,
-        resolved: &mut Option<CdStage>,
+        (resolved, prove): (&mut Option<CdStage>, Option<&mut Option<ProveOnDev>>),
         revision: Option<&str>,
     ) -> AppResult<(
         DeliveryProfile,
@@ -1511,6 +1563,10 @@ impl App {
                 .target_of(env, CdStage::Prod)
                 .is_some_and(|prod| prod.promote);
         let observed_integration = integration.clone();
+        // What dev would deploy, should production's rollback need proving there (SPEC-438).
+        let integration_tables = prove
+            .is_some()
+            .then(|| (integration.clone(), integration_config.clone()));
         let (branch, sha, config) = match (stage, revision) {
             (CdStage::Dev, None) => (
                 profile.integration_branch.clone(),
@@ -1606,12 +1662,21 @@ impl App {
                 "nothing ran: [cd.{env}] is the merge-first staging target; it changes only to a merged revision whose full gate passed: ask for the integration head with Deploy {env} on the CD page or a Superagent's cd_deploy, or a task's merged revision with its cd_deploy (roll it back on the CD page)"
             )));
         }
-        // Production waits for a proven rollback of what it deploys (SPEC-415 RBK-031).
-        if let Some(why) = self
+        // Production waits for a proven rollback of what it deploys (SPEC-415 RBK-031); a dev
+        // deploy may prove it (SPEC-438).
+        if let Some(refused) = self
             .cd_rollback_gate(sandbox, &target, &sha, &self.cd_mirror(&sandbox.id))
             .await?
         {
-            return Err(AppError::Conflict(format!("nothing ran: {why}")));
+            if let Some(slot) = prove
+                && let Some((integration, tables)) = &integration_tables
+                && refused.provable
+            {
+                *slot = self
+                    .cd_dev_proof(sandbox, &target, (integration, tables), &sha)
+                    .await;
+            }
+            return Err(AppError::Conflict(format!("nothing ran: {}", refused.why)));
         }
         if self
             .deps
@@ -2002,6 +2067,8 @@ impl App {
         if state == RunState::Passed {
             self.cd_start_drill(&sandbox, &run, &target).await;
         }
+        // A production deploy waiting for this run's proof goes on or says why not (SPEC-438).
+        self.cd_proof_after(&sandbox, &run, state).await;
     }
 
     /// The run's containment (review C1, H-A). Dev joins the sandbox: agents build and use
@@ -2894,6 +2961,8 @@ pub(crate) fn deploy_action(
         Some((A::NOTHING, "Nothing to deploy yet".to_owned()))
     } else if running && env.staging.is_none() {
         Some((A::RUNNING, "A deploy is running".to_owned()))
+    } else if prod {
+        env.rollback.waiting.clone().map(|why| (A::WAITING, why))
     } else {
         None
     };
@@ -2999,6 +3068,16 @@ mod tests {
             Some("nothing")
         );
         assert_eq!(code(deploy_action(&dev, AccessLevel::Write, false)), None);
+        let waiting = CdEnvironment {
+            rollback: yulius_contracts::api::cd::CdRollback {
+                waiting: Some("Production deploys at abc once the drill passes".into()),
+                ..Default::default()
+            },
+            ..prod
+        };
+        let held = deploy_action(&waiting, AccessLevel::Admin, false);
+        assert!(!held.enabled);
+        assert_eq!(held.reason.as_deref(), Some("waiting"));
     }
 
     /// #704 (SPEC-237): `cd_status` tells an agent what a production secret agents use means.

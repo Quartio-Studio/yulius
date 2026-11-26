@@ -463,7 +463,7 @@ couriers, the provided CLIs and the extracted skills.
 
 Kept in memory only, and lost by a restart: armed-merge outcomes for waits, the context-recovery
 episode, blind-limit counts, a rebalance's no-room notice, the PR watch's last answers, the hygiene
-report, CI's exclusive turns, agent-state holds and the GitHub
+report, CI's exclusive turns, production waits for a drill, agent-state holds and the GitHub
 callback answer. Nothing about an instance move in progress is stored in the database, since the
 database travels with the copy.
 
