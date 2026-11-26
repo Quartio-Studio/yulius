@@ -132,7 +132,7 @@ mod tests {
     const SECRET: &str = "4f1c0d9e8b7a6f5e4d3c2b1a09f8e7d6c5b4a3928170f6e5d4c3b2a1908f7e6d";
 
     fn secret() -> Secret {
-        Secret(SECRET.into())
+        Secret::new(SECRET.into())
     }
 
     fn peer() -> IpAddr {

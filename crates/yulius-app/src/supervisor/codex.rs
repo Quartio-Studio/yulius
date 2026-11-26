@@ -581,7 +581,7 @@ impl App {
         account_id: &AccountId,
     ) -> KeptCodexAuth {
         let holds = |stored: Vec<u8>| KeptCodexAuth {
-            holds: String::from_utf8(stored).ok().map(Secret),
+            holds: String::from_utf8(stored).ok().map(Secret::new),
             lost: None,
         };
         let Some(account) = self.deps.store.account(account_id).await.ok().flatten() else {
@@ -676,7 +676,8 @@ impl App {
                 (_, held) => {
                     tracing::info!(account = %account_id, "the account holds another credential or none now: the Codex refresh is not kept");
                     return KeptCodexAuth {
-                        holds: held.and_then(|bytes| String::from_utf8(bytes).ok().map(Secret)),
+                        holds: held
+                            .and_then(|bytes| String::from_utf8(bytes).ok().map(Secret::new)),
                         lost: Some(fresh),
                     };
                 }

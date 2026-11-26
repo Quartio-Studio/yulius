@@ -23,7 +23,9 @@ pub async fn set_bot(
     Auth(ctx): Auth,
     Json(req): Json<SetTelegramBot>,
 ) -> ApiResult<Json<TelegramBotView>> {
-    Ok(Json(app.set_telegram_bot(&ctx, &Secret(req.token)).await?))
+    Ok(Json(
+        app.set_telegram_bot(&ctx, &Secret::new(req.token)).await?,
+    ))
 }
 
 /// `DELETE /api/admin/telegram`.

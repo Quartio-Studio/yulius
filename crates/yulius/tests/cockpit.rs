@@ -1332,7 +1332,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
         resume: None,
         continue_interrupted: false,
         model: None,
-        credential: yulius_app::model::Secret(TOKEN.into()),
+        credential: yulius_app::model::Secret::new(TOKEN.into()),
         yulius: None,
         project_mcp_servers: Vec::new(),
         mcp: Vec::new(),

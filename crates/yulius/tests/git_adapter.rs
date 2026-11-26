@@ -11,7 +11,7 @@ use yulius_app::ports::git::GitPort;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn token() -> Secret {
-    Secret("unused-for-local-remotes".into())
+    Secret::new("unused-for-local-remotes".into())
 }
 
 #[tokio::test]

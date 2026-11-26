@@ -584,7 +584,7 @@ pub fn build_app(
                         .to_owned(),
                 );
             }
-            Ok(yulius_app::model::Secret(key.to_owned()))
+            Ok(yulius_app::model::Secret::new(key.to_owned()))
         })
         .transpose()?;
     config.preview = preview_config(&args.public_url, args.preview_domain.as_deref())?;

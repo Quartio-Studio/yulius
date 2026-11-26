@@ -235,10 +235,10 @@ impl HarnessPort for HarnessAdapter {
                 Credential::ClaudeOauthToken(HSecret::new(l.credential.expose().to_owned()))
             }
             Harness::Codex => {
-                Credential::CodexAuthJson(HSecret::new(l.credential.expose().as_bytes().to_vec()))
+                Credential::CodexAuthJson(HSecret::bytes(l.credential.expose().as_bytes().to_vec()))
             }
             Harness::Antigravity => {
-                Credential::Antigravity(HSecret::new(l.credential.expose().as_bytes().to_vec()))
+                Credential::Antigravity(HSecret::bytes(l.credential.expose().as_bytes().to_vec()))
             }
         };
         let mode = match &l.mode {
@@ -2006,7 +2006,7 @@ mod tests {
             yulius_exe: PathBuf::from("/bin/yulius"),
             yulius_url: "http://127.0.0.1:1".into(),
             mcp_servers: servers,
-            credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
+            credential: Credential::ClaudeOauthToken(HSecret::new("token")),
             disabled_plugins: Vec::new(),
             claude_memory_dir: None,
         };
@@ -2082,7 +2082,7 @@ mod tests {
             effort: None,
             contained: false,
             mcp: Vec::new(),
-            credential: Secret("token".into()),
+            credential: Secret::new("token".into()),
             codex_home: None,
             codex_program: None,
             antigravity_home: None,
@@ -2116,7 +2116,7 @@ mod tests {
             resume: None,
             continue_interrupted: false,
             model: None,
-            credential: Secret("token".into()),
+            credential: Secret::new("token".into()),
             yulius: None,
             project_mcp_servers: Vec::new(),
             mcp: Vec::new(),
@@ -2226,7 +2226,7 @@ mod tests {
             effort: None,
             contained: false,
             mcp: Vec::new(),
-            credential: Secret("token".into()),
+            credential: Secret::new("token".into()),
             codex_home: None,
             codex_program: None,
             antigravity_home: None,
@@ -2242,7 +2242,7 @@ mod tests {
             resume: None,
             continue_interrupted: false,
             model: None,
-            credential: Secret("token".into()),
+            credential: Secret::new("token".into()),
             yulius: None,
             project_mcp_servers: Vec::new(),
             mcp: Vec::new(),

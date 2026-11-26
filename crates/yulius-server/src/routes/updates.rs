@@ -71,7 +71,7 @@ pub async fn set_jev(
     Auth(ctx): Auth,
     Json(req): Json<SetJevKey>,
 ) -> ApiResult<Json<JevKeyView>> {
-    Ok(Json(app.set_jev_key(&ctx, &Secret(req.key)).await?))
+    Ok(Json(app.set_jev_key(&ctx, &Secret::new(req.key)).await?))
 }
 
 /// `DELETE /api/admin/jev`.
@@ -109,7 +109,7 @@ pub async fn set_vidoc(
     Auth(ctx): Auth,
     Json(req): Json<SetVidocKey>,
 ) -> ApiResult<Json<VidocKeyView>> {
-    Ok(Json(app.set_vidoc_key(&ctx, &Secret(req.key)).await?))
+    Ok(Json(app.set_vidoc_key(&ctx, &Secret::new(req.key)).await?))
 }
 
 /// `DELETE /api/admin/vidoc`.

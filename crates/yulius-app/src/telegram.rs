@@ -280,7 +280,7 @@ impl App {
             .open(&stored.sealed)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes).ok())
-            .map(Secret);
+            .map(Secret::new);
         let Some(token) = token else {
             tracing::warn!("the saved Telegram bot token cannot be opened with this master key");
             return;
@@ -694,7 +694,7 @@ impl App {
     ) -> AppResult<TelegramBotView> {
         self.require_instance_admin(ctx)?;
         let services = self.channel_services()?;
-        let token = Secret(token.expose().trim().to_owned());
+        let token = Secret::new(token.expose().trim().to_owned());
         if token.expose().is_empty() {
             return Err(AppError::Invalid(
                 "paste the bot token from @BotFather".into(),

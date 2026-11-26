@@ -2365,7 +2365,7 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
         if on_github {
             yulius_app::ports::github::GitHubPort::merge_pull(
                 f.h.github.as_ref(),
-                &Secret("token-carol".into()),
+                &Secret::new("token-carol".into()),
                 "Quartio-Studio",
                 "shop",
                 1,
@@ -3312,7 +3312,7 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         1,
@@ -3380,7 +3380,7 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
     let head = f.h.github.pull(2).ok_or("pull 2")?.head_sha;
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         2,
@@ -3512,7 +3512,7 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
     // Merged on GitHub: the background round follows it; nobody read the task meanwhile.
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         1,
@@ -4721,7 +4721,7 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
     // Once the same predecessor's PR has merged, the chain can start.
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         1,
@@ -7594,7 +7594,7 @@ async fn merge_on_github(f: &Fixture, number: u64, head: &str) -> TestResult {
     f.h.github.set_checks(head, ChecksState::Success);
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         number,
@@ -7661,7 +7661,7 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     )?;
     let manual = yulius_app::ports::github::GitHubPort::create_pull(
         f.h.github.as_ref(),
-        &Secret("token-bob".into()),
+        &Secret::new("token-bob".into()),
         "Quartio-Studio",
         "shop",
         &yulius_app::ports::github::NewPull {
@@ -7675,7 +7675,7 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     f.h.github.set_checks(&fix, ChecksState::Success);
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         manual.number,
@@ -7790,7 +7790,7 @@ async fn a_follow_up_merged_by_hand_is_judged_since_the_merged_head() -> TestRes
     )?;
     let manual = yulius_app::ports::github::GitHubPort::create_pull(
         f.h.github.as_ref(),
-        &Secret("token-bob".into()),
+        &Secret::new("token-bob".into()),
         "Quartio-Studio",
         "shop",
         &yulius_app::ports::github::NewPull {
@@ -7804,7 +7804,7 @@ async fn a_follow_up_merged_by_hand_is_judged_since_the_merged_head() -> TestRes
     f.h.github.set_checks(&by_hand, ChecksState::Success);
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         manual.number,
@@ -8829,7 +8829,7 @@ async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {
     let head = git(&wt, &["rev-parse", "HEAD"])?;
     yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         number,
@@ -10633,7 +10633,7 @@ async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_b
                 git(&wt, &["push", "--quiet", "origin", "HEAD:docs/1-guide"])?;
                 yulius_app::ports::github::GitHubPort::create_pull(
                     f.h.github.as_ref(),
-                    &Secret("token-carol".into()),
+                    &Secret::new("token-carol".into()),
                     "Quartio-Studio",
                     "shop",
                     &yulius_app::ports::github::NewPull {
@@ -10662,7 +10662,7 @@ async fn post_merge_evidence_reconciles_an_external_merge_against_its_original_b
             f.h.github.set_checks(&head, ChecksState::Success);
             let sha = yulius_app::ports::github::GitHubPort::merge_pull(
                 f.h.github.as_ref(),
-                &Secret("token-carol".into()),
+                &Secret::new("token-carol".into()),
                 "Quartio-Studio",
                 "shop",
                 1,
@@ -10754,7 +10754,7 @@ async fn post_merge_evidence_checks_the_pr_number_on_the_git_page() -> TestResul
     f.h.github.set_checks(&head, ChecksState::Success);
     let sha = yulius_app::ports::github::GitHubPort::merge_pull(
         f.h.github.as_ref(),
-        &Secret("token-carol".into()),
+        &Secret::new("token-carol".into()),
         "Quartio-Studio",
         "shop",
         1,

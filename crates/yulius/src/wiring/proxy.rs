@@ -23,7 +23,7 @@ pub fn read_proxy_secret(path: &Path) -> Result<Secret, String> {
     if (MIN_SECRET_LEN..=MAX_SECRET_LEN).contains(&secret.len())
         && secret.bytes().all(|b| b.is_ascii_graphic())
     {
-        Ok(Secret(secret.to_owned()))
+        Ok(Secret::new(secret.to_owned()))
     } else {
         Err(format!(
             "{}: the proxy secret must be {MIN_SECRET_LEN}-{MAX_SECRET_LEN} printable characters \

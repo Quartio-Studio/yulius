@@ -39,7 +39,7 @@ impl Drop for Server {
 }
 
 async fn start(secret: Option<&str>) -> Result<Server, Box<dyn std::error::Error>> {
-    let secret = secret.map(|s| Secret(s.to_owned()));
+    let secret = secret.map(|s| Secret::new(s.to_owned()));
     let h = harness_configured(move |c| c.proxy_secret = secret)?;
     setup_superadmin_creds(&h).await?;
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -393,7 +393,7 @@ async fn the_proxy_secret_never_reaches_a_response_or_a_log() -> TestResult {
 async fn the_sign_in_limiter_tracks_a_bounded_number_of_clients() -> TestResult {
     // No superadmin: every attempt is refused without hashing, so the table fills quickly.
     let h = harness_configured(|_| {})?;
-    let wrong = Secret(WRONG.into());
+    let wrong = Secret::new(WRONG.into());
     for n in 0..MAX_LOGIN_CLIENTS {
         let refused = h.app.password_login(&wrong, &format!("client-{n}")).await;
         assert!(matches!(refused, Err(AppError::Unauthenticated)), "{n}");

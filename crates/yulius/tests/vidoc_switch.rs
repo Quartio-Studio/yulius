@@ -52,7 +52,7 @@ async fn instance_on(h: Harness) -> Result<Instance, Box<dyn std::error::Error>>
     let bob = admit_and_sign_in(&h, &admin, "bob", 12, true).await?;
     h.app.set_vidoc(VidocServices::new(
         Arc::new(AnyVidoc) as Arc<dyn VidocConnector>,
-        Ok(Some(Secret(KEY.into()))),
+        Ok(Some(Secret::new(KEY.into()))),
     ));
     h.app.load_vidoc_key().await;
     let owner = h.store.user_by_login("alice").await?.ok_or("alice")?.id;
@@ -404,7 +404,7 @@ async fn a_restarted_server_keeps_vidoc_off_for_the_instance() -> TestResult {
         .await?;
     h.app.set_vidoc(VidocServices::new(
         Arc::new(AnyVidoc) as Arc<dyn VidocConnector>,
-        Ok(Some(Secret(KEY.into()))),
+        Ok(Some(Secret::new(KEY.into()))),
     ));
     h.app.load_vidoc_key().await;
     let view = call(&h.router, Method::GET, "/api/admin/vidoc", None, &admin).await?;
