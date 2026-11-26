@@ -1942,8 +1942,8 @@ previous store cannot be put back, the server stays stopped and the run says to 
 
 **Who deploys.** Staging is Yulius's merge-first target
 ([ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
-A pull request merges on `quality` and `security`. Both `test` shards and `e2e` run once on each
-merged revision of `dev`.
+A pull request merges on `quality` and `security`. `test` and `e2e` run once on each merged
+revision of `dev`.
 
 - **Staging changes only through its queue** (ADR-0411). The agent of a task whose work merged
   asks with `cd_deploy`. Yulius deploys that revision, or a newer verified one that contains it,
