@@ -25,6 +25,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
+use crate::mcp_args::{flag_arg, str_arg, tool};
 use crate::model::SandboxRecord;
 use crate::task_edit::{BulkAction, EditTask};
 
@@ -101,37 +102,6 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         .iter()
         .find(|(tool, _)| *tool == name)
         .map(|(_, action)| *action)
-}
-
-/// A tool's input schema: an object of `properties`, `required` ones named, nothing else taken.
-fn schema(properties: Value, required: &[&str]) -> Value {
-    json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
-}
-
-/// A tool's descriptor.
-pub(crate) fn tool(
-    name: &str,
-    description: &str,
-    properties: Value,
-    required: &[&str],
-) -> ToolDescriptor {
-    ToolDescriptor {
-        name: name.into(),
-        description: description.into(),
-        input_schema: schema(properties, required),
-    }
-}
-
-/// The text argument `key`, trimmed.
-///
-/// # Errors
-/// `Invalid` when it is missing, not text or blank.
-pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::Invalid(format!("missing string argument `{key}`")))
 }
 
 /// A view as a tool's record.
@@ -816,11 +786,7 @@ impl App {
                     .ok_or_else(|| {
                         AppError::Invalid("`do` is stop, pause, unpause or message".into())
                     })?;
-                let all = match args.get("all") {
-                    None | Some(Value::Null) => false,
-                    Some(Value::Bool(all)) => *all,
-                    Some(_) => return Err(AppError::Invalid("`all` must be true or false".into())),
-                };
+                let all = flag_arg(args, "all")?;
                 let numbers = match args.get("numbers") {
                     None | Some(Value::Null) => None,
                     some => Some(crate::task_edit::numbers_arg(some, "numbers")?),

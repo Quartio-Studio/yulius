@@ -12,40 +12,34 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column, to_i64, to_u64};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_as, text_parsed, to_i64, to_u64};
 
 const RUN_COLS: &str = "id, sandbox_id, environment, kind, requested_by, command, commit_sha, \
     state, output, exit_code, started_at, ended_at";
 
 fn delivery_from_row(row: &Row<'_>) -> rusqlite::Result<DeliveryRecord> {
-    let task: String = row.get("task_id")?;
-    let stage: String = row.get("stage")?;
     Ok(DeliveryRecord {
-        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
-        stage: DeliveryStage::decode(&stage).ok_or_else(|| bad_column("delivery stage", &stage))?,
+        task_id: text_parsed(row, "task_id", "task id", TaskId::parse)?,
+        stage: text_as(row, "stage", "delivery stage", DeliveryStage::decode)?,
         pr_number: row.get::<_, Option<i64>>("pr_number")?.map(to_u64),
         updated_at: Timestamp(row.get("updated_at")?),
     })
 }
 
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<EnvironmentRunRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
-    let kind: String = row.get("kind")?;
-    let user: String = row.get("requested_by")?;
-    let state: String = row.get("state")?;
     Ok(EnvironmentRunRecord {
         id: row.get("id")?,
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         environment: row.get("environment")?,
-        kind: EnvironmentRunKind::parse(&kind).ok_or_else(|| bad_column("run kind", &kind))?,
-        requested_by: UserId::parse(&user).map_err(|_| bad_column("user id", &user))?,
+        kind: text_as(row, "kind", "run kind", EnvironmentRunKind::parse)?,
+        requested_by: text_parsed(row, "requested_by", "user id", UserId::parse)?,
         command: row.get("command")?,
         commit: row.get("commit_sha")?,
-        state: EnvironmentRunState::parse(&state).ok_or_else(|| bad_column("run state", &state))?,
+        state: text_as(row, "state", "run state", EnvironmentRunState::parse)?,
         output: row.get("output")?,
         exit_code: row.get("exit_code")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
     })
 }
 

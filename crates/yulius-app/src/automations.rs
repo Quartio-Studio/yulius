@@ -38,6 +38,7 @@ use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::lifecycle::{MAX_PROMPT_BYTES, NewTask};
+use crate::mcp_args::text_arg;
 use crate::model::{TaskOrigin, TaskRecord};
 
 /// Scheduler period.
@@ -406,12 +407,6 @@ impl StartInput {
             _ => false,
         }
     }
-}
-
-fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| AppError::Invalid(format!("missing string argument `{key}`")))
 }
 
 impl App {
@@ -1346,7 +1341,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<AutomationRecord> {
-        let id = str_arg(args, "automation_id")?;
+        let id = text_arg(args, "automation_id")?;
         self.deps
             .store
             .automation(id)
@@ -1458,10 +1453,10 @@ impl App {
             unnamed,
         )?;
         let fields = Fields {
-            name: validate_name(str_arg(args, "name")?)?,
-            cron: validate_cron(str_arg(args, "cron")?)?,
+            name: validate_name(text_arg(args, "name")?)?,
+            cron: validate_cron(text_arg(args, "cron")?)?,
             utc_offset_minutes: validate_offset(offset)?,
-            prompt: validate_prompt(str_arg(args, "prompt")?)?,
+            prompt: validate_prompt(text_arg(args, "prompt")?)?,
             harness,
         };
         let enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);

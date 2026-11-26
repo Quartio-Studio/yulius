@@ -14,7 +14,7 @@ use yulius_domain::ids::SandboxId;
 use yulius_domain::stages::{SubjectKind, stored_figure_name};
 use yulius_domain::time::Timestamp;
 
-use crate::{DbResult, SqliteStore, bad_column};
+use crate::{DbResult, SqliteStore, bad_column, opt_ts, text_parsed};
 
 const COLS: &str = "sandbox_id, subject_kind, subject_id, key, parent_key, kind, name, environment, \
     job, started_at, ended_at, outcome, source, detail";
@@ -29,10 +29,9 @@ pub(crate) fn latest_merge_wait(conn: &Connection, task: &str) -> DbResult<Optio
 }
 
 fn span_row(row: &Row<'_>) -> rusqlite::Result<SpanRecord> {
-    let sandbox: String = row.get("sandbox_id")?;
     let kind: String = row.get("subject_kind")?;
     Ok(SpanRecord {
-        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        sandbox_id: text_parsed(row, "sandbox_id", "sandbox id", SandboxId::parse)?,
         subject_kind: SubjectKind::parse(&kind).ok_or_else(|| bad_column("subject kind", &kind))?,
         subject_id: row.get("subject_id")?,
         key: row.get("key")?,
@@ -42,7 +41,7 @@ fn span_row(row: &Row<'_>) -> rusqlite::Result<SpanRecord> {
         environment: row.get("environment")?,
         job: row.get("job")?,
         started_at: Timestamp(row.get("started_at")?),
-        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        ended_at: opt_ts(row, "ended_at")?,
         outcome: row.get("outcome")?,
         source: row.get("source")?,
         detail: row.get("detail")?,
