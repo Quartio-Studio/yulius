@@ -645,11 +645,7 @@ fn number_value(entry: &Entry, max: u64) -> Result<u64, FormatError> {
 }
 
 fn clip(text: &str) -> String {
-    let mut end = text.len().min(64);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_owned()
+    super::clip(text, 64)
 }
 
 fn enum_value<T>(

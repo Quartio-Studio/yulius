@@ -30,7 +30,7 @@
 //! `Instructions` (everything below it), in that order. [`parse_workflow`] reports the first
 //! problem with its line. Callers read the files; this module performs no I/O.
 
-use crate::spec_format::markdown::{heading, normalize_title, scan};
+use crate::spec_format::markdown::{Line, heading, normalize_title, scan};
 use crate::steps::MAX_STEPS;
 
 /// Longest workflow id (the file stem).
@@ -116,6 +116,54 @@ pub(crate) fn unquote(value: &str) -> &str {
     value
 }
 
+/// A frontmatter key's value and its line, when the key is set.
+pub(crate) type Field = Option<(usize, String)>;
+
+/// A workflow's or an automation's `---` frontmatter: each of `keys` set at most once, as
+/// `key: value` lines (blank and `#` lines skipped, a value's quotes dropped), with its line;
+/// and the line index of the closing `---`. `Err`: the first problem's line and words.
+pub(crate) fn frontmatter<const N: usize>(
+    lines: &[Line<'_>],
+    keys: [&str; N],
+) -> Result<(usize, [Field; N]), (usize, String)> {
+    if lines.first().map(|l| l.text.trim_end()) != Some("---") {
+        return Err((
+            1,
+            "the file must start with a `---` frontmatter line".to_owned(),
+        ));
+    }
+    let Some(close) = lines
+        .iter()
+        .skip(1)
+        .position(|l| l.text.trim_end() == "---")
+        .map(|i| i + 1)
+    else {
+        return Err((1, "the frontmatter is not closed with `---`".to_owned()));
+    };
+    let mut values: [Field; N] = std::array::from_fn(|_| None);
+    for line in &lines[1..close] {
+        let raw = line.text.trim();
+        if raw.is_empty() || raw.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = raw.split_once(':') else {
+            return Err((line.number, "expected `key: value`".to_owned()));
+        };
+        let (key, value) = (key.trim(), unquote(value.trim()).trim().to_owned());
+        let Some(slot) = keys.iter().position(|known| *known == key) else {
+            return Err((
+                line.number,
+                format!("unknown key `{key}` ({})", keys.join(", ")),
+            ));
+        };
+        if values[slot].is_some() {
+            return Err((line.number, format!("`{key}` is set twice")));
+        }
+        values[slot] = Some((line.number, value));
+    }
+    Ok((close, values))
+}
+
 fn requirement(line: usize, key: &str, value: &str) -> Result<bool, WorkflowFormatError> {
     match value {
         "required" => Ok(true),
@@ -176,50 +224,18 @@ pub fn parse_workflow(id: &str, text: &str) -> Result<WorkflowDefinition, Workfl
         return problem(1, "the file is larger than 64 KiB");
     }
     let lines = scan(text);
-    if lines.first().map(|l| l.text.trim_end()) != Some("---") {
-        return problem(1, "the file must start with a `---` frontmatter line");
-    }
-    let Some(close) = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.text.trim_end() == "---")
-        .map(|i| i + 1)
-    else {
-        return problem(1, "the frontmatter is not closed with `---`");
-    };
-
-    let (mut name, mut description, mut when_to_use) = (None, None, None);
-    let (mut spec, mut tests, mut order) = (None, None, None);
-    for line in &lines[1..close] {
-        let raw = line.text.trim();
-        if raw.is_empty() || raw.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = raw.split_once(':') else {
-            return problem(line.number, "expected `key: value`");
-        };
-        let (key, value) = (key.trim(), unquote(value.trim()).trim().to_owned());
-        let slot = match key {
-            "name" => &mut name,
-            "description" => &mut description,
-            "when_to_use" => &mut when_to_use,
-            "spec" => &mut spec,
-            "tests" => &mut tests,
-            "order" => &mut order,
-            _ => {
-                return problem(
-                    line.number,
-                    format!(
-                        "unknown key `{key}` (name, description, when_to_use, spec, tests, order)"
-                    ),
-                );
-            }
-        };
-        if slot.is_some() {
-            return problem(line.number, format!("`{key}` is set twice"));
-        }
-        *slot = Some((line.number, value));
-    }
+    let (close, [name, description, when_to_use, spec, tests, order]) = frontmatter(
+        &lines,
+        [
+            "name",
+            "description",
+            "when_to_use",
+            "spec",
+            "tests",
+            "order",
+        ],
+    )
+    .or_else(|(line, why)| problem(line, why))?;
     let at = |field: &Option<(usize, String)>| field.as_ref().map_or(1, |(n, _)| *n);
     let value = |field: &Option<(usize, String)>| field.as_ref().map(|(_, v)| v.clone());
     let name_text = one_line(at(&name), "name", value(&name), MAX_NAME_CHARS)?;
