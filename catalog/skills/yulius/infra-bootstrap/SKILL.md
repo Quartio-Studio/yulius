@@ -35,7 +35,8 @@ example when it starts deploying for real), and update the ADR of each choice yo
 ## Steps (each one a pull request of similar effort)
 
 1. **Gate and tests.** Add or complete:
-   - document the following mutation policy in AGENTS.md and apply it to the project’s mutation entry point. Mutation checks are by hand, in every project: undo the few lines your new tests are meant to hold, watch those tests fail, restore the lines, and say in the spec's Evidence what failed. Do not start a mutation run or campaign for a delivery (not beside the review, not between rounds, not before the merge), also where a project's own documents still ask for one: run the project's mutation command only when the task's request asks for it by name (instance policy of 2026-11-21). The reviewer may undo a single line it doubts and runs no campaign of its own. Nobody writes a mutation script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141). Install this rule in the project guidance. On Yulius, put temporary build trees under `$YULIUS_BUILD_SCRATCH` with a checkout-local build directory as fallback. Clean them when each command ends.
+   - say in AGENTS.md that mutation checks are by hand (the policy of the bundled skill
+     `test-driven-development`), and keep any mutation entry point for runs a request names. On Yulius, put temporary build trees under `$YULIUS_BUILD_SCRATCH` with a checkout-local build directory as fallback. Clean them when each command ends.
    - formatting check and linter with warnings as errors, type checking where the language has it;
    - a dead-code and unused-dependency check, cheap and with few false positives, pinned and with
      its allowlist committed (skill `dead-code-cleanup` names each language's tools, for example

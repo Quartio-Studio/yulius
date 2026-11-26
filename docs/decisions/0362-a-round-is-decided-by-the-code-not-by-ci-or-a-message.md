@@ -63,7 +63,9 @@ Three things in the product sent work to a new round that the round could not ch
   where it can take them." Here that is `scripts/dev mutants --base <reviewed head>` (the lines
   since that head; a merge of `dev` since then brings its lines in too). Stated in `om-fix`,
   `om-code-review`, `delivery-pipeline`, `yulius-review` and `workflow.md`.
-- Tests in `crates/yulius-app/src/skills.rs` hold every place to each sentence.
+- Tests in `crates/yulius-app/src/skills.rs` hold every place to each sentence. Since
+  2026-11-26 (audit L10 F2) each is stated once, in `om-code-review`, and the tests refuse a copy
+  elsewhere.
 
 ## Alternatives
 

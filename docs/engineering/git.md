@@ -11,49 +11,39 @@ merges it. Its steps:
 
 1. Yulius creates the task's short-lived branch **with its own worktree** from current
    `origin/dev`.
-2. Implement the change in as many useful commits as needed. While iterating, run the checks
-   your change touches. The whole gate is Yulius CI's job: it tests the head while the
-   reviewer reads. Do not run the whole gate locally before a review or between rounds, except
-   to reproduce a CI failure or when CI cannot run (a playground without CI, an outage). Merge
-   `origin/dev` before the review or for a conflict (never rebase), and run the tests it
-   touches again.
+2. Implement the change in as many useful commits as needed, running the checks it touches
+   (`delivery-pipeline`). Merge `origin/dev` before the review or for a conflict, and run the
+   tests it touches again.
 3. An **independent review in a fresh session** reads the exact head (a read-only reviewer given
-   the diff range and the spec, skill `om-code-review`). Follow the task briefing for the reviewer and model of the active harness. Every finding is answered
+   the diff range and the spec, skill `om-code-review`). Every finding is answered
    ([workflow](workflow.md#review-output)). A commit after the approval needs a look at it too; a
    clean merge of `dev` after it (no conflict resolved) keeps the approval.
 4. Call `delivery_merge` with that `reviewed_head`. Yulius pushes the branch, opens the pull
    request into `dev` and merges it (squash) on green Yulius CI at the exact head, through its
-   merge queue, which tests a pull request that is behind on top of the current `dev`. To wait,
-   start `yulius wait` in the background and end the turn; Yulius tells the session how it ended.
+   merge queue, which tests a pull request that is behind on top of the current `dev`.
    Merging by hand (`gh pr merge`) is refused: it skips the queue and the merge's own checks.
 5. After the merge, Yulius deletes the remote branch and, once the task is closed, its worktree.
    Remove what the task itself made (review worktrees with `git worktree remove`, scratch
    files); `repo_hygiene` lists, and `repo_cleanup` removes, stale branches and the worktrees
    of merged, archived or deleted tasks.
-6. Yulius CI runs every new `dev` commit; a task's work ends at `dev`. Deploying dev is a task's
-   only when it asks (`cd_deploy`). Where `dev` has a merge-first staging target, as Yulius's own
-   `[cd.dev]` (ADR-0436), the task asks once with `cd_deploy` when `delivery_status` says so.
-   After asking, the finished task retains the outcome on its delivery. Yulius assigns a red integration branch to one working task. Only a person resumes a finished or parked task.
+6. Yulius CI runs every new `dev` commit; a task's work ends at `dev`. `dev` has the merge-first
+   staging target `[cd.dev]` ([ADR-0436](../decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
 7. **Promotion is a person's** ([ADR-0110](../decisions/0110-only-a-person-deploys-production.md)):
    an administrator promotes on the CD page, typing the project's slug. Yulius then opens the
    promotion pull request into `main` from the confirmed, verified dev revision. When a newer
    revision is still being checked, CD can use a release ref pinned to the earlier verified SHA.
    The `yulius-main` ruleset requires successful `yulius/ci` on the selected revision for the
    **merge commit**. A refused deploy explains which evidence is missing.
-   An agent never promotes; a task that needs production asks a person with `needs_you`.
 
 If several tested features accumulate on `dev`, a promotion includes all of them. Never
 cherry-pick to `main`.
 
-## One branch, one worktree
+## Worktrees
 
-Every local branch MUST have its own registered Git worktree, including `dev` and
-`main`. Create a branch and its worktree together with `git worktree add -b`.
-Never switch a worktree between branches or create a branch without its worktree.
-All edits, commits and local checks for a branch run inside that branch's worktree.
-
-Keep the original checkout assigned to `dev`. Put linked worktrees in the sibling
-`<repo>-worktrees/<branch>` directory, preserving the slash in typed branch names:
+Yulius creates each task's branch and worktree. By hand, follow the bundled skill `git-hygiene`
+(one worktree per local branch, created together with `git worktree add -b`), and keep the
+original checkout on `dev` with linked worktrees in the sibling `<repo>-worktrees/<branch>`
+directory:
 
 ```text
 yulius/                                  dev (permanent)
@@ -61,23 +51,8 @@ yulius-worktrees/main/                    main (permanent)
 yulius-worktrees/feat/task-cancellation/   feat/task-cancellation (temporary)
 ```
 
-Before starting work, inspect `git worktree list` and
-`git for-each-ref --format='%(refname:short) %(worktreepath)' refs/heads/`.
-Reuse a branch's existing worktree if it already exists; do not duplicate or force
-its checkout. Attach any existing local branch with a blank worktree path before
-using it. For example, `git worktree add ../yulius-worktrees/main main` attaches an
-existing main branch; if only `origin/main` exists, use
-`git worktree add --track -b main ../yulius-worktrees/main origin/main` instead.
-
-Remote-tracking refs are not additional local branches. Detached CI checkouts have
-no branch to assign. This is a local working-directory rule; GitHub cannot inspect
-an author's worktree layout. Verify it locally, not with a pretend hosted check.
-
-Worktrees share Git objects and refs, but keep source, indexes and working files
-separate. Do not share a mutable build directory, `.env`, secrets or runtime data
-between branches. A verified, identically pinned tool-binary cache may be reused.
-Keep permanent worktrees for their lifetime; remove a task worktree only after its
-branch merges and the cleanup checks below pass.
+Do not share a mutable build directory, `.env`, secrets or runtime data between worktrees; a
+verified, identically pinned tool-binary cache may be reused.
 
 ## Names
 
@@ -117,7 +92,7 @@ not the spec commit's `docs` when the branch holds a feature or a fix; before it
 renews a title it gave from the final commits, and keeps a title you wrote (SPEC-069 BPL-008).
 Intermediate commit wording is a convention, not an additional blocking check.
 
-## Keep history tidy with squash, not stash
+## Keep history tidy with squash
 
 Squashing turns a feature's working commits into **one meaningful commit on `dev`**, using the PR
 title and body (Yulius squashes when it merges). Do not require authors to rewrite every working
@@ -125,10 +100,6 @@ commit. Never squash or rebase the long-lived `dev` branch into `main`: a merge 
 common ancestry across repeated promotions, while retaining the already squashed feature commits.
 `main` has those feature commits plus promotion commits. Do not merge `main` back into `dev` just to
 copy promotion-only merge commits.
-
-No `git stash` in a task's worktree: the stash stack is shared by every worktree of the
-clone, so another session may pop your entry. Set work aside in a temporary commit instead.
-Change tasks by moving to their existing worktree, not by switching its branch.
 
 ## Working commands
 
@@ -192,9 +163,7 @@ branches or use forced ref updates to refresh a checked-out branch.
 - Do not delete a shared or dirty worktree. Never use `git reset --hard`, `git clean`,
   force pushes or branch deletion as a routine way to resolve conflicts.
 - Bring a feature up to date by merging `origin/dev`, resolving conflicts, and rerunning
-  affected checks. The final squash keeps `dev` linear. Never rebase, amend or force-push
-  commits once they are pushed (Yulius pushes task branches with a plain push, so a rewritten
-  branch can no longer be pushed), and never rewrite `dev` or `main`.
+  affected checks. The final squash keeps `dev` linear; never rewrite `dev` or `main`.
 - Failed post-merge `dev` checks block promotion. Fix on a new branch from `dev` and
   use the same PR/test sequence. Failed `main` checks stop further delivery; diagnose,
   then fix/revert through `dev`; a person promotes the fix. Do not bypass the process with a
@@ -202,9 +171,6 @@ branches or use forced ref updates to refresh a checked-out branch.
 - The independent review in a fresh session approves the exact head before `delivery_merge`;
   GitHub requires no approvals, code-owner approval or last-push approval. Resolve actionable
   comments if present; do not fabricate a second reviewer identity.
-- After an approval, fix the remaining nits within 20 product lines and merge without
-  another round: `delivery_merge` with the approved head counts them (tests and documents do
-  not count). More than that, or a file leaving the change, needs a new round. A usage limit can cut a reviewer off before its report: resume that same reviewer by its agent id, never start a new one for the same round. A reviewer runs at high effort, never max.
 
 ## Enforcement and maintenance
 

@@ -2,6 +2,35 @@
 
 use super::*;
 
+/// A live holder's Docker front and what the upkeep keeps of it.
+#[derive(Default)]
+pub(super) struct FrontState {
+    /// The front, once it serves (ADR-0158).
+    pub(super) record: Option<DockerFrontRecord>,
+    /// Mount namespaces of its runs: attempts to bind the Docker directory, or [`BIND_DONE`].
+    pub(super) bound: HashMap<u64, u8>,
+    /// What the journal said of its state (SPEC-494 DFJ-005).
+    pub(super) watch: crate::front_gate::StateWatch,
+    /// When it is restarted by itself (SPEC-494 DFJ-008).
+    pub(super) repair: crate::front_repair::RepairWatch,
+    /// A restart whose new front did not start: counted and journaled once one starts.
+    pub(super) restart_pending: Option<crate::front_repair::Why>,
+    /// When the journal last said that it runs an earlier build and stays busy.
+    pub(super) outdated_said: Option<Instant>,
+}
+
+impl FrontState {
+    /// The front's pid, when it has one.
+    pub(super) fn pid(&self) -> u32 {
+        self.record.as_ref().map_or(0, |f| f.pid)
+    }
+
+    /// Whether the front may run an engine.
+    pub(super) fn serves_engine(&self) -> bool {
+        self.record.as_ref().is_some_and(|f| f.mode != "refuse")
+    }
+}
+
 impl Manager {
     /// Why sandboxes get no Docker engine (SPEC-196 DKL-005), `None` when they may (each one
     /// that has `dockerd` in its own system, SPEC-199): the setting, the cgroup delegation, and a
@@ -104,6 +133,7 @@ impl Manager {
         let net_ns = live.record.net_ns;
         let current = live
             .front
+            .record
             .as_ref()
             .map(|front| (front, crate::docker_front::is_front(front.pid, net_ns)));
         let wanted = self.front_mode(&request, &live.record);
@@ -121,7 +151,11 @@ impl Manager {
                 // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
                 // from an older binary does not make it again (SPEC-201 DBX-006). It also passes
                 // `cpu` and `pids` down to the engine's root again, which the stop took back.
-                if live.front.as_ref().is_some_and(|f| f.mode == "engine")
+                if live
+                    .front
+                    .record
+                    .as_ref()
+                    .is_some_and(|f| f.mode == "engine")
                     && let Some(groups) = self.group_paths(sandbox)
                 {
                     match crate::cgroup::restore_leaf(&groups.engine_root) {
@@ -135,7 +169,7 @@ impl Manager {
                 return;
             }
             FrontAction::Start(serve) => {
-                if live.front.is_some() {
+                if live.front.record.is_some() {
                     tracing::warn!(
                         sandbox,
                         "the sandbox's Docker front ended; starting it again"
@@ -157,7 +191,7 @@ impl Manager {
                 serve
             }
         };
-        live.front = None;
+        live.front.record = None;
         let forwards = self.bridge_forwards(sandbox);
         match self
             .start_front(sandbox, &live.record, serve, forwards)
@@ -165,10 +199,10 @@ impl Manager {
         {
             Ok(front) => {
                 tracing::info!(sandbox, mode = %front.mode, pid = front.pid, "sandbox Docker front serving");
-                live.front_watch.started(front.pid);
+                live.front.watch.started(front.pid);
                 // A new front starts its own count toward a repair (review round 2 of slice 3).
-                live.repair = crate::front_repair::RepairWatch::default();
-                if let Some(why) = live.restart_pending.take() {
+                live.front.repair = crate::front_repair::RepairWatch::default();
+                if let Some(why) = live.front.restart_pending.take() {
                     self.docker_restarts.fetch_add(1, Ordering::Relaxed);
                     self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
                     tracing::warn!(
@@ -177,7 +211,7 @@ impl Manager {
                         "restarted the sandbox's Docker front, which started at a later tick"
                     );
                 }
-                live.front = Some(front);
+                live.front.record = Some(front);
             }
             Err(error) => {
                 tracing::warn!(sandbox, %error, "cannot start the sandbox's Docker front");
@@ -195,21 +229,21 @@ impl Manager {
         state: &mut SandboxState,
     ) -> Option<crate::front_repair::Reading> {
         let live = state.live.as_mut()?;
-        let front = live.front.as_ref()?;
+        let front = live.front.record.as_ref()?;
         let paths = StatePaths::new(self.state_dir(sandbox));
         let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid)?;
-        let grown = live.front_watch.observe(&seen, Instant::now());
-        let gave_way = live.front_watch.new_gave_way(&seen);
+        let grown = live.front.watch.observe(&seen, Instant::now());
+        let gave_way = live.front.watch.new_gave_way(&seen);
         if gave_way > 0 {
             self.docker_event(sandbox, "gave_way", gave_way, String::new());
         }
         // A production holder's front (SPEC-279) serves CD deploys, which fail and say so; its
         // name is no sandbox the panel knows, so it is journaled only.
         let jammed = if production_sandbox(sandbox).is_none() {
-            live.front_watch.report(&seen, sandbox, &self.config.health)
+            live.front.watch.report(&seen, sandbox, &self.config.health)
         } else {
-            let jammed = live.front_watch.jammed(&seen);
-            live.front_watch.counted(&seen);
+            let jammed = live.front.watch.jammed(&seen);
+            live.front.watch.counted(&seen);
             jammed
         };
         for grew in grown {
@@ -246,7 +280,7 @@ impl Manager {
             // No state of this front (none written yet, or another front's): its count starts
             // over, so a successor is not restarted for its predecessor's jam.
             if let Some(live) = state.live.as_mut() {
-                live.repair = crate::front_repair::RepairWatch::default();
+                live.front.repair = crate::front_repair::RepairWatch::default();
             }
             return;
         };
@@ -268,8 +302,8 @@ impl Manager {
             return;
         };
         let now = Instant::now();
-        live.repair.observe(reading.jammed, ping, now);
-        if let Some(why) = live.repair.decide(ci_jobs, now) {
+        live.front.repair.observe(reading.jammed, ping, now);
+        if let Some(why) = live.front.repair.decide(ci_jobs, now) {
             let _ = self.restart_front(sandbox, state, why).await;
         }
     }
@@ -281,7 +315,7 @@ impl Manager {
         let Some(live) = state.live.as_mut() else {
             return;
         };
-        let Some(front) = live.front.clone() else {
+        let Some(front) = live.front.record.clone() else {
             return;
         };
         if crate::front_repair::runs_another_build(front.pid, &self.config.exe) != Some(true) {
@@ -291,10 +325,11 @@ impl Manager {
         let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid);
         if !crate::front_repair::quiet(seen.as_ref(), front.pid, &paths.docker_socket()) {
             if live
+                .front
                 .outdated_said
                 .is_none_or(|at| at.elapsed() >= crate::front_repair::STALE_SAID_EVERY)
             {
-                live.outdated_said = Some(Instant::now());
+                live.front.outdated_said = Some(Instant::now());
                 tracing::info!(
                     sandbox,
                     pid = front.pid,
@@ -313,7 +348,7 @@ impl Manager {
     ///
     /// # Errors
     /// No live holder, or no front could be started again (the next tick tries again).
-    pub(super) async fn restart_front(
+    async fn restart_front(
         &self,
         sandbox: &str,
         state: &mut SandboxState,
@@ -325,26 +360,34 @@ impl Manager {
             .ok_or("the sandbox has no running holder: its next run starts Docker afresh")?;
         let net_ns = live.record.net_ns;
         // Only a front that was stopped makes a restart: one that never ran is merely started.
-        let stopped = live.front.is_some();
+        let stopped = live.front.record.is_some();
         let paths = StatePaths::new(self.state_dir(sandbox));
         let _ = tokio::task::spawn_blocking(move || {
             crate::docker_front::stop(&paths, net_ns);
         })
         .await;
-        live.front = None;
-        live.repair = crate::front_repair::RepairWatch::default();
+        live.front.record = None;
+        live.front.repair = crate::front_repair::RepairWatch::default();
         // This restart takes over one still pending: one new front, one count (review round 3).
-        let stopped = stopped || live.restart_pending.take().is_some();
+        let stopped = stopped || live.front.restart_pending.take().is_some();
         self.keep_front(sandbox, state).await;
         if !stopped {
             // Nothing was stopped: a front that starts is no restart.
-            return if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
+            return if state
+                .live
+                .as_ref()
+                .is_some_and(|live| live.front.record.is_some())
+            {
                 Ok(())
             } else {
                 Err("the sandbox's Docker front did not start; the upkeep tries again".into())
             };
         }
-        if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
+        if state
+            .live
+            .as_ref()
+            .is_some_and(|live| live.front.record.is_some())
+        {
             self.docker_restarts.fetch_add(1, Ordering::Relaxed);
             self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
             if why == crate::front_repair::Why::Outdated {
@@ -367,7 +410,7 @@ impl Manager {
             Ok(())
         } else {
             if let Some(live) = state.live.as_mut() {
-                live.restart_pending = Some(why);
+                live.front.restart_pending = Some(why);
             }
             tracing::warn!(
                 sandbox,
@@ -391,13 +434,7 @@ impl Manager {
     }
 
     /// Keeps an event for the instance's measures, dropping the oldest past the bound.
-    pub(super) fn docker_event(
-        &self,
-        sandbox: &str,
-        kind: &'static str,
-        count: u64,
-        detail: String,
-    ) {
+    fn docker_event(&self, sandbox: &str, kind: &'static str, count: u64, detail: String) {
         let mut events = lock(&self.docker_events);
         if events.len() >= DOCKER_EVENTS_MAX {
             events.pop_front();
@@ -422,7 +459,7 @@ impl Manager {
     }
 
     /// Starts `sandbox`'s front beside the holder of `record` and waits until it serves.
-    pub(super) async fn start_front(
+    async fn start_front(
         &self,
         sandbox: &str,
         record: &HolderRecord,
@@ -528,13 +565,13 @@ impl Manager {
         let Some(live) = state.live.as_mut() else {
             return;
         };
-        if live.front.is_none() {
+        if live.front.record.is_none() {
             return;
         }
-        let (record, front) = (live.record.clone(), live.front_pid());
+        let (record, front) = (live.record.clone(), live.front.pid());
         // Without delegation there is no engine, so no container to leave out.
         let engine = self.group_paths(sandbox).map(|g| g.engine);
-        let known = live.bound.clone();
+        let known = live.front.bound.clone();
         let planned = tokio::task::spawn_blocking(move || {
             crate::docker_bind::run_namespaces(
                 record.net_ns,
@@ -559,7 +596,7 @@ impl Manager {
         })
         .await
         .unwrap_or_default();
-        let pids = bind_plan(&mut live.bound, &planned);
+        let pids = bind_plan(&mut live.front.bound, &planned);
         if pids.is_empty() {
             return;
         }
@@ -599,7 +636,7 @@ impl Manager {
                 tracing::warn!(sandbox, %line, "cannot give a run the sandbox's Docker directory");
             }
         }
-        bind_record(&mut live.bound, &pids, &text);
+        bind_record(&mut live.front.bound, &pids, &text);
     }
 
     /// How the holder of `request` starts its Docker engine, in `cgroup` (SPEC-187).
@@ -639,7 +676,7 @@ impl Manager {
     pub async fn docker_front(&self, sandbox: &str) -> Option<DockerFrontRecord> {
         let entry = self.entry(sandbox);
         let state = entry.lock().await;
-        state.live.as_ref()?.front.clone()
+        state.live.as_ref()?.front.record.clone()
     }
 
     /// Prunes `sandbox`'s Docker engine when it runs, through its own control socket: build cache
@@ -676,7 +713,7 @@ impl Manager {
     pub(super) async fn engine_socket(&self, sandbox: &str) -> Option<PathBuf> {
         let entry = self.entry(sandbox);
         let state = entry.lock().await;
-        if !state.live.as_ref()?.serves_engine() {
+        if !state.live.as_ref()?.front.serves_engine() {
             return None;
         }
         Some(
@@ -815,16 +852,11 @@ impl Manager {
 
     /// Prunes the running engine of the holder `name`, credited up to the consumer `label` of
     /// `measured_in`'s last measurement.
-    pub(super) async fn prune_one(
-        &self,
-        name: &str,
-        measured_in: &str,
-        label: &str,
-    ) -> Option<u64> {
+    async fn prune_one(&self, name: &str, measured_in: &str, label: &str) -> Option<u64> {
         let socket = {
             let entry = self.entry(name);
             let state = entry.lock().await;
-            if !state.live.as_ref()?.serves_engine() {
+            if !state.live.as_ref()?.front.serves_engine() {
                 return None;
             }
             StatePaths::new(self.state_dir(name))
