@@ -1,4 +1,4 @@
-//! The Subscriptions page's refresh (SPEC-473): `POST /api/admin/accounts/{id}/usage` reads the
+//! The Subscriptions page's refresh: `POST /api/admin/accounts/{id}/usage` reads the
 //! usage again and then asks Claude about each limit stored for the subscription, with the
 //! model that limit binds. Claude's answer ends the limit or gives it its reset; an answer that
 //! does not come leaves the limit and says why.
@@ -213,7 +213,7 @@ async fn harness_at(base: String) -> Result<support::Harness, Box<dyn std::error
     })
 }
 
-/// RFR-002, RFR-003: a subscription stored as out of the default model's allowance until its
+/// A subscription stored as out of the default model's allowance until its
 /// reset, whose owner bought usage credits. The default model answers (on those credits, with
 /// its allowance still at 100 %), so the limit ends now: the window is gone, the subscription
 /// reads `ok`, and Claude was asked once with the default model.
@@ -264,7 +264,7 @@ async fn a_refresh_ends_a_models_limit_that_claude_no_longer_holds() -> TestResu
     Ok(())
 }
 
-/// RFR-016: the refresh is the instance administrators'. A member is refused before anything
+/// The refresh is the instance administrators'. A member is refused before anything
 /// is asked of Claude or changed.
 #[tokio::test]
 async fn a_member_cannot_refresh_a_subscription() -> TestResult {
@@ -285,7 +285,7 @@ async fn a_member_cannot_refresh_a_subscription() -> TestResult {
     Ok(())
 }
 
-/// RFR-003: a window the reading of this refresh itself carried is not asked about: the
+/// A window the reading of this refresh itself carried is not asked about: the
 /// reading is Claude's word on it. Here the usage endpoint answers (a sign-in that may read
 /// it) with the Opus cap used up; asked, the Opus model would run on bought credits, the
 /// window would go, and the round's next reading would put it back.
@@ -317,7 +317,7 @@ async fn a_window_the_reading_carried_is_not_asked_about() -> TestResult {
     Ok(())
 }
 
-/// RFR-002, RFR-003: a limit recorded without a reset (a session on Claude Code 2.1.311 wrote
+/// A limit recorded without a reset (a session on Claude Code 2.1.311 wrote
 /// none). The reading does not end it on a refresh: Claude is asked, refuses the default model
 /// for its allowance and names the reset, which the stored window gets. A later reading keeps
 /// it, as it keeps every model's window that has a reset.
@@ -378,7 +378,7 @@ async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestRes
     assert_eq!(asked(&seen), ["usage", CHEAPEST, FABLE]);
 
     // The background round's reading keeps the window now that it has a reset, and asks
-    // nothing about it (RFR-007): no request with the Fable model.
+    // nothing about it: no request with the Fable model.
     h.clock
         .0
         .fetch_add(10 * 60_000, std::sync::atomic::Ordering::SeqCst);
@@ -393,7 +393,7 @@ async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestRes
     Ok(())
 }
 
-/// RFR-004: Claude does not answer the question (a server error, a refused sign-in, a
+/// Claude does not answer the question (a server error, a refused sign-in, a
 /// throttle). The refresh fails with one plain sentence, kept as the usage note, and what was
 /// stored about the limit stays: with its reset, and without one.
 #[tokio::test]
@@ -489,7 +489,7 @@ async fn a_refresh_that_cannot_ask_leaves_the_limit_and_says_why() -> TestResult
     Ok(())
 }
 
-/// RFR-003: nothing is asked when no limit is stored, whatever the windows read; and a limit
+/// Nothing is asked when no limit is stored, whatever the windows read; and a limit
 /// of the whole subscription that a reading ends is not asked about either.
 #[tokio::test]
 async fn a_refresh_asks_only_about_a_limit_that_is_stored() -> TestResult {
@@ -523,7 +523,7 @@ async fn a_refresh_asks_only_about_a_limit_that_is_stored() -> TestResult {
     Ok(())
 }
 
-/// RFR-003, RFR-004: a sign-in whose usage cannot be read at all (the usage endpoint refuses
+/// A sign-in whose usage cannot be read at all (the usage endpoint refuses
 /// it and the cheapest model's response carries no headers) is no failure, and a limit of the
 /// whole subscription stored for it is asked about with the default model: it runs, so the
 /// limit ends, and the windows its answer carried are the reading.
@@ -562,7 +562,7 @@ async fn a_limit_of_the_subscription_is_asked_about_with_the_default_model() -> 
     Ok(())
 }
 
-/// RFR-003: a limit is asked about with the model it binds. A Sonnet window stored without a
+/// A limit is asked about with the model it binds. A Sonnet window stored without a
 /// reset is asked about with the Sonnet model Yulius offers, and gets the reset of Claude's
 /// refusal; the default model (Opus 5.5) is not asked, and still runs on the subscription.
 #[tokio::test]
@@ -611,7 +611,7 @@ async fn another_models_window_is_asked_about_with_that_model() -> TestResult {
     Ok(())
 }
 
-/// RFR-004: a usage reading Claude will not give for now (the usage endpoint throttles and the
+/// A usage reading Claude will not give for now (the usage endpoint throttles and the
 /// cheapest model's request fails) does not stop the question about the limit: the default
 /// model answers, so the limit ends. The refresh still says that the usage was not read, with
 /// the wait Claude asked for, and stores no note for a throttle.
@@ -668,7 +668,7 @@ async fn a_throttled_reading_still_asks_about_the_limit() -> TestResult {
     Ok(())
 }
 
-/// RFR-004: a sign-in Claude refuses, or a usage request that fails, ends the refresh at
+/// A sign-in Claude refuses, or a usage request that fails, ends the refresh at
 /// once: nothing is asked about the limit with a sign-in that does not work, and the limit
 /// stays.
 #[tokio::test]
@@ -719,7 +719,7 @@ impl UsageProbe for NeverAnswers {
     }
 }
 
-/// RFR-003: a refresh has one deadline, shorter than the page waits for its answer. A
+/// A refresh has one deadline, shorter than the page waits for its answer. A
 /// question Claude never answers ends there with one sentence, kept as the usage note, and
 /// the limit stays as it was.
 #[tokio::test]
@@ -767,7 +767,7 @@ async fn a_refresh_ends_at_its_deadline() -> TestResult {
     Ok(())
 }
 
-/// RFR-003, RFR-007: only a refresh keeps a limit without a reset for Claude's answer. The
+/// Only a refresh keeps a limit without a reset for Claude's answer. The
 /// background round's reading still ends it, as any provider's reading does (SPEC-464
 /// UCL-004), and asks nothing about it.
 #[tokio::test]
@@ -793,7 +793,7 @@ async fn the_rounds_reading_still_ends_a_limit_without_a_reset() -> TestResult {
     Ok(())
 }
 
-/// RFR-003: each question is asked about what is stored when its turn comes. An Opus window and
+/// Each question is asked about what is stored when its turn comes. An Opus window and
 /// a limit of the whole subscription are stored for a sign-in whose usage cannot be read; the
 /// Opus model answers, which ends both, so the default model is not asked any more.
 #[tokio::test]
@@ -980,7 +980,7 @@ async fn raced()
     Ok((h, probe, admin))
 }
 
-/// RFR-005: a limit Claude reports to a session while the refresh is asking is newer than the
+/// A limit Claude reports to a session while the refresh is asking is newer than the
 /// answer, and is kept: the answer "the model ran" does not end it.
 #[tokio::test]
 async fn a_limit_recorded_while_claude_is_asked_is_kept() -> TestResult {
@@ -1057,7 +1057,7 @@ async fn a_failed_reading_for_the_previous_sign_in_leaves_no_note() -> TestResul
     Ok(())
 }
 
-/// RFR-005: the subscription is signed in again while the refresh is asking. The answer is the
+/// The subscription is signed in again while the refresh is asking. The answer is the
 /// previous sign-in's, perhaps another Claude account's: it is not recorded for the new one.
 /// The limit of the whole subscription that was asked about is stored unchanged, where the
 /// refusal would have filled the 5-hour window and dated the limit.

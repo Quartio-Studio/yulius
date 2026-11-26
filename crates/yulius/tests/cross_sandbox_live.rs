@@ -1,4 +1,4 @@
-//! SPEC-442 end to end (AC-XST-1, AC-XST-2): from the Superagent of one sandbox, a task asked for
+//! SPEC-442 end to end: from the Superagent of one sandbox, a task asked for
 //! prepared in another is started, then messaged, each once its person approves the request on
 //! the panel, with real processes: supervisor → detached `yulius ptyhost` → fake agent.
 
@@ -110,7 +110,7 @@ fn a_prepared_task_of_another_sandbox_is_started_and_messaged_from_a_superagent(
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
         assert_eq!(task.sandbox_id, pool);
         assert_eq!(task.status, TaskStatus::Prepared);
-        // On Claude Code by default (SPEC-620).
+        // On Claude Code by default.
         assert_eq!(task.harness, Harness::ClaudeCode);
 
         // It should have been queued: started from home, no delete and no new task.

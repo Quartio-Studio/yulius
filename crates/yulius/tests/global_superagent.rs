@@ -1,4 +1,4 @@
-//! The Global Superagent end to end (SPEC-427) with the real detached ptyhost and the Cockpit
+//! The Global Superagent end to end with the real detached ptyhost and the Cockpit
 //! tests' fake `claude`: one per person, in a folder of its own without built-in tools, served
 //! every sandbox's tools for its person through its own bearer, outliving its host sandbox.
 
@@ -70,7 +70,7 @@ fn globals(f: &Fixture) -> Vec<(String, String)> {
         .collect()
 }
 
-/// AC-GSA-1 (GSA-001, GSA-002, GSA-005): one per person, plain Claude Code without built-in
+/// One per person, plain Claude Code without built-in
 /// tools and with only the Yulius MCP, in a folder of its own; private; refused to a person who
 /// can work in no sandbox.
 #[tokio::test]
@@ -179,7 +179,7 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
     Ok(())
 }
 
-/// SPEC-493 MDL-001: a Global Superagent runs the default model, Opus 5.5, so a subscription
+/// A Global Superagent runs the default model, Opus 5.5, so a subscription
 /// that is only out of Fable's credits takes it, and nothing falls back.
 #[tokio::test]
 async fn a_global_superagent_starts_on_opus_where_fable_is_used_up() -> TestResult {
@@ -226,7 +226,7 @@ fn global_token(f: &Fixture, user: &str) -> Result<String, Box<dyn std::error::E
         .ok_or("no Global Superagent")?)
 }
 
-/// AC-GSA-2 (GSA-003): its bearer is served the remote MCP's tools for its person in every
+/// Its bearer is served the remote MCP's tools for its person in every
 /// project, without the vault, deploy and onboarding tools; the sandbox Superagent's bearer gets
 /// none of them.
 #[tokio::test]
@@ -311,7 +311,7 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
             .await?
             .ok_or("task")?;
     assert_eq!(task.sandbox_id, sandbox("s2"));
-    // On Claude Code by default (SPEC-620).
+    // On Claude Code by default.
     assert_eq!(task.harness, yulius_domain::harness::Harness::ClaudeCode);
     assert_eq!(f.h.app.task_summary(&task).await?.harness_choice, "chosen");
     assert_eq!(task.created_by, UserId::parse("u-alice")?);
@@ -387,7 +387,7 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
     Ok(())
 }
 
-/// AC-GSA-3 (GSA-005): its host sandbox removed, it ends; the next open is hosted by another
+/// Its host sandbox removed, it ends; the next open is hosted by another
 /// sandbox and resumes the same conversation.
 #[tokio::test]
 async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
@@ -447,7 +447,7 @@ async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
     Ok(())
 }
 
-/// GSA-005: a person who lost write access to its host gets it back under another sandbox.
+/// A person who lost write access to its host gets it back under another sandbox.
 #[tokio::test]
 async fn a_global_superagent_whose_host_was_lost_moves_to_another_sandbox() -> TestResult {
     let f = fixture().await?;
@@ -472,7 +472,7 @@ async fn a_global_superagent_whose_host_was_lost_moves_to_another_sandbox() -> T
     Ok(())
 }
 
-/// AC-GSA-4 (GSA-002): on a contained server the plan its session host gets is contained in a
+/// On a contained server the plan its session host gets is contained in a
 /// bubblewrap root of its own folder, without a sandbox holder, identity, repository or the
 /// person's home, with the host's password files covered, every shell command refused through a
 /// read-only prefix, and only the Yulius MCP without built-in tools or settings files.
@@ -514,7 +514,7 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
     else {
         return Err("not contained".into());
     };
-    // Its memory and user-level instructions, read-only from its own folder (SPEC-652 MEM-001).
+    // Its memory and user-level instructions, read-only from its own folder.
     let config = own.join(".claude");
     let guarded: Vec<_> = guard
         .iter()
@@ -629,7 +629,7 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
     Ok(())
 }
 
-/// GSA-005: a Global Superagent running across a server restart is adopted as one: the same
+/// A Global Superagent running across a server restart is adopted as one: the same
 /// session, its bearer still served the remote tools, its folder its own.
 #[tokio::test]
 async fn a_running_global_superagent_is_adopted_after_a_restart() -> TestResult {
@@ -658,7 +658,7 @@ async fn a_running_global_superagent_is_adopted_after_a_restart() -> TestResult 
     Ok(())
 }
 
-/// GSA-005 (SPEC-074): a usage limit moves the Global Superagent to a subscription with capacity
+/// A usage limit moves the Global Superagent to a subscription with capacity
 /// as the sandbox one: still global, in its own folder, continuing the conversation.
 #[tokio::test]
 async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> TestResult {
@@ -712,7 +712,7 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     Ok(())
 }
 
-/// GSA-005 (SPEC-186 SAV-006): one started by a Yulius before an update that changed what it is
+/// One started by a Yulius before an update that changed what it is
 /// served is adopted, then started again once idle as a Global Superagent, resuming its
 /// conversation; its old bearer ends with it.
 #[tokio::test]
@@ -770,7 +770,7 @@ async fn a_global_superagent_started_before_an_update_restarts_as_global() -> Te
     Ok(())
 }
 
-/// GSA-003: its bearer is refused once its person can work in no sandbox, even while the session
+/// Its bearer is refused once its person can work in no sandbox, even while the session
 /// still runs.
 #[tokio::test]
 async fn the_global_bearer_is_refused_once_its_person_works_in_no_sandbox() -> TestResult {
@@ -789,7 +789,7 @@ async fn the_global_bearer_is_refused_once_its_person_works_in_no_sandbox() -> T
     Ok(())
 }
 
-/// Review round 1: its bearer has an operate token's bound of requests a minute.
+/// Its bearer has an operate token's bound of requests a minute.
 #[tokio::test]
 async fn the_global_bearer_is_bounded_per_minute() -> TestResult {
     let f = fixture().await?;
@@ -814,7 +814,7 @@ async fn the_global_bearer_is_bounded_per_minute() -> TestResult {
     Ok(())
 }
 
-/// AC-GKY-1, AC-GKY-2 (SPEC-430): its person types into it as into the sandbox Superagent (keys,
+/// Its person types into it as into the sandbox Superagent (keys,
 /// pastes and clicks reach its terminal); nobody else attaches to it; the message endpoints of
 /// SPEC-427 GSA-007 are gone.
 #[tokio::test]
@@ -866,7 +866,7 @@ async fn its_person_types_into_the_global_superagent() -> TestResult {
     Ok(())
 }
 
-/// AC-GIM-1 to AC-GIM-3 (SPEC-433): an image pasted into the Global Superagent is stored in its
+/// An image pasted into the Global Superagent is stored in its
 /// own folder, inside its root, and its path answered; only images, only for its own person
 /// while it runs; images older than a week go at the next upload.
 #[tokio::test]
@@ -946,7 +946,7 @@ async fn an_image_pasted_into_the_global_superagent_is_kept_in_its_own_folder() 
     Ok(())
 }
 
-/// SPEC-433 review round 1: its images folder is never reached through a link, the week-old
+/// Its images folder is never reached through a link, the week-old
 /// removal takes only regular files (never a folder, nor a link or what it points at), and a
 /// disabled account stores nothing.
 #[tokio::test]
@@ -1016,7 +1016,7 @@ async fn the_global_superagent_s_images_folder_refuses_links_and_disabled_accoun
     Ok(())
 }
 
-/// SPEC-652 MEM-001: a person's Superagent in a sandbox guards its memory and user-level
+/// A person's Superagent in a sandbox guards its memory and user-level
 /// instructions, opened from the person's home on the host and bound where the session sees them
 /// (`/home/<login>/.claude`), keyed by the sandbox's repository; its memory folder is made first.
 #[tokio::test]
@@ -1072,7 +1072,7 @@ async fn a_contained_superagent_guards_its_memory_in_the_persons_home() -> TestR
     assert!(home_host.join(&memory).is_dir(), "made before the session");
     // The memory folder it reads is the one its guard binds (review round 1).
     assert_eq!(auto_memory_dir(&plan), Some(at(home.join(&memory))));
-    // Its hooks learn the read-only paths, to say why a write there fails (MEM-006).
+    // Its hooks learn the read-only paths, to say why a write there fails.
     let readonly = plan
         .env
         .iter()

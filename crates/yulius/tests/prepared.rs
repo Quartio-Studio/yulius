@@ -1,4 +1,4 @@
-//! Prepared tasks (SPEC-105, SPEC-001 TSK-019): a task written now and started later, when a
+//! Prepared tasks: a task written now and started later, when a
 //! person presses Start now ("when I decide") or by itself at its time. These tests use the
 //! in-memory harness, where a start fails at once (no Git, no session host): a task that was
 //! released leaves `prepared` and `queued`.
@@ -77,7 +77,7 @@ async fn status(h: &Harness, id: &str) -> Result<TaskStatus, Error> {
         .status)
 }
 
-/// AC-PRP-1, AC-PRP-5: New task and `task_create` make a prepared task, with or without a time;
+/// New task and `task_create` make a prepared task, with or without a time;
 /// a time outside the window, a prepared task that also runs after a task, a rule or as a
 /// supertask are refused and create nothing.
 #[tokio::test]
@@ -201,7 +201,7 @@ async fn a_task_is_created_prepared_or_scheduled() -> TestResult {
     Ok(())
 }
 
-/// PRP-001: at most 32 prepared tasks wait in one sandbox.
+/// At most 32 prepared tasks wait in one sandbox.
 #[tokio::test]
 async fn a_sandbox_holds_a_bounded_number_of_prepared_tasks() -> TestResult {
     let (h, alice, _) = world().await?;
@@ -233,7 +233,7 @@ async fn act(
     call(&h.router, method, &path, body, creds).await
 }
 
-/// AC-PRP-2: Start now starts a prepared task whatever its time, Cancel ends one, Delete removes
+/// Start now starts a prepared task whatever its time, Cancel ends one, Delete removes
 /// one; Start now on a task that already left `prepared` is 409; someone who may only read
 /// changes nothing.
 #[tokio::test]
@@ -308,7 +308,7 @@ async fn a_person_starts_cancels_or_deletes_a_prepared_task() -> TestResult {
     Ok(())
 }
 
-/// AC-PRP-3: a scheduled task stays prepared before its time and starts on the tick past it; a
+/// A scheduled task stays prepared before its time and starts on the tick past it; a
 /// prepared task without a time never starts by itself; while onboarding blocks the sandbox's
 /// tasks a due task waits, and Start now says why.
 #[tokio::test]
@@ -373,7 +373,7 @@ async fn a_scheduled_task_starts_by_itself_at_its_time() -> TestResult {
     Ok(())
 }
 
-/// AC-PRP-4: the schedule moves, clears to "when I decide", starts a task at once when the new
+/// The schedule moves, clears to "when I decide", starts a task at once when the new
 /// time is due, refuses a time outside the window and a task that is not prepared.
 #[tokio::test]
 async fn a_prepared_task_is_rescheduled() -> TestResult {
@@ -457,7 +457,7 @@ async fn a_prepared_task_is_rescheduled() -> TestResult {
 
 /// Review of SPEC-105: a request starts only its own task when its time is due; another
 /// sandbox-wide due task waits for the tick, and a second writer who does not own the task
-/// (SPEC-070) changes nothing.
+/// changes nothing.
 #[tokio::test]
 async fn a_request_releases_only_its_own_task_and_only_for_its_owner() -> TestResult {
     let (h, alice, _) = world().await?;

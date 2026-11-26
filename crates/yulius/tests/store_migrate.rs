@@ -1,4 +1,4 @@
-//! `yulius store-migrate --db <file>` (SPEC-591 STG-004, ADR-0430): the release's own migrations
+//! `yulius store-migrate --db <file>`: the release's own migrations
 //! applied to a copy of a store an older release wrote, so staging's deploy measures the
 //! migration before it stops anything.
 

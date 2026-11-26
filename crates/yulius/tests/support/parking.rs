@@ -95,7 +95,7 @@ pub(crate) async fn parked(app: &Arc<App>, id: &TaskId) -> TestResult {
     parked_within(app, id, PARK_WAIT).await
 }
 
-/// [`parked`] with its own bound (#1649). The bound covers the whole wait: a pass still running
+/// [`parked`] with its own bound. The bound covers the whole wait: a pass still running
 /// at the deadline is cancelled there. The failure says whether a pass was still running or
 /// the last one ended without parking, and the last park stage the task reached.
 pub(crate) async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) -> TestResult {
@@ -150,7 +150,7 @@ pub(crate) async fn parked_within(app: &Arc<App>, id: &TaskId, bound: Duration) 
     .into())
 }
 
-/// What a park pass does after reaching `point` (#1649).
+/// What a park pass does after reaching `point`.
 fn park_stage(point: Point) -> String {
     match point {
         Point::ParkVerifying => {

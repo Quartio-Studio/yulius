@@ -1,7 +1,7 @@
 //! Sessions as read-only documents: the Sessions API by sandbox access, full-text search,
 //! redaction on serve, the agent tools `sessions_search`/`session_read` scoped to the agent's
 //! sandbox, the onboarding plan of `yulius onboard` and the onboarding gate (AC-SES-1..5,
-//! AC-IMP-4, AC-IMP-7).
+//! AC-IMP-4).
 
 use crate::support;
 
@@ -398,7 +398,7 @@ async fn import(w: &World, creds: &Creds, repo: &str) -> Result<Value, Error> {
 }
 
 /// The session ID arrives before Codex writes its dated rollout. Each reader must discover
-/// the file even when the other reader has not been called since it appeared (#1454).
+/// the file even when the other reader has not been called since it appeared.
 async fn late_codex_rollout(search_first: bool) -> TestResult {
     let w = World::new("org").await?;
     let (user, creds) = w.user("alice", false).await?;
@@ -705,7 +705,7 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
 
     // Continuing an imported session starts an agent: without a usable Claude account it is
-    // refused and creates no task (SPEC-246 CLA-002).
+    // refused and creates no task.
     w.h.store
         .delete_account(&yulius_domain::ids::AccountId::parse("a-exhausted")?)
         .await?;
@@ -772,7 +772,7 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
     w.grant("alice", "fresh", "maintain");
     w.remote(OWNER, "fresh", &[("README.md", "# Fresh\n")], &[])?;
     w.grant("carol", "shop", "push");
-    // Added in the browser, so onboarding starts at once (SPEC-051).
+    // Added in the browser, so onboarding starts at once.
     let alice_browser = w.browser(&alice_user).await?;
     let shop = import(&w, &alice_browser, "Quartio-Studio/shop").await?;
     assert_eq!(shop["onboarding"], "preparing");
@@ -1170,7 +1170,7 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     )
     .await?;
     assert!(text(&bounded["text"]).len() <= 1100);
-    // The end of a session without guessing an offset (SPEC-487 QST-003): `tail` reads the
+    // The end of a session without guessing an offset: `tail` reads the
     // last entries, says where they begin and whether more came before, and where a later
     // read goes on. What a file read before the tail gave away is still redacted in it.
     let (tail, err) = mcp_tool(
@@ -1267,7 +1267,7 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
         (&json!(true), &json!(40)),
         "{end}"
     );
-    // A session whose tools gave long results (review of slice 4, C1): the read is bounded
+    // A session whose tools gave long results (review of slice 4): the read is bounded
     // by the text it shows, where a tool's result is cut to a few lines, not by what the
     // transcript holds. Twenty steps of a call and its 12 000-character result: the end
     // shows far more than the last few entries.
@@ -1411,7 +1411,7 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     Ok(())
 }
 
-/// SPEC-575 MFS-012 (review round 1 of slice 4): a sandbox created after the release (imported
+/// A sandbox created after the release (imported
 /// here through the real path) is recorded at the current bootstrap revision, so even once
 /// onboarded it never gets an upgrade task: its onboarding laid that default already.
 #[tokio::test]

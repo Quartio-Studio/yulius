@@ -1,4 +1,4 @@
-//! A completed producer and its last running consumer across a planned update (SPEC-573).
+//! A completed producer and its last running consumer across a planned update.
 use super::{BoxResult, Fixture, RunState, TestResult, WAIT, Weighing, fixture_tuned};
 use crate::support::updates::{FakeHelper, FakeSource, NEW, OLD, services};
 use std::sync::Arc;

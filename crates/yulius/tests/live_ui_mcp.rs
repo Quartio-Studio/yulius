@@ -136,7 +136,7 @@ async fn add_server_works_from_an_empty_mcp_page_and_reaches_runs() -> TestResul
         eprintln!("skipped: set YULIUS_LIVE_CHROME");
         return Ok(());
     };
-    // The UI's origin must be the server's: cookie sessions refuse other origins (ADR-14).
+    // The UI's origin must be the server's: cookie sessions refuse other origins.
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = listener.local_addr()?;
     let h = harness_with(HarnessOptions {

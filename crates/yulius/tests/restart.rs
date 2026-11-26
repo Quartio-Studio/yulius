@@ -1,4 +1,4 @@
-//! SPEC-358: a running task session keeps Yulius across a server restart. Its MCP bridge
+//! A running task session keeps Yulius across a server restart. Its MCP bridge
 //! (`yulius mcp`), git credential helper, `gh` token and egress proxy work afterwards with no
 //! manual step. The first server runs in a runtime of its own, dropped as a dying process drops
 //! its connections; the second is a new `App` on the same store, listening on the same port.
@@ -321,7 +321,7 @@ impl Write for Shared {
     }
 }
 
-/// MSB-005: a `yulius wait` running when Yulius goes down keeps waiting through an outage far
+/// A `yulius wait` running when Yulius goes down keeps waiting through an outage far
 /// longer than its old 5 tries, and goes on once Yulius is back.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wait_rides_out_a_restart() -> TestResult {
@@ -377,7 +377,7 @@ async fn a_wait_rides_out_a_restart() -> TestResult {
     let said = out.text();
     assert_eq!(code, 0, "{said}");
     assert!(said.contains("Yulius is back."), "{said}");
-    // No run at its head: the limit ends it, saying why (SPEC-444 PRN-010).
+    // No run at its head: the limit ends it, saying why.
     assert!(
         said.contains("No Yulius CI run at ababababa after 1 min"),
         "{said}"
@@ -440,7 +440,7 @@ async fn turn_closed_while_down(
     Ok(())
 }
 
-/// MSB-007: after a restart, the task whose turn closed while Yulius was down is told "Yulius is
+/// After a restart, the task whose turn closed while Yulius was down is told "Yulius is
 /// back; continue" once, and so is one whose earlier Stop Yulius answered with a block (review
 /// round 2: the turn went on and its last Stop failed). A task idle since before the outage is
 /// not, nor one whose turn closed after `alive-at` but whose Stop Yulius answered (review round 1:
@@ -538,7 +538,7 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
         let started = app.now();
         app.reconcile().await?;
         // Each pass wakes what has replayed so far: passes run until the cut task is woken, and
-        // for 2 s after, as production repeats them (MSB-007).
+        // for 2 s after, as production repeats them.
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut woken = Vec::new();
         let mut settle: Option<Instant> = None;
@@ -578,7 +578,7 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-432 MCR-003, MCR-004: an idle task whose Yulius MCP went silent gets `/mcp reconnect
+/// An idle task whose Yulius MCP went silent gets `/mcp reconnect
 /// yulius` typed once; heard again, it is told to continue once. A task heard lately gets
 /// nothing.
 #[test]
@@ -633,7 +633,7 @@ fn a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues() -> TestRe
         })
         .await?;
         // A command Claude Code runs itself submits no prompt: nothing of it waits in the
-        // session, so it is no draft (SPEC-468 CCF-011).
+        // session, so it is no draft.
         assert!(!app.has_draft(&cut), "a typed command is no draft");
         // Within the gap, nothing more.
         app.note_mcp_contact(&heard, &ping);
@@ -696,7 +696,7 @@ fn wait_paced(port: u16, total: Duration, backoff_cap: Duration) -> (i32, String
     (code, out.text(), began.elapsed())
 }
 
-/// MSB-005: a wait whose deadline passes while Yulius is down ends 1, saying so.
+/// A wait whose deadline passes while Yulius is down ends 1, saying so.
 #[test]
 fn a_wait_ends_at_its_deadline_while_yulius_is_down() -> TestResult {
     // A port bound and not listening refuses connections, as a stopped Yulius does, and stays
@@ -712,7 +712,7 @@ fn a_wait_ends_at_its_deadline_while_yulius_is_down() -> TestResult {
     Ok(())
 }
 
-/// MSB-005: a refused token ends the wait at once, outage or not.
+/// A refused token ends the wait at once, outage or not.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_token_ends_the_wait_at_once() -> TestResult {
     let h = harness()?;
@@ -745,7 +745,7 @@ fn failing_server() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-/// Review round 2: bad answers do not keep a wait past its deadline.
+/// Bad answers do not keep a wait past its deadline.
 #[test]
 fn bad_answers_end_the_wait_at_its_deadline() -> TestResult {
     let port = failing_server()?;
@@ -758,7 +758,7 @@ fn bad_answers_end_the_wait_at_its_deadline() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: an answer that is not an outage (a 500 every time) ends the wait after a few
+/// An answer that is not an outage (a 500 every time) ends the wait after a few
 /// tries, not at its deadline as if Yulius were restarting.
 #[test]
 fn a_server_failing_every_request_ends_the_wait_after_a_few_tries() -> TestResult {
@@ -771,7 +771,7 @@ fn a_server_failing_every_request_ends_the_wait_after_a_few_tries() -> TestResul
     Ok(())
 }
 
-/// MSB-006: a start reads when the server before was last alive, and writes `alive-at` itself;
+/// A start reads when the server before was last alive, and writes `alive-at` itself;
 /// with no `alive-at`, nothing is known and nobody will be woken.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_reads_alive_at_and_refreshes_it() -> TestResult {
@@ -796,7 +796,7 @@ async fn a_start_reads_alive_at_and_refreshes_it() -> TestResult {
         assert!(Instant::now() < deadline, "alive-at was not refreshed");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Review round 2: restarted again before its wakes ran, the next start still covers the
+    // Restarted again before its wakes ran, the next start still covers the
     // first outage, not only the moment the start before it was alive.
     let third = App::new(h.app.config.clone(), h.app.deps.clone());
     assert_eq!(third.start_outage_watch().down_since, Some(before));

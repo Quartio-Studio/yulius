@@ -87,7 +87,7 @@ pub(crate) async fn running_task_set_to(
     running_task_of_agent(h, Agent::ClaudeCode, mode, account, run_dir, own, model).await
 }
 
-/// [`running_task_set_to`] for a task and run of `agent` (SPEC-503).
+/// [`running_task_set_to`] for a task and run of `agent`.
 pub(crate) async fn running_task_of_agent(
     h: &Harness,
     agent: Agent,

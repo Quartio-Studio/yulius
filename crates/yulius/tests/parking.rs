@@ -1,4 +1,4 @@
-//! Parked sessions (SPEC-512 part 1, #1412, ADR-0367), with real processes (supervisor →
+//! Parked sessions, with real processes (supervisor →
 //! detached `yulius ptyhost` → fake agent): a task whose turn ended and that waits for a person
 //! is parked after the grace period, frees its session for a queued task, keeps its place, and
 //! resumes in its own session when someone writes to it.
@@ -622,7 +622,7 @@ fn audited(data: &Path, action: &str, id: &TaskId) -> Result<Vec<String>, Error>
     Ok(rows.filter_map(Result::ok).collect())
 }
 
-/// PRK-002, PRK-003, PRK-006: under a limit of one session, an answered task parks after the
+/// Under a limit of one session, an answered task parks after the
 /// grace period, keeps its activity and the list's group, ends its process and run, and its slot
 /// starts the queued task.
 #[test]
@@ -641,7 +641,7 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
         )
         .await?;
         // An answered agent is not Done locally: it holds the only slot, and the queued task
-        // says so (PRK-007).
+        // says so.
         app.drain_queue_now().await;
         assert_eq!(status_of(&app, &second).await.0, Some(TaskStatus::Queued));
         let queued = TaskStore::task(app.deps.store.as_ref(), &second)
@@ -674,7 +674,7 @@ fn an_answered_task_parks_and_its_slot_starts_a_queued_task() -> TestResult {
         let summary = app.task_summary(&task).await?;
         assert_eq!(summary.status, "parked");
         // The Capacity card counts the queued task's session as working and the parked one
-        // apart (PRK-008).
+        // apart.
         let ctx = AuthContext {
             user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
             csrf_token: None,
@@ -1058,7 +1058,7 @@ fn losing_exit_reader(before_finalization: bool) -> TestResult {
     result
 }
 
-/// PRK-005: `task_message` to a parked task resumes it in the same provider session with the
+/// `task_message` to a parked task resumes it in the same provider session with the
 /// message as its first prompt, and ends the request it had open.
 #[test]
 fn a_message_resumes_a_parked_task_in_its_own_session() -> TestResult {
@@ -1105,7 +1105,7 @@ fn a_message_resumes_a_parked_task_in_its_own_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-005, PRK-001: the web's Resume resumes a parked task with nothing typed and keeps its
+/// The web's Resume resumes a parked task with nothing typed and keeps its
 /// request; archive closes a parked task and a stop stops one.
 #[test]
 fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResult {
@@ -1170,7 +1170,7 @@ fn resume_keeps_the_request_and_archive_or_stop_end_a_parked_task() -> TestResul
     Ok(())
 }
 
-/// PRK-002: nothing parks with parking off (grace 0), within the grace period, or while a
+/// Nothing parks with parking off (grace 0), within the grace period, or while a
 /// person typed into the terminal.
 #[test]
 fn a_task_parks_only_after_its_grace_period_and_never_with_parking_off() -> TestResult {
@@ -1210,7 +1210,7 @@ fn a_task_parks_only_after_its_grace_period_and_never_with_parking_off() -> Test
     Ok(())
 }
 
-/// PRK-003: a message that comes while a park is ending the session is refused with what to do,
+/// A message that comes while a park is ending the session is refused with what to do,
 /// never typed into the session that ends; sent again once the task parked, it resumes it.
 #[test]
 fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> TestResult {
@@ -1262,7 +1262,7 @@ fn a_message_during_a_park_is_refused_and_resumes_the_task_once_parked() -> Test
     Ok(())
 }
 
-/// PRK-003 (#1605): a second idle-park pass whose process probe saw the session alive, and that
+/// A second idle-park pass whose process probe saw the session alive, and that
 /// gets the launch lock only after the first park's run end took the park's intent (the task
 /// still reads Running), parks nothing. A message in that interval is refused as parking, never
 /// typed into the ending session; the next one, once the task is Parked, resumes it in the same
@@ -1359,7 +1359,7 @@ fn a_second_park_pass_at_the_runs_end_leaves_the_parked_task_open_to_a_message()
     Ok(())
 }
 
-/// PRK-003 (review round 1, M1): a stop that lands while the parked run's end is being recorded
+/// A stop that lands while the parked run's end is being recorded
 /// (after it took the park's intent) leaves the task stopped, never `stopping` with no run.
 #[test]
 fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
@@ -1402,7 +1402,7 @@ fn a_stop_during_the_parks_end_stops_the_task() -> TestResult {
     Ok(())
 }
 
-/// PRK-004 (review round 1, M3): a task chained after one that is Done and parked starts, as it
+/// A task chained after one that is Done and parked starts, as it
 /// starts after a Done one that kept its session.
 #[test]
 fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
@@ -1479,7 +1479,7 @@ fn a_task_chained_after_a_parked_done_task_starts() -> TestResult {
     Ok(())
 }
 
-/// PRK-001 (review round 1, M4): a parked task keeps its scope claims: another task claiming
+/// A parked task keeps its scope claims: another task claiming
 /// the same paths is told of it.
 #[test]
 fn a_parked_task_keeps_its_claims() -> TestResult {
@@ -1535,7 +1535,7 @@ fn a_parked_task_keeps_its_claims() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 1, M5): a session is parked only on a fresh look at its background work;
+/// A session is parked only on a fresh look at its background work;
 /// a look that gives no answer counts as work running and keeps the session.
 #[test]
 fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
@@ -1571,7 +1571,7 @@ fn a_look_that_gives_no_answer_keeps_the_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 1, M6): what the person still has to answer in the session, or a
+/// What the person still has to answer in the session, or a
 /// person's pause, keeps the session, whatever the grace period.
 #[test]
 fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
@@ -1608,7 +1608,7 @@ fn a_question_in_the_terminal_or_a_pause_keeps_the_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-005 (review round 1, M6): a message to a parked task while every session is in use
+/// A message to a parked task while every session is in use
 /// queues the resume with its prompt; once a session is free it resumes with that message.
 #[test]
 fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
@@ -1655,7 +1655,7 @@ fn a_resume_at_the_session_limit_waits_with_its_message() -> TestResult {
     Ok(())
 }
 
-/// PRK-003 (review round 1, F11): a park whose session cannot be ended gives up: the session
+/// A park whose session cannot be ended gives up: the session
 /// goes on and a message is typed into it again, not refused as "parking" for ever.
 #[test]
 fn a_park_that_cannot_end_its_session_gives_up() -> TestResult {
@@ -1795,7 +1795,7 @@ async fn queued_park_screen(
 }
 
 /// A run parked before the snapshot existed, its task already queued again: only the
-/// recorded park transition says the final screen was a park (SPEC-621 FIN-001).
+/// recorded park transition says the final screen was a park.
 async fn legacy_queued_park_screen(
     data: &Path,
     id: &TaskId,
@@ -1877,7 +1877,7 @@ async fn cold_task_screen(
         .to_owned())
 }
 
-/// PRK-003 (review round 2): a switch that starts after the park decided gives way to it: the
+/// A switch that starts after the park decided gives way to it: the
 /// task parks with the activity it had, and the switch says why it did not happen.
 #[test]
 fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
@@ -1917,7 +1917,7 @@ fn a_switch_overtaken_by_a_park_parks_with_its_activity() -> TestResult {
     Ok(())
 }
 
-/// PRK-003 (review round 2): a parked session that does not hear the request to end is ended by
+/// A parked session that does not hear the request to end is ended by
 /// the escalation, and its loss parks the task all the same (`mark_lost` with the park's intent).
 #[test]
 fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
@@ -1963,7 +1963,7 @@ fn a_session_deaf_to_the_park_is_parked_by_the_escalation() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 2): a prompt Yulius held for a person's decision keeps the session (it
+/// A prompt Yulius held for a person's decision keeps the session (it
 /// is back in the prompt box).
 #[test]
 fn a_held_prompt_keeps_the_session() -> TestResult {
@@ -1999,7 +1999,7 @@ fn a_held_prompt_keeps_the_session() -> TestResult {
     Ok(())
 }
 
-/// PRK-005 (review round 2): only who steers a task resumes it: another writer's Resume and
+/// Only who steers a task resumes it: another writer's Resume and
 /// message are refused, and the task stays parked.
 #[tokio::test]
 async fn only_its_owner_resumes_a_parked_task() -> TestResult {
@@ -2048,7 +2048,7 @@ async fn only_its_owner_resumes_a_parked_task() -> TestResult {
     Ok(())
 }
 
-/// PRK-002 (review round 2): the onboarding task is never parked: its run's end decides the
+/// The onboarding task is never parked: its run's end decides the
 /// sandbox's onboarding.
 #[test]
 fn the_onboarding_task_is_not_parked() -> TestResult {
@@ -2071,7 +2071,7 @@ fn the_onboarding_task_is_not_parked() -> TestResult {
     Ok(())
 }
 
-/// PRK-003 (review round 3, L1): the session exits on the park's request and its reader takes
+/// The session exits on the park's request and its reader takes
 /// the park's intent, then holds; the escalation finds the run still recorded live and records
 /// its loss first. The task is parked all the same, not stopped as lost.
 #[test]
@@ -2151,7 +2151,7 @@ enum EndRequests {
     CloseThenCancel,
 }
 
-/// SPEC-563: escalation records the loss with the reader held just before or just after it
+/// Escalation records the loss with the reader held just before or just after it
 /// takes the request. EndDecided releases the reader once the loss has consumed the intent.
 fn host_loss_with_request(
     requests: EndRequests,
@@ -2567,7 +2567,7 @@ fn a_named_persons_message_resumes_a_parked_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-553 PRK-102: ordinary owner terminal input and `continue_task_with_prompt` wake a parked
+/// Ordinary owner terminal input and `continue_task_with_prompt` wake a parked
 /// task through the supervisor preserving its exact `provider_session_id` and `worktree_path`,
 /// while bare interrupts/scroll, non-owners, and operator-stopped tasks are never woken.
 #[test]
@@ -2733,7 +2733,7 @@ fn ordinary_owner_terminal_input_and_continue_prompt_wake_parked_session_with_co
     Ok(())
 }
 
-/// #325: initial pending checks become a durable failure before digest parking.
+/// Initial pending checks become a durable failure before digest parking.
 #[test]
 fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResult {
     use yulius_app::ci::CiRunRecord;
@@ -2861,8 +2861,8 @@ fn a_ci_failure_before_digest_parking_reaches_the_idle_author_once() -> TestResu
     Ok(())
 }
 
-/// SPEC-553 PRK-103: an idle task continues to park safely while CI runs on its open PR, does not
-/// wake on either a running check or a settled check (SPEC-612).
+/// An idle task continues to park safely while CI runs on its open PR, does not
+/// wake on either a running check or a settled check.
 #[test]
 fn parked_task_stays_parked_when_its_pull_request_checks_finish() -> TestResult {
     use yulius_app::ci::{CiJobRecord, CiRunRecord};
@@ -3104,8 +3104,8 @@ fn parked_task_stays_parked_when_its_pull_request_checks_finish() -> TestResult 
     Ok(())
 }
 
-/// SPEC-553 PRK-103: an unpublished clean committed fast-forward CI repair above a failing open
-/// PR head still needs its session when the task requests a person (SPEC-558 PKR-004).
+/// An unpublished clean committed fast-forward CI repair above a failing open
+/// PR head still needs its session when the task requests a person.
 #[test]
 fn an_unpublished_ci_repair_keeps_its_session_even_with_a_human_request() -> TestResult {
     use std::process::Command;
@@ -3401,7 +3401,7 @@ async fn latest_digest(
     Ok(serde_json::from_str(&stored.body)?)
 }
 
-/// SPEC-512 DIG-003, DIG-004 (#1413), with part 1's parking off: the digest leaves a task that
+/// SPEC-512 DIG-003, DIG-004, with part 1's parking off: the digest leaves a task that
 /// asks its person running and lists it first; once nothing is asked, it parks the quiet task,
 /// lists it with what its last message left, and a message resumes it in its own session.
 #[test]
@@ -3500,7 +3500,7 @@ fn the_digest_parks_a_quiet_task_that_asks_nobody_and_lists_its_last_message() -
     Ok(())
 }
 
-/// SPEC-612: actual terminal recipients of a red integration branch, including reassignment.
+/// Actual terminal recipients of a red integration branch, including reassignment.
 #[test]
 fn a_red_integration_branch_is_assigned_to_one_worker_and_announced_to_the_other() -> TestResult {
     use yulius_app::delivery::{
@@ -3743,7 +3743,7 @@ fn a_staging_outcome_reaches_its_task_once() -> TestResult {
             "told once"
         );
         // The outcome typed above starts a turn in the live session, and that turn's prompt hook
-        // can mark the task Working after the Done below (#1712). The task is finished once that
+        // can mark the task Working after the Done below. The task is finished once that
         // turn has ended, so it is marked Done again until the read sees the subscription free.
         eventually(
             "a finished task releases its subscription once its outcome has been delivered",

@@ -1,4 +1,4 @@
-//! The upgrade path of the Infra bootstrap default (SPEC-575 MFS-012): a release that raises the
+//! The upgrade path of the Infra bootstrap default: a release that raises the
 //! bootstrap revision gives each onboarded sandbox one upgrade task, once.
 
 use crate::support;
@@ -9,7 +9,7 @@ use yulius_domain::ids::SandboxId;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// SPEC-575 MFS-012: an onboarded sandbox gets one Infra bootstrap task for the new revision,
+/// An onboarded sandbox gets one Infra bootstrap task for the new revision,
 /// owned by its creator, following the Infra bootstrap workflow and asking to keep what is the
 /// project's own. A second start creates none, and a sandbox still onboarding gets none (its
 /// onboarding lays the current default).
@@ -169,7 +169,7 @@ async fn recorded(
         .map(|r| (r.revision, r.task_id.map(|t| t.as_str().to_owned()))))
 }
 
-/// SPEC-575 MFS-012 (review round 1 of slice 4): a linked upgrade task a person deletes is not
+/// A linked upgrade task a person deletes is not
 /// made again, and playgrounds, removed sandboxes and ones whose creator is no longer active get
 /// none.
 #[tokio::test]

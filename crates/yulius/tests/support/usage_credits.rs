@@ -13,7 +13,7 @@ use yulius_domain::ids::{AccountId, UserId};
 use yulius_domain::time::Timestamp;
 
 /// Opus 5.5 is used up on `accounts` too, for six more days: a task of a Fable model has no
-/// model to fall back to there (SPEC-482), so what SPEC-464 says about a model no subscription
+/// model to fall back to there, so what SPEC-464 says about a model no subscription
 /// can run still holds: the task waits for a reset, or a person is asked. A provider's reading
 /// keeps the window (its reset is ahead); storing an account's usage whole replaces it.
 pub(crate) async fn opus_out(app: &App, accounts: &[&str]) -> TestResult {

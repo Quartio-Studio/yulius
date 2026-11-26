@@ -1,6 +1,6 @@
 //! Opt-in browser checks of the sandbox browser panel with a real server-side Chrome (the
 //! sandbox Chrome agents drive) and a second headless Chrome as the user's browser running the
-//! real UI (SPEC-001 BRW-005..008, SPEC-002 ADR-14, ADR-15).
+//! real UI.
 //!
 //! - The panel streams the sandbox Chrome: an agent's page shows on the canvas (a canvas in the
 //!   page updates in the stream); a click and keys in the panel reach the page; a paste inserts
@@ -14,7 +14,7 @@
 //!   the sandbox Chrome refuses to open Yulius.
 //! - Yulius refuses to render framed.
 //! - The terminal (F 2026-10-07): its text is HTML and, for a read-only viewer (the filter's
-//!   default, ADR-0079), a double-click selects a word even after the program switched on mouse
+//!   default), a double-click selects a word even after the program switched on mouse
 //!   tracking; links to the VM are told apart from others.
 //!
 //! ```sh
@@ -851,7 +851,7 @@ async fn terminal_text_is_html_a_double_click_selects_a_word_and_links_route() -
             "window.__term.getSelection() === 'yulius'",
         )
         .await?;
-        // Links to the VM open in the sandbox browser, others in a new tab (UI-018).
+        // Links to the VM open in the sandbox browser, others in a new tab.
         let links = eval(&cdp, session, "(async () => { const { isLocalUrl } = await import('/assets/dom.js'); return ['http://localhost:3000/', 'http://127.0.0.1:8080/x', 'http://[::1]:5173/', 'http://app.localhost/', 'https://github.com/acme', 'http://example.com:3000/', 'not a url'].map(isLocalUrl); })()").await?;
         assert_eq!(links, json!([true, true, true, true, false, false, false]));
         Ok::<_, Box<dyn std::error::Error>>(())

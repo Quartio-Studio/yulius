@@ -26,7 +26,7 @@ use yulius_domain::usage::{AccountUsage, ModelAnswer, UsageWindow};
 pub(crate) const HOUR: i64 = 3_600_000;
 
 /// A usage probe whose answers the test sets per credential (account id = credential here):
-/// the usage it reads, and what Claude answers when asked about a model on it (SPEC-473).
+/// the usage it reads, and what Claude answers when asked about a model on it.
 #[derive(Default)]
 pub(crate) struct ScriptedUsage(
     Mutex<HashMap<String, AccountUsage>>,
@@ -266,7 +266,7 @@ pub(crate) async fn reading(app: &App, account: &str) -> TestResult {
 }
 
 /// The Subscriptions page's refresh of `account` by an administrator: a reading, then Claude is
-/// asked about each limit stored for it (SPEC-473).
+/// asked about each limit stored for it.
 pub(crate) async fn refresh(app: &App, user: &UserId, account: &str) -> TestResult {
     let ctx = AuthContext {
         user: app.deps.store.user(user).await?.ok_or("user")?,
@@ -288,7 +288,7 @@ pub(crate) async fn new_task(
 }
 
 /// A task a person set to Fable 5.2, started now: the model whose weekly allowance of usage
-/// credits binds it and which falls back to Opus 5.5 (a default task runs Opus 5.5, SPEC-493).
+/// credits binds it and which falls back to Opus 5.5 (a default task runs Opus 5.5).
 pub(crate) async fn new_fable_task(
     app: &Arc<App>,
     sandbox: &SandboxId,

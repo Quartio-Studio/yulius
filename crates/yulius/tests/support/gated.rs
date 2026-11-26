@@ -1,12 +1,11 @@
 //! The real detached ptyhost behind a gate the test controls: the next attach after
 //! [`GatedHost::arm`] waits, its process already spawned, until [`GatedHost::release`], so a test
-//! can drop a request mid-start or hold one start while others run (SPEC-077); after
+//! can drop a request mid-start or hold one start while others run; after
 //! [`GatedHost::arm_spawn`] the next spawn waits until [`GatedHost::release_spawn`], before its
-//! process starts, so a switch's task stays `Switching` (SPEC-250). With
+//! process starts, so a switch's task stays `Switching`. With
 //! [`GatedHost::refuse_ends`] its runs cannot be ended: a shutdown request is dropped and
-//! `terminate` fails, as for a process that survives SIGKILL (SPEC-146). With
-//! [`GatedHost::report_strays`] its probe reports those strays and its reaps are recorded
-//! (SPEC-355).
+//! `terminate` fails, as for a process that survives SIGKILL. With
+//! [`GatedHost::report_strays`] its probe reports those strays and its reaps are recorded.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

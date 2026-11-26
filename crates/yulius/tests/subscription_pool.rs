@@ -52,7 +52,7 @@ fn usage(five: f64, five_resets: Timestamp, week: f64, week_resets: Timestamp) -
     .to_string()
 }
 
-/// AC-ROT-10: with every subscription at 98 % or limited, the Stop hook of a task that would
+/// With every subscription at 98 % or limited, the Stop hook of a task that would
 /// work on (goal mode) is held: `202` with `Retry-After` and an empty body — nothing reaches
 /// the agent — and it stays held while the pause lasts, also through a server restart. When
 /// the account's window resets, the resume loop releases it in place and the next poll answers
@@ -128,7 +128,7 @@ async fn an_exhausted_pool_holds_the_turn_until_capacity_returns() -> TestResult
     Ok(())
 }
 
-/// SPEC-503 (slice C1 review): a Codex task follows no goal of Yulius's (it gets its request as its
+/// A Codex task follows no goal of Yulius's (it gets its request as its
 /// first message and its turns end it), so with every Codex subscription used up its Stop is not
 /// held as a goal's would be: the turn ends, and its next prompt waits for capacity instead.
 #[tokio::test]
@@ -236,7 +236,7 @@ async fn a_codex_goal_stop_is_held_only_for_actionable_work() -> TestResult {
     Ok(())
 }
 
-/// SPEC-025: the Stop of the turn on a goal session's first message (its attached files), held
+/// The Stop of the turn on a goal session's first message (its attached files), held
 /// for capacity, is still that turn's end: the held polls keep it the opening turn, and the first
 /// Stop answered after the pause ends it.
 #[tokio::test]
@@ -305,7 +305,7 @@ async fn a_held_opening_turn_stays_the_opening_turn_until_its_stop_is_answered()
     Ok(())
 }
 
-/// SPEC-068 OPN-001: any Stop means the session took a prompt, so a first message still marked
+/// Any Stop means the session took a prompt, so a first message still marked
 /// pending (its submit hook failed open) is pending no more: a later prompt held for capacity is
 /// not mistaken for it, and a restart does not flag the task.
 #[tokio::test]
@@ -323,7 +323,7 @@ async fn a_stop_ends_a_pending_first_message() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-10: a prompt submitted while the pool is exhausted waits at `UserPromptSubmit`; the
+/// A prompt submitted while the pool is exhausted waits at `UserPromptSubmit`; the
 /// prompt is kept for a resume on another account. A task in prompt mode that only goes idle
 /// at Stop is not held.
 #[tokio::test]
@@ -364,7 +364,7 @@ async fn a_prompt_waits_at_submit_and_an_idle_turn_end_is_not_held() -> TestResu
     Ok(())
 }
 
-/// AC-ROT-12: `GET /api/capacity` reports the pool, the burn rate, the forecast and the
+/// `GET /api/capacity` reports the pool, the burn rate, the forecast and the
 /// recommendation from the readings, runs and pauses of the last week, by the formula of
 /// SPEC-002 ADR-17 §2.4; ids and task counts only for administrators.
 #[tokio::test]
@@ -511,7 +511,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     assert_eq!(v["runs_out_at"], "2026-10-11T02:00:00Z");
     assert_eq!(v["paused_hours_7d"], 8.0);
     assert_eq!(v["active_hours_7d"], 32.0);
-    // SPEC-110 TUS-005: per rolling 24 hours, oldest first.
+    // Per rolling 24 hours, oldest first.
     assert_eq!(
         v["burn_per_day"],
         json!([null, null, null, null, null, null, 2.0])
@@ -534,7 +534,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     assert_eq!(first["id"], "acc-a");
     assert_eq!(first["in_use_by"], 1);
     assert_eq!(first["available"], true);
-    // SPEC-110 TUS-003, TUS-004: $4 + $20 + 10 × $0.20 + $5 = $31 at Opus 5.5 list prices.
+    // $4 + $20 + 10 × $0.20 + $5 = $31 at Opus 5.5 list prices.
     let tokens = &v["tokens"];
     assert_eq!(tokens["per_day"].as_array().map(Vec::len), Some(7));
     assert_eq!(tokens["last_7d"]["input"], 1_000_000);
@@ -549,7 +549,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     assert!(close(&tokens["last_24h"]["cost_usd"], 18.6), "{tokens}");
     assert_eq!(tokens["unknown_usage_runs"], 0);
     assert_eq!(tokens["unpriced_runs"], 0);
-    // TUS-004: each subscription's own token totals carry their cost (runs started in the window).
+    // Each subscription's own token totals carry their cost (runs started in the window).
     let list = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
     assert_eq!(list.status, 200, "{}", list.body);
     let mine = |label: &str| {
@@ -586,12 +586,12 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     Ok(())
 }
 
-/// SPEC-482 FBK-004 (AC-4, review round 1): at its turn boundary a run stays while its
+/// At its turn boundary a run stays while its
 /// subscription can run the model the run was launched with. One on the fallback is on a
 /// subscription that is out of Fable; once another subscription runs Fable again it is not
 /// restarted for that. A run of the task's own model there (or one recorded before the launch
 /// model was) cannot stay and moves, as before. The task is set to Fable: a default task runs
-/// Opus 5.5 and has no fallback (SPEC-493).
+/// Opus 5.5 and has no fallback.
 #[tokio::test]
 async fn a_run_on_the_fallback_stays_at_its_turn_boundary_once_fable_runs_again() -> TestResult {
     let fable = Some("claude-fable-5-2");
@@ -632,10 +632,10 @@ async fn a_run_on_the_fallback_stays_at_its_turn_boundary_once_fable_runs_again(
     Ok(())
 }
 
-/// SPEC-464 UCL-005, SPEC-493 MDL-001: the capacity view counts for the default model, Opus
+/// The capacity view counts for the default model, Opus
 /// 5.5. A subscription whose Opus window is used up is not available, though its 5-hour and
 /// weekly windows have room; one that is only out of Fable's credits is. Once no subscription
-/// runs Fable, the view names the fallback of tasks set to it (SPEC-482 FBK-010); that changes
+/// runs Fable, the view names the fallback of tasks set to it; that changes
 /// nothing for the default model, which has none: with Opus used up everywhere nothing is
 /// available and the pool resumes at Opus's first reset.
 #[tokio::test]
@@ -796,7 +796,7 @@ fn rate_limits(
 /// F 2026-10-10 item 1(a): a `claude setup-token` sign-in cannot read the usage endpoint (HTTP
 /// 403, no `user:profile` scope), so the subscription's usage comes from its running session:
 /// Claude Code's status line carries the plan usage it read from its own API responses. The
-/// status line shows the repository and branch (HRN-005); the reading becomes the account's
+/// status line shows the repository and branch; the reading becomes the account's
 /// windows (per-model caps kept), a burn-rate sample from the session, and at 98 % it puts the
 /// pool's switch in motion; an unchanged reading writes nothing.
 #[tokio::test]
@@ -1181,7 +1181,7 @@ impl UsageProbe for CountingProbe {
 /// A subscription whose only task is running but idle reports nothing (its session sends a
 /// reading only while it works), so its reading goes stale. The usage round reads it again once
 /// the reading is older than [`USAGE_FRESH_MS`](yulius_app::accounts::USAGE_FRESH_MS) — a
-/// running task is no reason to skip it — and leaves a fresh reading alone (production, #4).
+/// running task is no reason to skip it — and leaves a fresh reading alone (production).
 #[tokio::test]
 async fn a_running_but_idle_subscription_is_read_again_when_its_reading_is_old() -> TestResult {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1225,7 +1225,7 @@ async fn a_running_but_idle_subscription_is_read_again_when_its_reading_is_old()
     Ok(())
 }
 
-/// SPEC-473 RFR-006, RFR-009: Claude Code's status line carries a window "only while the API
+/// Claude Code's status line carries a window "only while the API
 /// reports it and its resets_at has not passed", so a session's reading may hold one window
 /// only. It is stored, but it is no reading of the usage: the time the usage was read stays
 /// where it was. So the round asks the provider about a subscription whose sessions report one
@@ -1316,7 +1316,7 @@ impl UsageProbe for OpusCapProbe {
     }
 }
 
-/// SPEC-464 UCL-004: a session's reading takes the lock every change of a subscription's stored
+/// A session's reading takes the lock every change of a subscription's stored
 /// usage takes. The session's reading is held once it has read what is stored; a provider's
 /// reading of the same subscription arrives; the session's reading goes on. Unlocked, the
 /// provider's reading would be stored meanwhile and then written over by the session's older
@@ -1385,7 +1385,7 @@ async fn a_sessions_reading_does_not_write_over_a_provider_reading() -> TestResu
     Ok(())
 }
 
-/// SPEC-464 UCL-004: a model's window whose reset passed says nothing about the window that
+/// A model's window whose reset passed says nothing about the window that
 /// began. No reading replaces it (a session's reading carries the 5-hour and weekly windows
 /// only), so the next reading stored for the subscription drops it and its card no longer shows
 /// a limit that is over. One whose reset is ahead stays.

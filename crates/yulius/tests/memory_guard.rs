@@ -1,4 +1,4 @@
-//! SPEC-652 MEM-001, MEM-002: the plan of every contained task run guards its harness's memory and
+//! The plan of every contained task run guards its harness's memory and
 //! user-level instruction files, and a Claude Code run's settings name the guarded memory folder.
 //! Runs everywhere: the session host records the plans and starts nothing; the namespace itself is
 //! proven by the opt-in isolation test and on a guest (SPEC-652 Evidence).
@@ -140,7 +140,7 @@ fn a_contained_claude_run_guards_its_memory() -> TestResult {
         .ok_or("run settings")?;
     let settings: serde_json::Value = serde_json::from_slice(&settings.contents)?;
     assert_eq!(settings["autoMemoryDirectory"], at(&memory));
-    // Its hooks learn the read-only paths, to say why a write there fails (MEM-006).
+    // Its hooks learn the read-only paths, to say why a write there fails.
     assert_eq!(
         readonly_paths(&plan),
         [

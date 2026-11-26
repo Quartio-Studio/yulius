@@ -1,4 +1,4 @@
-//! A task's original prompt (SPEC-043): the text it started with and the files attached to it,
+//! A task's original prompt: the text it started with and the files attached to it,
 //! read on demand by whoever sees the task; an attached file is served only from the sandbox's
 //! attachments folder, never by a path the prompt or the client names.
 
@@ -94,7 +94,7 @@ async fn the_original_prompt_is_its_text_and_attached_files_for_whoever_sees_the
     Ok(())
 }
 
-/// SPEC-124 INL-008: the prompt in order, each file where it sits, so the view shows it there; an
+/// The prompt in order, each file where it sits, so the view shows it there; an
 /// older prompt's files follow its text.
 #[tokio::test]
 async fn the_original_prompt_keeps_each_file_at_its_place() -> TestResult {
@@ -218,7 +218,7 @@ async fn an_attached_file_is_served_only_from_the_attachments_folder() -> TestRe
     Ok(())
 }
 
-/// SPEC-325 UPL-003: the web UI asks with HEAD whether a file is there, then lets the browser
+/// The web UI asks with HEAD whether a file is there, then lets the browser
 /// download it from its link: HEAD answers like GET, without the file.
 #[tokio::test]
 async fn a_head_request_says_whether_an_attached_file_is_there_without_sending_it() -> TestResult {
@@ -240,7 +240,7 @@ async fn a_head_request_says_whether_an_attached_file_is_there_without_sending_i
     Ok(())
 }
 
-/// SPEC-325 review: the browser downloads the link itself, and a `Content-Disposition` filename
+/// The browser downloads the link itself, and a `Content-Disposition` filename
 /// wins over the page's `download` name, so a name an upload keeps (non-ASCII letters) is sent
 /// as `filename*` (RFC 6266), with an ASCII fallback, not as "attachment".
 #[tokio::test]
@@ -334,7 +334,7 @@ async fn get_unread(
     Ok(h.router.clone().oneshot(req.body(Body::empty())?).await?)
 }
 
-/// #303: the dialog loads every thumbnail at once; reads used to take the uploads' slots and
+/// The dialog loads every thumbnail at once; reads used to take the uploads' slots and
 /// failed with 429 beyond 8, or while uploads ran.
 #[tokio::test]
 async fn twelve_images_are_served_together_while_every_upload_slot_is_taken() -> TestResult {
@@ -387,7 +387,7 @@ async fn twelve_images_are_served_together_while_every_upload_slot_is_taken() ->
     Ok(())
 }
 
-/// #303: an attachment is streamed in bounded chunks, never read whole into memory.
+/// An attachment is streamed in bounded chunks, never read whole into memory.
 #[tokio::test]
 async fn an_attachment_is_streamed_in_bounded_chunks_with_its_length() -> TestResult {
     const BIG: u64 = 1024 * 1024;

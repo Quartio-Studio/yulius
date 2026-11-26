@@ -1,5 +1,5 @@
 //! `ci_setup` reads a task worktree on the host only through handles opened from the sandbox
-//! directory (SPEC-391 VCT-001, #829, ADR-0174): what the agent's worktree holds is summarized,
+//! directory: what the agent's worktree holds is summarized,
 //! and a folder there swapped for a link to a host folder reads nothing from it.
 
 use crate::support;

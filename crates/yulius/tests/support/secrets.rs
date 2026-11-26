@@ -111,7 +111,7 @@ pub(crate) async fn admit_again(
 }
 
 /// A browser session of `user` with two-factor set up and the vault unlocked: what a person
-/// needs to let the value of a secret allowed use by use go somewhere new (ADR-0317).
+/// needs to let the value of a secret allowed use by use go somewhere new.
 pub(crate) async fn unlocked(
     h: &support::Harness,
     user: &str,

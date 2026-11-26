@@ -1,4 +1,4 @@
-//! Agent secrets of three scopes (SPEC-245, ADR-0186): a project's, global ones an administrator
+//! Agent secrets of three scopes: a project's, global ones an administrator
 //! switches on per project, and personal ones only their owner's tasks get. Resolution goes
 //! through the egress proxy as a run sees it.
 
@@ -42,7 +42,7 @@ struct World {
 /// alice) in s1, bob's in s2.
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let h = harness()?;
-    // Tasks that start need a connected Claude account (SPEC-246).
+    // Tasks that start need a connected Claude account.
     support::exhausted_subscription(&h).await?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
     let bob = seed_github_user(&h, "u-bob", "bob").await?;
@@ -183,7 +183,7 @@ async fn switch(
     .await
 }
 
-/// SPEC-245 RES-002..004, MAN-003: alice's personal secret reaches her own task's requests and no
+/// Alice's personal secret reaches her own task's requests and no
 /// one else's — not bob's task in the same project, not a task her automation started, not a CI
 /// job granted its name; bob, and administrators, never see it.
 #[tokio::test]
@@ -305,7 +305,7 @@ async fn a_personal_secret_reaches_only_its_owners_tasks() -> TestResult {
     Ok(())
 }
 
-/// SPEC-245 SCP-003, MAN-002, MAN-004: a global secret reaches the projects an administrator
+/// A global secret reaches the projects an administrator
 /// switched it on for; a project writer cannot switch it.
 #[tokio::test]
 async fn global_secrets_reach_the_projects_an_administrator_switched_them_on_for() -> TestResult {
@@ -403,7 +403,7 @@ async fn global_secrets_reach_the_projects_an_administrator_switched_them_on_for
     Ok(())
 }
 
-/// SPEC-245 RES-001, MAN-005: a name resolves to the project's secret, else the run's person's,
+/// A name resolves to the project's secret, else the run's person's,
 /// else the global one; the list says which wins.
 #[tokio::test]
 async fn a_name_resolves_project_then_personal_then_global() -> TestResult {
@@ -477,7 +477,7 @@ async fn a_name_resolves_project_then_personal_then_global() -> TestResult {
     Ok(())
 }
 
-/// SPEC-245 RES-005: a personal secret is used through the proxy only: no `.env` copy, no
+/// A personal secret is used through the proxy only: no `.env` copy, no
 /// browser filling, no MCP reference, no production deploy.
 #[tokio::test]
 async fn personal_secrets_stay_in_the_proxy() -> TestResult {
@@ -535,7 +535,7 @@ async fn personal_secrets_stay_in_the_proxy() -> TestResult {
     Ok(())
 }
 
-/// SPEC-245 MAN-003: a person adds a personal secret only in a project they may work in.
+/// A person adds a personal secret only in a project they may work in.
 #[tokio::test]
 async fn a_reader_cannot_switch_a_personal_secret_on() -> TestResult {
     let w = world().await?;
@@ -671,7 +671,7 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
     Ok(())
 }
 
-/// SPEC-332 MSC-009: a task that gets its owner's personal MCP server is messaged by its owner
+/// A task that gets its owner's personal MCP server is messaged by its owner
 /// alone, as one holding a personal secret is.
 #[tokio::test]
 async fn only_its_owner_messages_a_task_holding_a_personal_mcp_server() -> TestResult {
@@ -717,7 +717,7 @@ async fn only_its_owner_messages_a_task_holding_a_personal_mcp_server() -> TestR
     }
     let own = w.h.app.tool_task_message(&caller("u-alice")?, &args).await;
     assert!(reached_session(&own), "{own:?}");
-    // Whose task it is decides, not what it holds (SPEC-490 OWN-004): bob's own task is
+    // Whose task it is decides, not what it holds: bob's own task is
     // messaged by bob's Superagent, not alice's, and alice's automation's task (which holds
     // nobody's personal server) by alice's, not bob's.
     let refused = |result: &Result<Value, yulius_app::error::AppError>, owner: &str| {
@@ -787,7 +787,7 @@ async fn control_waits_while_a_task_holding_a_personal_mcp_server_launches() -> 
 }
 
 /// Review of SPEC-245, M2: control passed to bob ends alice's personal secrets in the run at once,
-/// not when the proxy's credential cache expires, and starts bob's (SPEC-248 FUP-004).
+/// not when the proxy's credential cache expires, and starts bob's.
 #[tokio::test]
 async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
     let w = world().await?;
@@ -844,7 +844,7 @@ async fn a_hand_over_ends_the_previous_owners_secrets_at_once() -> TestResult {
     Ok(())
 }
 
-/// SPEC-248 FUP-004: a deleted task's proxy client, resolved before the deletion, resolves to no
+/// A deleted task's proxy client, resolved before the deletion, resolves to no
 /// person: its owner's personal secret no longer applies, the project's still does.
 #[tokio::test]
 async fn a_deleted_tasks_client_resolves_to_no_person() -> TestResult {
@@ -889,7 +889,7 @@ fn file_of_an_older_yulius(name: &str, value: &str) -> Value {
     })
 }
 
-/// ADR-0313: a session that was live across the update keeps the wrapper it started with (a
+/// A session that was live across the update keeps the wrapper it started with (a
 /// contained session binds the binary), and that wrapper reads only the old format. A starting
 /// server rewrites every live run's file in place: an old one in the old format without what
 /// told too much (base 0, so the "rolling hash" is a needle's last byte plus one), which the old
@@ -1014,7 +1014,7 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
     Ok(())
 }
 
-/// ADR-0313: when the fingerprints of a session from before version 2 cannot be made, the file
+/// When the fingerprints of a session from before version 2 cannot be made, the file
 /// an older server wrote (which says too much about a value) becomes a bare version 1, with
 /// which the old wrapper runs nothing; the next rewrite still knows the format and the wrapper
 /// redacts again; and a file this server already wrote stays as it is through a later failure.
@@ -1089,7 +1089,7 @@ async fn an_old_fingerprint_file_survives_a_failed_rewrite_in_its_format() -> Te
     Ok(())
 }
 
-/// SPEC-248 FUP-002: a hand-over rewrites the run's fingerprint file (the Bash wrapper's fallback)
+/// A hand-over rewrites the run's fingerprint file (the Bash wrapper's fallback)
 /// for the new owner, in place, so the run holds no hashes of the previous owner's values.
 #[tokio::test]
 async fn a_hand_over_rewrites_the_runs_fingerprint_file() -> TestResult {
@@ -1166,7 +1166,7 @@ async fn a_hand_over_rewrites_the_runs_fingerprint_file() -> TestResult {
     Ok(())
 }
 
-/// SPEC-248 FUP-002 (review round 2): a rewrite that comes after control passed again — the
+/// A rewrite that comes after control passed again — the
 /// first of two quick hand-overs' — writes the fingerprints of the task's current owner, never
 /// the middle owner's.
 #[tokio::test]
@@ -1268,7 +1268,7 @@ async fn switching_on_respects_the_projects_limit() -> TestResult {
     Ok(())
 }
 
-/// SPEC-248 FUP-003: concurrent switch-ons cannot pass the limit: the store counts the secrets
+/// Concurrent switch-ons cannot pass the limit: the store counts the secrets
 /// reaching the project in the transaction that switches one on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_switch_ons_stop_at_the_projects_limit() -> TestResult {

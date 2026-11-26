@@ -128,7 +128,7 @@ fn a_task_out_of_usage_credits_moves_on_by_itself() -> TestResult {
         assert!(stored["weekly_fable"]["resets_at"].is_null(), "{stored}");
         assert_eq!(stored["limit_reached"], false, "{stored}");
         assert!(stored["secondary"].is_null(), "{stored}");
-        // Only Fable is used up there: the default model, Opus 5.5, still runs (SPEC-493).
+        // Only Fable is used up there: the default model, Opus 5.5, still runs.
         assert_eq!(status, AccountStatus::Ok);
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -307,7 +307,7 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
         // Placed on a-first while b-second is nearly full; b-second is free again afterwards.
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
         reading(&app, "b-second").await?;
-        // A task a person set to Fable: the default model is Opus 5.5 (SPEC-493).
+        // A task a person set to Fable: the default model is Opus 5.5.
         let chosen = Some("claude-fable-5-2");
         let id = task_of_model(&app, &sandbox, &user, "Fable", chosen).await?;
         ready(&app, &id).await?;
@@ -425,7 +425,7 @@ fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
     Ok(())
 }
 
-/// #1211: a subscription Claude refuses for good while its usage is being stored stays "needs a
+/// A subscription Claude refuses for good while its usage is being stored stays "needs a
 /// new sign-in". The usage write is held once it has read the subscription's status, which is
 /// still `ok`. A session on the subscription is refused. Unlocked, the refusal is stored at
 /// once and the usage write then stores `ok` over it, so the pool places tasks there again;
@@ -577,7 +577,7 @@ fn a_task_paused_for_usage_credits_resumes_at_their_reset_by_itself() -> TestRes
     Ok(())
 }
 
-/// SPEC-473: the person bought usage credits. The task waits in its `limit` pause for the
+/// The person bought usage credits. The task waits in its `limit` pause for the
 /// allowance's reset, 40 hours ahead. A refresh that Claude does not answer leaves it waiting,
 /// with the limit as it was. Then the default model answers the refresh's question: the limit
 /// ends, and the pool resumes the task on the same subscription at once, past the refused turn
@@ -668,7 +668,7 @@ fn a_refresh_that_finds_the_model_running_resumes_the_task_that_waits_for_its_re
 /// The move past the limit is refused before it ends the session (the other subscription's
 /// credential cannot be opened), so the session stays at Claude Code's refusal, where nothing
 /// goes on by itself: the goal pause Claude Code wrote there needs a person after all, as a pause
-/// with no limit before it does (ADR-0225). Only a task Yulius took on asks nobody.
+/// with no limit before it does. Only a task Yulius took on asks nobody.
 #[test]
 fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
     use yulius_app::ports::Crypto;
@@ -824,7 +824,7 @@ async fn refused_twice(
             app.now(),
         )
         .await?;
-    // A task of a model that has no fallback, the default one (SPEC-493): a Fable task would go
+    // A task of a model that has no fallback, the default one: a Fable task would go
     // on with Opus 5.5 here (SPEC-482; `model_fallback.rs` has that one, refused for both models).
     let id = task_of_model(&app, &sandbox, &user, "No end", Some("claude-opus-5-5")).await?;
     ready(&app, &id).await?;
@@ -926,7 +926,7 @@ async fn resolved(app: &App, id: &TaskId) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// SPEC-464 UCL-010: after one blind retry a person is asked, and further readings start
+/// After one blind retry a person is asked, and further readings start
 /// nothing. A person's move that is refused changes nothing; one to a subscription that works
 /// ends the request. A limit met after that is judged afresh: Yulius's earlier word about the
 /// first one does not silence the goal pause written at the next.
@@ -1369,7 +1369,7 @@ async fn goal_pause_then_a_wait(
     Ok((app, id))
 }
 
-/// SPEC-493 MDL-002 (review round 1 of fix 1a): a person switched a default task's session to
+/// A person switched a default task's session to
 /// Fable inside it (`/model`), and Fable is refused for its usage credits. The record before the
 /// request names the model, so the limit is Fable's on the subscription, not the limit of the
 /// model the run was launched with: Opus 5.5 still runs there, the subscription is not limited,
@@ -1432,7 +1432,7 @@ fn a_session_switched_to_fable_goes_on_with_its_own_model_when_fable_is_refused(
     Ok(())
 }
 
-/// SPEC-493 MDL-002 (review round 2 of fix 1a): a task set to Fable 5.2 runs on its fallback,
+/// A task set to Fable 5.2 runs on its fallback,
 /// Opus 5.5, because Fable is used up on its only subscription; its person switches the session
 /// to Fable (`/model`) and Fable is refused again. The session goes on with Opus 5.5 on the same
 /// subscription, and its terminal names that model, the one the relaunch runs, not the task's
@@ -1510,7 +1510,7 @@ fn a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with
     Ok(())
 }
 
-/// SPEC-493 MDL-002 (review round 4 of fix 1a): the notice past a switched model's limit names
+/// The notice past a switched model's limit names
 /// the model of the run that starts, also when the usage changed between the pool's decision and
 /// the launch. A task set to Fable 5.2 runs on its fallback; switched to Fable, it is refused;
 /// while the old run ends, Fable gets room again on the subscription: the relaunch runs Fable
@@ -1592,7 +1592,7 @@ fn the_notice_past_a_switched_limit_names_the_model_the_launch_runs() -> TestRes
     Ok(())
 }
 
-/// SPEC-493 MDL-002 (review round 5 of fix 1a): a default task's session is switched to Fable
+/// A default task's session is switched to Fable
 /// and refused for Fable's credits while Opus is used up too on the only subscription: nothing
 /// can take it, so it waits. When Opus has room again, the session goes on past that limit with
 /// Opus 5.5, and that launch says why it does not run Fable.
@@ -1662,7 +1662,7 @@ fn a_switched_limit_that_waits_is_said_when_the_session_goes_on() -> TestResult 
     Ok(())
 }
 
-/// SPEC-493 REV-004 (review round 1 of fix 1c): what a review round's reviewer ran on and that a
+/// What a review round's reviewer ran on and that a
 /// usage limit cut it off reach its round from the subagent's own transcript, while the session
 /// runs.
 #[test]
@@ -1757,7 +1757,7 @@ fn a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round() -> TestResu
     Ok(())
 }
 
-/// SPEC-493 REV-004 (review round 1 of fix 1c): a reviewer's transcript written while Yulius was
+/// A reviewer's transcript written while Yulius was
 /// down still reaches its round: the restart reads it while it catches up.
 #[test]
 fn a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart() -> TestResult {
@@ -1894,7 +1894,7 @@ fn review_transcript_at_restart(answered_model: &str, continued_model: Option<&s
     Ok(())
 }
 
-/// SPEC-493 MDL-002 (review round 6 of fix 1a): a switched limit is said only at the launch
+/// A switched limit is said only at the launch
 /// past it. Here it pauses the task (nothing can run), a person stops the task, and later
 /// continues it: that start is not the one past the limit, and says nothing of it.
 #[test]
@@ -1969,7 +1969,7 @@ fn a_switched_limit_is_not_said_at_a_later_start() -> TestResult {
     Ok(())
 }
 
-/// SPEC-493 MDL-002 (review round 3 of fix 1a): a task set to Fable 5.2 runs Fable; its person
+/// A task set to Fable 5.2 runs Fable; its person
 /// switches the session to Opus (`/model`) and the weekly Opus cap refuses it. Fable still runs
 /// there, so the session goes on with Fable 5.2, its own model, and the terminal names it.
 #[test]
@@ -2082,7 +2082,7 @@ fn a_goal_pauses_request_gives_way_when_the_last_subscription_is_refused() -> Te
     Ok(())
 }
 
-/// The bound is the model's limit's (SPEC-464 UCL-010): a limit of the subscription that names
+/// The bound is the model's limit's: a limit of the subscription that names
 /// no reset is read by the next provider's reading, which shows its windows, so the pool goes on
 /// as before. Refused twice in a row with nothing to go to, the task waits twice; nobody is asked.
 #[test]
@@ -2134,7 +2134,7 @@ fn a_subscriptions_own_limit_without_a_reset_waits_as_before() -> TestResult {
     Ok(())
 }
 
-/// A task that already waits for capacity keeps its pause (SPEC-464 UCL-010): refused again
+/// A task that already waits for capacity keeps its pause: refused again
 /// while it waits (a check-in nobody typed), it asks nobody, since the pool takes it on from
 /// its pause. With nothing known to wait for, the subscription that refused it is a candidate
 /// again after its next reading.
@@ -2190,7 +2190,7 @@ fn a_task_refused_again_while_it_waits_keeps_its_pause() -> TestResult {
     Ok(())
 }
 
-/// SPEC-502 TKP-005: a subscription connected by pasting a token is in the pool at once. A task
+/// A subscription connected by pasting a token is in the pool at once. A task
 /// waiting for capacity (nothing says when it can go on, so the resume loop sleeps its full
 /// recheck of 5 minutes) starts on it within seconds, woken by the paste, with no resume round
 /// called here. The loop's own round after the pause and one called here run first, so neither
@@ -2250,7 +2250,7 @@ fn a_task_waiting_for_capacity_starts_on_a_pasted_subscription_at_once() -> Test
     Ok(())
 }
 
-/// "With no answer from the agent in between" (UCL-010): a limit nothing says the end of that
+/// "With no answer from the agent in between": a limit nothing says the end of that
 /// comes after the model answered again is a new one, with its own retry. The task waits for
 /// it like for the first; it does not ask a person at once because it met such a limit before.
 #[test]
@@ -2643,7 +2643,7 @@ async fn refused_moves(app: &App, id: &TaskId) -> usize {
 }
 
 /// Appends a background reviewer's completed `<task-notification>` (the shape Claude Code
-/// writes, SPEC-633) with `verdict` as its result's last line, stamped now; returns its time.
+/// writes) with `verdict` as its result's last line, stamped now; returns its time.
 fn append_reviewer_notice(
     transcript: &Path,
     tag: &str,
@@ -2676,7 +2676,7 @@ fn append_reviewer_notice(
     Ok(Timestamp(now))
 }
 
-/// SPEC-633 RRE-002 (#1726, review round 1): Yulius was down while a background reviewer
+/// Yulius was down while a background reviewer
 /// reported, so its `SubagentStop` was lost and only the transcript kept the report. The
 /// reattached run's watcher reads it while it catches up and ends the round with its verdict at
 /// the notice's time.
