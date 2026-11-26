@@ -5279,7 +5279,7 @@ async fn the_repair_goes_to_the_breaker_but_stays_with_its_owner() -> TestResult
     assert_eq!(
         owner(
             f.h.store
-                .reconcile_gate_repair(&sid, "x", &[a.clone()], &[nb])
+                .reconcile_gate_repair(&sid, "x", std::slice::from_ref(&a), &[nb])
                 .await?
         ),
         Some(na),
