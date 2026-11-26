@@ -1,8 +1,11 @@
 # Operating Yulius
 
+> Archive: the operator guide as it stood on 2026-11-26, kept verbatim except for its links. The
+> current one is [docs/operations.md](../operations.md).
+
 Yulius is one Rust binary, `yulius`, that serves the web UI and API, supervises agent sessions and
 provides the CLI (`yulius onboard` alias `yulius import`, `yulius login`, `yulius secrets import`,
-and `yulius remote|project|task|ci` for a laptop's agent, [remote-control.md](remote-control.md)). This guide covers a single Linux VM with a TLS
+and `yulius remote|project|task|ci` for a laptop's agent, [remote-control.md](../remote-control.md)). This guide covers a single Linux VM with a TLS
 reverse proxy in front. It satisfies SPEC-001 AC-OPS-1 as documentation only: **a deployment has not
 been performed or verified** as part of the implementation work.
 
@@ -14,11 +17,11 @@ been performed or verified** as part of the implementation work.
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service; `yulius host setup` installs it. |
 | Landlock in the kernel (Linux ≥ 5.13, `landlock` in `/sys/kernel/security/lsm`) | the server's own Git, which runs confined to Git's programs and its sandbox's folders (ADR-0322) | Ubuntu 22.04 and later and Debian 12 have it. Without it the server runs no Git (clones, worktrees, fetches and merges fail with that reason); `yulius doctor` checks it as "git confinement". |
 | Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
-| Codex CLI (`codex`; SPEC-503) | Codex tasks and Codex account sign-in | nothing to install: Yulius downloads the pinned release (0.170.0, its sha512 in the source) from `registry.npmjs.org` into `<data>/codex-cli/` on the first Codex use, or at start when Codex accounts exist (about 167 MB, 423 MB unpacked), and Codex runs start it by its path, binding its directory read-only into a contained run, and so do Codex sign-ins ([ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)). Without access to the registry it uses a host `codex` if there is one; otherwise a Codex start says why it could not install. A host move leaves `codex-cli/` behind: the new host installs its own. |
+| Codex CLI (`codex`; SPEC-503) | Codex tasks and Codex account sign-in | nothing to install: Yulius downloads the pinned release (0.170.0, its sha512 in the source) from `registry.npmjs.org` into `<data>/codex-cli/` on the first Codex use, or at start when Codex accounts exist (about 167 MB, 423 MB unpacked), and Codex runs start it by its path, binding its directory read-only into a contained run, and so do Codex sign-ins ([ADR-0355](../decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)). Without access to the registry it uses a host `codex` if there is one; otherwise a Codex start says why it could not install. A host move leaves `codex-cli/` behind: the new host installs its own. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
 | Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). If the panel says a file dialog may still be open after the policy takes effect, choose **Restart browser** beside the message. This restarts just that sandbox’s Chrome, keeps its profile and reopens its web tabs. If Chrome reports too many tabs, close excess tabs and retry. The managed policy applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, and only web addresses (no `file:` or `chrome:` pages, no links to other programs). |
-| bubblewrap (`bwrap`) ≥ 0.10.0, or a distribution update with `--ro-bind-fd` | containment (`--contained`); every contained session binds its harness's memory through open descriptors ([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. Ubuntu 24.04's `0.9.0-1ubuntu0.1` and Debian 12's `0.8.0-2+deb12u1` carry `--ro-bind-fd`; an older one fails every contained start, and `yulius doctor` fails its "bubblewrap" line. |
+| bubblewrap (`bwrap`) ≥ 0.10.0, or a distribution update with `--ro-bind-fd` | containment (`--contained`); every contained session binds its harness's memory through open descriptors ([ADR-0479](../decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. Ubuntu 24.04's `0.9.0-1ubuntu0.1` and Debian 12's `0.8.0-2+deb12u1` carry `--ro-bind-fd`; an older one fails every contained start, and `yulius doctor` fails its "bubblewrap" line. |
 | An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
 | `slirp4netns` | sandbox egress (isolation) | `yulius host setup` installs it. |
@@ -42,7 +45,7 @@ permissions and the session socket path budget (the data directory path must be 
 ## 2. Build and install
 
 Two commands on a fresh Ubuntu 24.04 or Ubuntu 26.04 (or Debian) host: install the binary, then
-run the host setup as root (SPEC-203, [ADR-0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
+run the host setup as root (SPEC-203, [ADR-0162](../decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
 
 ```sh
 cargo build --release -p yulius            # from a checkout; output: target/release/yulius
@@ -91,7 +94,7 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
     instead: fixing the file would not stop it being replaced.
 11. **sessions unit**: `yulius-sandboxes.service`, `yulius-adopt.service` and the drop-in
     `yulius.service.d/20-yulius-sessions.conf` ([Where sessions live](#where-sessions-live),
-    [ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)) are written when they differ,
+    [ADR-0298](../decisions/0298-sessions-live-in-their-own-unit.md)) are written when they differ,
     and the sessions unit is started. A running server is not restarted: its next restart moves
     its sessions there and keeps them. The adopt unit runs the server's binary as root, so the
     item writes nothing and fails unless the path the server's unit names is a regular file
@@ -106,7 +109,7 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
     directories: the setup writes the drop-in anew.
 13. **sandbox base**: built now, as the service user, when there is none, when it lacks the
     host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
-    ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
+    ([ADR-0161](../decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
     safe while sandboxes run.
 14. A unit it wrote is started; then "sandbox Docker", the verdict `yulius doctor` gives; the
     contained doctor as the service user; and the Docker smoke test (`--no-smoke` skips it; it
@@ -319,7 +322,7 @@ Sessions and sandboxes do not live in `yulius.service`'s own cgroup. systemd 258
 (Ubuntu 26.04 has 259) start a unit inside the unit's own group, and the kernel refuses that
 while a sandbox there holds a process: a server whose sessions lived in its unit could be stopped
 and never started again while one session ran (the outage of 2026-11-11,
-[ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)). `yulius host setup` therefore
+[ADR-0298](../decisions/0298-sessions-live-in-their-own-unit.md)). `yulius host setup` therefore
 writes three more files and starts the first unit; `deploy/systemd/` holds the same files for
 `yulius.service`, the user `yulius` and `/usr/local/bin/yulius`.
 
@@ -567,9 +570,9 @@ files under `/etc` are unreadable to the service user and skipped when the sandb
 Without containment (`YULIUS_CONTAINED=false`) agents run as the service user and could read
 Yulius's copy, like `master.key`. Task runs and the Superagent then also keep Claude Code's
 approvals (no `--dangerously-skip-permissions`), so a person answers each prompt
-([decision 0165](decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)); the
+([decision 0165](../decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)); the
 Global Superagent has only Yulius's tools, each checked at the call, and they stay pre-allowed
-([decision 0274](decisions/0274-the-global-superagent-takes-its-persons-keys.md)). Keep Caddy's admin API unreachable from runs without
+([decision 0274](../decisions/0274-the-global-superagent-takes-its-persons-keys.md)). Keep Caddy's admin API unreachable from runs without
 isolation: it can rewrite the proxy.
 
 ### Optional: live previews (wildcard DNS and TLS)
@@ -729,7 +732,7 @@ says "the browser profile is in use by process N on this host": look at it with 
 pid,user,args`. A Chrome left over from a crashed server holds the profile until you stop it
 (`kill N`); then open the panel again. If a stale entry cannot be
 removed, the start fails before a display starts and names the entry
-([ADR-0432](decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)).
+([ADR-0432](../decisions/0432-a-browser-start-clears-chrome-profile-locks-no-live-process-holds.md)).
 
 ### Sandbox isolation
 
@@ -745,11 +748,11 @@ shells and CI jobs join it (a user's shell runs `--shell` / `YULIUS_SHELL`, defa
   `sudo apt-get install …` works and persists for that sandbox only;
 - limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota. Inside
   a sandbox, CI jobs get four times the agents' CPU weight (`ci/` 400 against `agents/` 100), so
-  CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
+  CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](../decisions/0039-ci-jobs-get-the-cpu-first.md)).
   On the host, a sandbox's own group weighs 500 while any of its CI jobs runs (else 100), so its CI
-  also out-weighs other sandboxes' agents ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md));
+  also out-weighs other sandboxes' agents ([ADR-0247](../decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md));
 - a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls;
-- its own **Docker engine** ([ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)),
+- its own **Docker engine** ([ADR-0151](../decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)),
   started on the first use of `/var/run/docker.sock` (`DOCKER_HOST`) by an agent, the
   Superagent, a Shell or a CI job, also in sessions started before, and stopped once idle. See
   "Docker in sandboxes" below.
@@ -762,7 +765,7 @@ few minutes, about 6 GB under `<data>/system`). Then, if it added the drop-in, r
 the base copies it.
 
 **AppArmor and user namespaces** (SPEC-456,
-[ADR-0296](decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)).
+[ADR-0296](../decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)).
 Ubuntu since 24.04 sets `kernel.apparmor_restrict_unprivileged_userns = 1`: a program gets a
 working user namespace only when an AppArmor profile allows it `userns`. A sandbox is such a
 namespace, made by `/usr/bin/bwrap` as the service user, so without a rule no sandbox starts:
@@ -824,7 +827,7 @@ as unsupported.
 **A build by hand** (`sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius`, for
 example after installing a package on the host) is safe while sandboxes run: it keeps the new
 current base, every base named by `--keep` and every base a live holder has mounted (read from
-`<data>/runtime/sandboxes/*/host.json`, [ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)).
+`<data>/runtime/sandboxes/*/host.json`, [ADR-0161](../decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)).
 Running sandboxes stay on their base until their holder restarts (after the idle time, or a
 minute without runs once superseded); a later build removes the base once no holder uses it. Run
 it as the service user (or root), which can see the holders. Builds take turns under a lock
@@ -840,7 +843,7 @@ other instead of overlapping.
 | `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host); a [resource limit](#resource-limits) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
 | `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight: a quota of all CPUs but two throttled the sandbox in half of its busy periods while the two CPUs it left idled (SPEC-082). The sandbox's capacity for budgets is this limit, else the host's CPUs. |
 | `YULIUS_SANDBOX_PIDS` | a quarter of the host's `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most three quarters of `yulius.service`'s own `pids.max` | `pids.max` per sandbox: processes and threads of all its tasks, CI jobs and containers together. With the CPU split, CI jobs (`ci/`) and the Docker engine with its containers (`engine/`) each get 3/8 of it, so agent sessions keep at least a quarter (ADR-0198). All sandboxes together stop at three quarters of the service's limit (ADR-0201): a higher explicit value is not capped, but that common limit binds it. |
-| `YULIUS_SANDBOX_DISK_GB` | a quarter of the data disk, at least 100, at most half the disk; a [resource limit](#resource-limits) | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts, and each one's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, SPEC-351), are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
+| `YULIUS_SANDBOX_DISK_GB` | a quarter of the data disk, at least 100, at most half the disk; a [resource limit](#resource-limits) | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts, and each one's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, SPEC-351), are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
 | `YULIUS_CLAUDE_UPDATES` | `latest` | Claude Code releases isolated sandboxes follow: `latest` or `stable` (npm's dist-tags), or `off` (the host's install only). A channel chosen in Settings, Instance wins over it. See [Claude Code updates](#claude-code-updates). |
@@ -872,7 +875,7 @@ previous containment: read-only host system, the host's network, no limits.
 
 Every contained session (task runs of each harness, a person's Superagent, the Global Superagent)
 sees its harness's memory and user-level instruction files read-only
-([ADR-0479](decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)): its edit
+([ADR-0479](../decisions/0479-harness-memory-is-read-only-in-every-session-yulius-starts.md)): its edit
 tools, shell and scripts cannot add, change or delete them, and what is there still loads. The
 sandbox's Docker engine (so every container's `-v`), its CI jobs and its script watches see the
 home's `.claude` and the Codex homes as empty read-only folders; a sandbox's engine started
@@ -904,7 +907,7 @@ no namespace: only Claude Code's deny rules hold there.
 Every 2 minutes Yulius moves idle tasks off a subscription past its harness's rebalance threshold
 (`YULIUS_REBALANCE_PERCENT_CLAUDE_CODE`, `_CODEX`, `_ANTIGRAVITY`; 95 by default, 50 to 98) to the
 subscription with the most room, and new tasks keep off such a subscription while another has room
-([SPEC-629](../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md)). A task mid-turn,
+([SPEC-629](../../.ai/specs/SPEC-629-move-idle-tasks-off-a-nearly-used-up-sub.md)). A task mid-turn,
 paused, with background work or a draft waits for a later pass; a task a person put on a
 subscription with "Run on…" or "Continue on…" stays there until the pool must move it at a limit.
 An idle goal session of Claude Code or Antigravity is not restarted (its goal would be typed
@@ -963,8 +966,8 @@ the host-sized values by itself (audited as `limits.adapted` by `migration`).
 ### Claude Code updates
 
 Claude Code's own updater is off in every session (it cannot write the system install from a
-contained run). Yulius updates it instead ([ADR-0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md),
-SPEC-421; [ADR-0293](decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md),
+contained run). Yulius updates it instead ([ADR-0266](../decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md),
+SPEC-421; [ADR-0293](../decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md),
 SPEC-461), with no root step and no sign-in again:
 
 - **Channel.** About every hour (the first check 2 minutes after a start, and at once when the
@@ -1068,7 +1071,7 @@ SPEC-461), with no root step and no sign-in again:
 Yulius switches the language servers of Claude Code plugins (rust-analyzer, pyright, gopls and
 the like) off in every session it starts, and Claude Code does not ask in a session whether to
 install one
-([ADR-0327](decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md),
+([ADR-0327](../decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md),
 SPEC-485). Before this, one Enter on Claude Code's "LSP plugin recommendation" dialog installed
 such a plugin into the sandbox's home for every session; each session then started its own
 server at the first edited file (gigabytes each, and checks in the worktree's build directory),
@@ -1104,15 +1107,15 @@ Yulius types into a running task's session: a person's message sent through thei
 or their own agent (`task_message`), what happens to the task's pull request, "Yulius is back;
 continue" after an outage, and `/mcp reconnect yulius` when the session's Yulius tools went
 silent. It types none of them while a person's draft may sit in the session's prompt box
-(SPEC-480, [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md)):
+(SPEC-480, [decision 0309](../decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md)):
 
 - **When a message waits.** Someone typed into the task's terminal since its prompt box was
   last empty (the session's start, or the last prompt sent from the box), however long ago.
   A keystroke holds every message for one minute. After that, Yulius can release the hold
   when Claude Code shows its empty conversation input, including its dim suggestion.
-  Codex can also release it when the focused composer shows its dim “Ask Codex to do anything” placeholder and the footer offers agents or shortcuts. A recalled image keeps the hold. [ADR-0420](decisions/0420-recognize-the-empty-codex-composer.md)
+  Codex can also release it when the focused composer shows its dim “Ask Codex to do anything” placeholder and the footer offers agents or shortcuts. A recalled image keeps the hold. [ADR-0420](../decisions/0420-recognize-the-empty-codex-composer.md)
   A stashed Claude draft, a named Claude input, a dialog or an unfamiliar layout keeps the hold.
-  Text that Claude restores after a submit also holds a message. [ADR-0405](decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
+  Text that Claude restores after a submit also holds a message. [ADR-0405](../decisions/0405-a-confirmed-empty-claude-prompt-releases-a-held-message.md)
 - **Who is told.** A message sent with `task_message` is refused with that reason at once, and
   the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
   again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes
@@ -1138,8 +1141,8 @@ silent. It types none of them while a person's draft may sit in the session's pr
 ### Docker in sandboxes
 
 Each isolated sandbox has its own Docker engine (SPEC-187,
-[ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md);
-SPEC-196, [ADR-0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
+[ADR-0151](../decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md);
+SPEC-196, [ADR-0158](../decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
 `docker`, `docker compose`, buildx and testcontainers work unchanged in agents' sessions, the
 Superagent, Shells and CI jobs (not in a production CD run). The host's Docker is never reachable
 from a sandbox, and no daemon needs to run on the host.
@@ -1185,7 +1188,7 @@ from a sandbox, and no daemon needs to run on the host.
   smoke test. Every update re-checks them (§8), and a reboot keeps them (the modules file, the
   disabled units, the drop-ins and the base are on disk).
   - `dockerd` in the sandbox's system
-    ([ADR-0160](decisions/0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md)).
+    ([ADR-0160](../decisions/0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md)).
     Docker on the host (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`)
     gives it to every new base, which copies `dockerd`, `containerd`, `runc`, `docker-proxy` and
     the CLI plugins. The host's own daemon is not needed, and the setup stops it. While the host
@@ -1362,7 +1365,7 @@ and unlinks every chat. The log names the bot, never its token.
 
 ### Security scans (Vidoc)
 
-Optional ([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md),
+Optional ([SPEC-195](../../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md),
 ADR-0157). With a Vidoc key, every project's agents and granted CI jobs can run
 `yulius security-scan`. Vidoc's `vidoc-1` model reviews the files a branch changed (or, with
 `--all`, the whole repository). The scan fails on open critical or high findings, and on open
@@ -1388,7 +1391,7 @@ Agents and CI jobs never get the key. They get `VIDOC_API_KEY=yulius-secret-VIDO
 egress proxy replaces it toward `model.vidocsecurity.com` only. CI jobs get it only when their
 `yulius.toml` entry names it (`secrets = "VIDOC_API_KEY"`). An agent secret named `VIDOC_API_KEY`
 that reaches the run wins over the instance key
-([architecture](architecture.md#agent-secret-scopes)). Each use is in the secrets audit
+([architecture](../architecture.md#agent-secret-scopes)). Each use is in the secrets audit
 (`instance:vidoc`). The built-in `security` job (`yulius security-scan --ci`) is described above;
 onboarding adds no job, only the AGENTS.md rule. The scan needs
 `python3` 3.11 or later in the sandboxes. Agents and CI jobs start with an environment of their own,
@@ -1559,7 +1562,7 @@ The manifest flow requests these repository permissions:
 | --- | --- | --- |
 | Contents | Read and write | Clone and fetch repositories; push task branches (as the task's creator); merge pull requests; fast-forward promotions; compare branches. |
 | Pull requests | Read and write | Open, list and read pull requests. |
-| Issues | Read and write | Agents log what lies outside their change (pre-existing bugs, flaky tests they did not cause, nits left after review; [ADR-0141](decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)) as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
+| Issues | Read and write | Agents log what lies outside their change (pre-existing bugs, flaky tests they did not cause, nits left after review; [ADR-0141](../decisions/0141-review-findings-in-the-change-s-own-code-are-fixed-before-merge.md)) as issues with Definition-of-Ready labels (`issue_create`, DLV-008); missing labels are created. Requested since 2026-10-10; an App created before needs it added (below). |
 | Checks | Read | Read check runs on pull request heads: GitHub Actions and every other Checks API app. |
 | Commit statuses | Read and write | Publish the result of Yulius's own CI as the status `yulius/ci` on each tested commit (write, since 2026-10-11), and read statuses of projects without Yulius CI. |
 | Workflows | Read and write | Push the onboarding commit that deletes `.github/workflows/` (Yulius is the only CI). Granted on 2026-10-12. |
@@ -1584,7 +1587,7 @@ administrators, with a link to the App's permission page. Checks it cannot read 
 passed, so merges and releases that require checks wait.
 
 **Creating a project fails.** Yulius says which of these it is
-([SPEC-241](../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md)):
+([SPEC-241](../../.ai/specs/SPEC-241-onboarding-works-on-an-empty-github-repo.md)):
 
 - "GitHub refused to create …: the Yulius GitHub App lacks the repository permission
   Administration: Read and write …": add it as below. Nothing was created.
@@ -1618,8 +1621,8 @@ After the instance's public URL changes (a move to another host, a new domain) G
 sign-in from the new address ("redirect_uri is not associated with this application") until a
 person adds that URL in the App's settings. GitHub has no API for an App's callback URLs or
 homepage, and Yulius never uses a person's GitHub session, so this one step is yours
-([SPEC-466](../.ai/specs/SPEC-466-run-migration-yulius-checks-its-github-a.md),
-[ADR-0302](decisions/0302-the-instance-asks-github-about-its-own-callback-and-clients-follow-only-a-moves-redirect.md)).
+([SPEC-466](../../.ai/specs/SPEC-466-run-migration-yulius-checks-its-github-a.md),
+[ADR-0302](../decisions/0302-the-instance-asks-github-about-its-own-callback-and-clients-follow-only-a-moves-redirect.md)).
 Yulius notices and says exactly what to do:
 
 - **Settings → Instance → Address** (superadmin). The instance asks GitHub whether it accepts its
@@ -1714,7 +1717,7 @@ involved.
   (SPEC-362).
 - While any of a sandbox's CI jobs runs, its group weighs 500 on the host (100 otherwise), so its
   CI gets more of a loaded host than the agents' local builds in every sandbox
-  ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). Check it with
+  ([ADR-0247](../decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). Check it with
   `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/cpu.weight`. Every start
   and graceful stop of the server writes 100 to every sandbox.
 - Agent sessions, terminals and the Cockpit plan for `YULIUS_AGENT_CPUS` CPUs (default a third
@@ -1729,8 +1732,8 @@ involved.
   Merge trains' jobs go first, then pull requests', then branches'. A job that cannot start lets
   later ones pass for 10 minutes at most. A waiting job's reason in `ci_status` (and the run's API)
   says what it waits for: the worst case, CPUs, memory, a slot or Docker networks
-  ([ADR-0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md),
-  [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)). A job's
+  ([ADR-0353](../decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md),
+  [ADR-0350](../decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)). A job's
   default share (no `cpus`) is an equal share of that budget among its run's jobs: what it may use
   at once, not what it holds.
 - Each sandbox's Docker engine makes /24 networks from Docker's own ranges (172.17.0.0/16 to
@@ -1749,10 +1752,10 @@ involved.
   Yulius never passes a failed job for it. Two pull requests whose heads share a commit outside
   the integration branch (a chained one) count as one. Closing the issue ends the quarantine within
   an hour and forgets the test's failures
-  ([ADR-0356](decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
+  ([ADR-0356](../decisions/0356-a-test-failing-on-two-pull-requests-is-quarantined-with-an-issue.md)).
   A pull request's failure whose output names a file that pull request changed is taken as the
   change's own and does not count; the job's output says so
-  ([ADR-0453](decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
+  ([ADR-0453](../decisions/0453-a-failure-naming-its-own-changed-file-makes-no-test-flaky.md)).
 - `YULIUS_CI_LANES` (host-sized, a [resource limit](#resource-limits); 2 below 32 CPUs) runs of one sandbox take a checkout at once; the CI budget, not the lanes, decides how many of their jobs run. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too. A run takes the free lane whose checkouts last built what it builds on: a
@@ -1764,7 +1767,7 @@ involved.
   passed. The test runner reads the shard, for example
   `cargo nextest run --partition "hash:$YULIUS_CI_MATRIX"` (or `pytest-split`'s `--group`). Keep
   the other checks in a job of their own, so the longest job is shorter
-  ([ADR-0358](decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
+  ([ADR-0358](../decisions/0358-tests-run-in-shards-and-a-run-starts-from-the-build-it-builds-on.md)).
 
 **Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
 
@@ -1789,8 +1792,8 @@ up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.c
 
 ### Script watches on this machine
 
-Script watches ([SPEC-630](../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
-[decision 0465](decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md))
+Script watches ([SPEC-630](../../.ai/specs/SPEC-630-script-watches-scheduled-scripts-that-no.md),
+[decision 0465](../decisions/0465-script-watches-run-in-the-sandbox-without-an-agent-and-post-keyed-notices.md))
 run on the same machine as the server, through the process host, in each sandbox's containment
 and CI's resource group. Nothing needs setting up.
 
@@ -1817,7 +1820,7 @@ and CI's resource group. Nothing needs setting up.
 ### CD on this machine
 
 CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]`, `[cd.prod]`
-and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`), a disk bound
+and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](../api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`), a disk bound
 for its files (`--cd-run-disk-gb`, `YULIUS_CD_RUN_DISK_GB`, a [resource limit](#resource-limits), 20 GB on a data disk up to 400 GB: the run's directory and
 its cache, measured every 5 s; past it the run is stopped as an `error` and its cache emptied, a
 delivery environment run alike; ADR-0216) and the
@@ -1840,7 +1843,7 @@ after each run; a production run's are in `<data>/cd/<id>/runs/cd-<run>/work` or
   secret (ADR-0186). That choice is not offered for a secret agents use (bound hosts or `.env` copies): a production
   secret is exclusive, so production needs a separate secret with its own name (ADR-0109). Output is
   redacted, but scripts hold the values while they run, so allow only what a deploy needs.
-- **Agent states** ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
+- **Agent states** ([ADR-0207](../decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
   A table's `states = ["NAME"]` makes the run hold those agent states (a second run naming one waits,
   its output says for which run), restore the vault's newest version of each into
   `<run files>/work/states/<NAME>` (`$YULIUS_STATE_<NAME>`, never a task's copy, never
@@ -1883,7 +1886,7 @@ after each run; a production run's are in `<data>/cd/<id>/runs/cd-<run>/work` or
 ### Yulius's own staging VM
 
 Yulius's own repository deploys `dev` to a staging VM: `[cd.dev]` in its `yulius.toml`, scripts in
-`scripts/cd/` ([ADR-0430](decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
+`scripts/cd/` ([ADR-0430](../decisions/0430-yuliuss-staging-builds-in-cds-builder-and-installs-a-kept-release-with-its-store.md),
 SPEC-591). It is a Yulius instance like any other, but no person relies on it. Each deploy runs
 the exact build of a dev revision on the store an older release wrote, which is where a migration
 first meets real data. Production instances still install `main` through their update helper
@@ -1941,7 +1944,7 @@ previous store cannot be put back, the server stays stopped and the run says to 
   deploy again.
 
 **Who deploys.** Staging is Yulius's merge-first target
-([ADR-0436](decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
+([ADR-0436](../decisions/0436-yuliuss-full-suite-runs-after-the-merge-and-promotion-comes-from-verified-staging.md)).
 A pull request merges on `quality` and `security`. `test` and `e2e` run once on each merged
 revision of `dev`.
 
@@ -2021,7 +2024,7 @@ searched by agents (`sessions_search`, `session_read`). The uploader or an admin
 its page; deletions are audited (`session.deleted`). The command only uploads: a new sandbox's
 onboarding task (adapting the repository to the Yulius standards) waits until someone clicks
 **Start onboarding** on the sandbox page, or the person's own agent runs `yulius project onboard`
-with an `operate` token ([remote-control.md](remote-control.md)); a `yulius login` token cannot
+with an `operate` token ([remote-control.md](../remote-control.md)); a `yulius login` token cannot
 start it (SPEC-051, ADR-0038, ADR-0188). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
 --status` and the sandbox page say what is pending.
 
@@ -2070,10 +2073,10 @@ PEM or OpenSSH key is kept as a key file, but its first line alone is refused). 
 nothing until `yes` is typed at the terminal, except with `--yes` and the `operate` token that
 `yulius remote login` stored (refused with any other token; ADR-0194). `--from-file NAME=PATH`
 imports a whole file, such as a key, as one secret, and `--env-files` creates agent secrets
-already allowed into `.env` files ([remote-control.md](remote-control.md#secrets)). Team and agent
+already allowed into `.env` files ([remote-control.md](../remote-control.md#secrets)). Team and agent
 secrets go to the sandbox (`--sandbox`, else the checkout's GitHub repository); `--instance` makes
 team secrets team-wide, and agent secrets global (instance administrators), switched on for that
-sandbox ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). Agent secrets start bound to no host and, as on the Secrets page, agents set them
+sandbox ([ADR-0186](../decisions/0186-agent-secrets-are-project-global-or-personal.md)). Agent secrets start bound to no host and, as on the Secrets page, agents set them
 up: they bind the hosts they need and production deploys get them, which the list says before
 `yes`; `--confirm-hosts` makes a person allow each host and production deploys instead (SPEC-216).
 
@@ -2227,7 +2230,7 @@ the name still leads to the old host), and a closed port stops the move, pointin
 `systemctl status caddy` and `journalctl -u caddy -n 50`. A Caddy with no site on port 443 (TLS
 ending in front of it, at a CDN or another proxy) therefore cannot be moved with an `https://` URL.
 The check proves port 443 is open, not which configuration answers: the restart is what loads the
-carried one ([SPEC-592](../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md));
+carried one ([SPEC-592](../../.ai/specs/SPEC-592-instance-move-caddy-keeps-serving-its-pr.md));
 ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
 are named; the new instance re-sizes those that no longer fit (SPEC-459).
 
@@ -2317,7 +2320,7 @@ you in on the new host's SSH port), deletes the key on the old host and lists wh
 people: the DNS record if still open; the GitHub App, which the new instance is asked about once
 more (`ok` when GitHub accepts the callback by now, else the link and the values again); laptops
 (`yulius remote` follows the old URL's redirect by itself and keeps its sign-in under the new URL,
-[remote control](remote-control.md#2-connect-your-agent); Claude Code's own connection needs
+[remote control](../remote-control.md#2-connect-your-agent); Claude Code's own connection needs
 `claude mcp remove yulius` and `claude mcp add` with the new URL); and that the old host
 still holds a frozen copy with `master.key` and every secret. On the new instance, Settings →
 Instance → Address then shows where it came from, when, what its first start did with the tasks,
@@ -2338,7 +2341,7 @@ state, the receipts of a staged copy included. The copy on the new host, staged 
 It never leaves both running. Work done on the new host after the move is not copied back.
 Laptops whose `yulius remote` had already followed the move point at the stopped instance: their
 commands say where the sign-in came from, and `yulius remote login <old URL>` signs in there
-again, with a token ([remote control](remote-control.md#2-connect-your-agent)).
+again, with a token ([remote control](../remote-control.md#2-connect-your-agent)).
 
 The run that ordered the start ignores Ctrl-C, SIGTERM and a lost terminal from then on, on
 purpose (it must not thaw the old instance beside a new one). If it hangs, end it with `kill -9`,
@@ -2661,7 +2664,7 @@ A process an agent's command leaves behind once its parent exits (a detached tes
 `(server &)`, a headless browser) is adopted by its session's sandbox init (`bwrap`). No shell of
 the agent owns it, so Claude Code neither shows nor stops it. On 2026-10-30, about 60 test jobs of
 one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles them by itself
-([ADR-0240](decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)):
+([ADR-0240](../decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)):
 
 - When a run ends, is stopped, or its task is deleted or archived, its whole PID namespace ends
   with it: leftovers included.
@@ -2677,13 +2680,13 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
 - One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
   take every other sandbox's downloads. Within a sandbox, one run's processes cannot lock the
   others out (SPEC-357,
-  [ADR-0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)). At a full share
+  [ADR-0243](../decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)). At a full share
   with every connection active, the oldest connection of the run holding the most gives way to
   a run holding at least 2 fewer, and at the full proxy the busiest sandbox's does. A plain
   request waiting for its answer is never taken, but it waits at most 5 minutes with no progress
   for its upstream's response head, then gets `504` (`Yulius proxy: <host> sent no response for
   300 s`) and frees its place
-  ([ADR-0250](decisions/0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md)). This is logged as `egress proxy: a sandbox's share
+  ([ADR-0250](../decisions/0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md)). This is logged as `egress proxy: a sandbox's share
   is full of active connections; the busiest run's oldest connection was closed for another run`
   (sandbox, run, how many it held) or `egress proxy: every connection is taken and active; the
   busiest sandbox's oldest connection was closed for another sandbox`, each at most once a minute
@@ -2699,7 +2702,7 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   2026-10-31, quartio-v2's tasks got `503` for every host for 90 minutes, while their Claude
   traffic, which bypasses the proxy (`NO_PROXY`), kept working.
 - A full relay gives way instead of refusing (SPEC-355,
-  [ADR-0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
+  [ADR-0241](../decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
   A sandbox reaches Yulius on one port (8081: internal API, MCP, egress proxy) through two relays,
   the holder's forward inside the sandbox and the server's `out.sock`, 256 connections each. At
   its limit a relay, and the proxy at a sandbox's share or at its own limit, closes its
@@ -2719,7 +2722,7 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   was dropped at the limit` lines to the sandbox's `holder.log` (and the Docker front's to
   `docker-front.log`), both in `<data>/runtime/sandboxes/<sandbox-id>/`.
 - A refusal that remains shows on the panel (SPEC-361,
-  [ADR-0246](decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)).
+  [ADR-0246](../decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)).
   A sandbox at its proxy share, a sandbox whose `out.sock` dropped a connection, and the proxy at
   its own limit each begin a *connection trouble*: the journal says `connection trouble began`
   (limit, sandbox, held of max, the busiest runs or sandboxes by run id), and the people who can
@@ -2738,7 +2741,7 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   restart once the link works again (`the Superagent's sandbox reaches Yulius again`).
 
 - A Yulius restart or update needs nothing from the tasks (SPEC-358,
-  [ADR-0244](decisions/0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)).
+  [ADR-0244](../decisions/0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)).
   - Their Yulius tools go through `yulius mcp`, a stdio bridge that holds a call while Yulius is
     down: its stderr in Claude Code's MCP log says `Yulius cannot be reached …; holding calls
     until it is back`, then `Yulius is back`.
@@ -3282,7 +3285,7 @@ with the command.
 - Upgrading to remote control (SPEC-247, ADR-0188, 2026-10-20): migration 0040 makes every
   existing API token a `cli` token: the REST API as before, never the remote MCP. A person's
   laptop agent needs a new `operate` or `read` token from Settings → Connect your local agent
-  ([remote-control.md](remote-control.md)).
+  ([remote-control.md](../remote-control.md)).
 - Upgrading to agent secret scopes (SPEC-245, ADR-0186, 2026-10-20): migration 0039 turns each
   team-wide agent secret into a global one, switched on for every live sandbox, so no run loses
   one. A project added later gets a global secret only when an administrator switches it on
@@ -3293,7 +3296,7 @@ with the command.
 - Upgrading to agents setting secrets up (SPEC-216, ADR-0171, 2026-10-17): migration 0035 keeps
   every existing agent secret on a person's confirmation (`auto_allow` off; new ones default to
   on), and the first start copies each team-wide team secret into every sandbox (audited
-  `vault.team.assign`; [architecture](architecture.md#agent-secret-hosts)).
+  `vault.team.assign`; [architecture](../architecture.md#agent-secret-hosts)).
 - Upgrading to leftovers cleanup (SPEC-215, task #202, ADR-0170): no migration. The first start
   of the new version deletes the existing safe leftovers two minutes in, the removed product
   sandbox's included (its worktrees, CI checkouts and system layer, more than 100 GB). Nothing is
@@ -3462,7 +3465,7 @@ up. Queued tasks start when capacity allows.
   in another form, misuse on its hosts, weak values): SPEC-002 ADR-20. Misuse on its hosts is
   narrowed by method and path rules: for a token agents only read with, set `GET` rules on the
   Secrets page (Edit), and the proxy refuses any other request that would use it (403, audited
-  `vault.agent.refused`; [ADR-0458](decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)).
+  `vault.agent.refused`; [ADR-0458](../decisions/0458-an-agent-secret-can-be-limited-to-methods-and-paths.md)).
   Hosts agents ask for such a secret then wait for you; do not allow it into `.env` files, which
   give code the value itself. Rules cannot tell request bodies apart (a GraphQL mutation is a
   `POST /graphql` like a query).
