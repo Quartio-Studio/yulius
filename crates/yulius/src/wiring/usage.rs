@@ -37,14 +37,6 @@ use yulius_domain::usage::{
     WEEKLY_WINDOW_MINUTES,
 };
 
-fn now() -> Timestamp {
-    Timestamp(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
-    )
-}
-
 const CLAUDE_API: &str = "https://api.anthropic.com";
 const CODEX_API: &str = "https://chatgpt.com/backend-api";
 const CODEX_USAGE_PATH: &str = "/wham/usage";
@@ -544,7 +536,7 @@ impl UsageProbe for ProviderUsage {
                         UsageFailureKind::NotShared => UsageFailure::of(f.kind, CODEX_NOT_SHARED),
                         _ => f,
                     })?;
-                    parse_codex(&body, now()).map_err(UsageFailure::new)
+                    parse_codex(&body, super::clock::now()).map_err(UsageFailure::new)
                 }
             },
             // No usage source of an Antigravity subscription was verified: its limits come from
