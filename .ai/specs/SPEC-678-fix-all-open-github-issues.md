@@ -72,7 +72,9 @@ reviewed and merged into `dev` by `delivery_merge`.
   On a production host, where the server starts sandbox shells with SIGXFSZ at its default, this
   changes what a watch script meets: a write past the bound is refused instead of killing the
   writer (exit 1, not 153), a shell loop writing to a full file now runs to its CPU bound, and a
-  script's own `trap … XFSZ` has no effect. The run still ends on its output bound and says so.
+  script's own `trap … XFSZ` has no effect. A run that exits or is killed at the bound still
+  ends on its output bound and says so; one that keeps looping ends at its CPU bound or timeout
+  with that reason.
 - **PROC-1775** The MCP probe test counts a zombie grandchild as gone (`/proc/<pid>/stat` state
   `Z` on Linux), so it passes whichever process reaps it, and still fails for one still running.
 - **PROC-1826** The sweep releases Cargo's locks with `LOCK_UN` before closing them (`Lease`),
@@ -83,6 +85,12 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **PROC-1760** The identity tests write every executable they run (`write_exe`) from a child
   process, so no descriptor of the test process can be inherited by a child another thread
   forks, which made running the script fail with ETXTBSY ("Text file busy").
+- **WAIT-1807** The compile-cache Ctrl+Z test's wait for the shell's "Stopped" report spends
+  its 5 s only while the shell sleeps and no member of the job can run: a host that has not
+  scheduled the shell or the job yet spends none of it, and a shell that really fails to report
+  still fails the test within the same budget.
+- **WAIT-1820** The Telegram reply test waits for the second run's own notice before it
+  records the message count, so the next message after its reply can only be the answer.
 
 ## Plan
 
@@ -232,3 +240,14 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   `sweep::tests::a_sweep_refused_part_way_releases_the_locks_it_took` (it and the duplicate test
   fail when `Lease` does not unlock); the wrapper test runs with `LC_ALL=C`; the other identity
   test executables go through `write_exe`; `disk.rs`'s lease uses `Lease` too.
+
+### #1807, #1820 (tests wait on the condition)
+
+- #1807: probe that stops the shell (SIGSTOP) for 6 s right after Ctrl+Z, as an unscheduled shell
+  on a loaded host: the test failed `shell did not report b'Stopped': b'^Z'` (5.07 s) as in CI;
+  with the idle-time budget it passes (6.07 s). `python3 -m unittest discover -s scripts -p
+  test_compile_cache.py`: OK; the two job-control tests 10 of 10 pinned to one CPU beside six
+  busy loops.
+- #1820: probe delaying the Needs-you notice 300 ms and the reply's answer 1 s reproduced the
+  CI failure exactly (`left: "Needs your decision · app …"`, line 3000); with the test waiting for
+  the second run's notice first it passes with the same probe.

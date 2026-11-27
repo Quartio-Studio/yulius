@@ -859,7 +859,6 @@ mod tests {
         ))
     }
 
-    /// A fake `yulius` that prints a token for `gh-token`.
     /// An executable script for a test to run, written by a child process: a process another
     /// test thread forks while this one holds a file open for writing keeps that descriptor
     /// until it execs, and running the script then fails with "Text file busy" (ETXTBSY, #1760).
@@ -876,6 +875,7 @@ mod tests {
         Ok(())
     }
 
+    /// A fake `yulius` running `body` (one that prints a token for `gh-token`, say).
     fn fake_exe(body: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let dir = unique_dir("yulius-fake-exe");
         std::fs::create_dir_all(&dir)?;

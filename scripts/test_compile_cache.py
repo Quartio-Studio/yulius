@@ -750,13 +750,41 @@ print('received '+input(), flush=True)
             os.chdir(self.task)
             os.execve(shell, [shell, "--noprofile", "--norc", "-i"], env)
 
-        def read_until(marker):
+        def state_of(process):
+            try:
+                return (Path("/proc") / str(process) / "stat").read_text().rsplit(")", 1)[1].split()
+            except OSError:
+                return None
+
+        def idle():
+            # Only time in which nothing it waits for can still run counts against the shell:
+            # the shell asleep, and no member of the job runnable. A loaded host that has not
+            # scheduled the shell or the job yet spends none of it (#1807).
+            if (shell_state := state_of(pid)) is None:
+                return True
+            if shell_state[0] != "S":
+                return False
+            if job is None:
+                return True
+            for entry in Path("/proc").iterdir():
+                fields = state_of(entry.name) if entry.name.isdigit() else None
+                if fields and int(fields[2]) == job and fields[0] in ("R", "D"):
+                    return False
+            return True
+
+        def read_until(marker, budget=5):
             output = b""
-            deadline = time.monotonic() + 5
+            idle_for = 0.0
+            mark = time.monotonic()
             while marker not in output:
-                self.assertTrue(select.select([terminal], [], [], max(0, deadline - time.monotonic()))[0],
-                                f"shell did not report {marker!r}: {output!r}")
-                output += os.read(terminal, 4096)
+                if select.select([terminal], [], [], .05)[0]:
+                    output += os.read(terminal, 4096)
+                    continue
+                now = time.monotonic()
+                if idle():
+                    idle_for += now - mark
+                mark = now
+                self.assertLess(idle_for, budget, f"shell did not report {marker!r}: {output!r}")
             return output
 
         job = None
