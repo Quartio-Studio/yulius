@@ -39,8 +39,10 @@ task's owner has write access, as before.
   this one.
 - End the finished task's background shells: Yulius cannot tell a wait from a dev server it
   should not kill, and a killed command still wakes the agent with its failure.
-- Make `yulius wait` follow staging requests and tell agents to use it: helps agents that use
-  it, not the loops they write themselves, which this incident had.
+- Make `yulius wait` follow staging requests and tell agents to use it, instead of typing the
+  outcome: helps agents that use it, not the loops they write themselves, which this incident
+  had. Since SPEC-678 (#1727) the wait follows the request as well, beside this decision, and the
+  `cd_deploy` receipt points to it; the typed outcome stays for the other loops.
 
 ## Consequences
 

@@ -79,6 +79,11 @@ const CONTAINED_RED_NOTE: &str =
 
 /// How a staging deploy's run note starts: the queue knows its own runs by it.
 const DEPLOY_NOTE: &str = "merge-first staging: request";
+/// Whether a CD run's `note` says it deploys the staging request `id` (a retry clears the
+/// request's run before it records the next one).
+pub(crate) fn deploys_request(note: Option<&str>, id: &str) -> bool {
+    note.is_some_and(|note| note.starts_with(&format!("{DEPLOY_NOTE} {id} ")))
+}
 /// How a restore's run note starts, before the part's label.
 const RESTORE_NOTE: &str = "merge-first staging: restoring the last verified release of";
 
@@ -2226,7 +2231,7 @@ fn run_ids_of(ci: Option<&str>, cd: Option<&str>) -> String {
 }
 
 /// What a task reads about its staging request's outcome, with the next step.
-pub(super) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
+pub(crate) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
     let what = format!(
         "Yulius: staging request {} for revision {} of [cd.{}] is {}",
         request.id,
@@ -2275,5 +2280,26 @@ fn staging_next(request: &StagingRequestRecord) -> String {
             "It will not deploy; cd_deploy again for the task's current merged revision if it still needs staging.".to_owned()
         }
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only a deploy note naming exactly this request counts as its deploy (#1727): a request
+    /// whose id another one's starts with, a restore and no note do not.
+    #[test]
+    fn a_deploy_note_names_its_request_exactly() {
+        let note = format!("{DEPLOY_NOTE} req-1 (a task's delivery)");
+        assert!(deploys_request(Some(&note), "req-1"));
+        assert!(!deploys_request(Some(&note), "req-12"));
+        assert!(!deploys_request(Some(&note), "req"));
+        let longer = format!("{DEPLOY_NOTE} req-12 (a task's delivery)");
+        assert!(!deploys_request(Some(&longer), "req-1"));
+        let restore = format!("{RESTORE_NOTE} app after failed run cd-1");
+        assert!(!deploys_request(Some(&restore), "req-1"));
+        assert!(!deploys_request(Some("deploy by a person"), "req-1"));
+        assert!(!deploys_request(None, "req-1"));
     }
 }

@@ -3333,6 +3333,98 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     Ok(())
 }
 
+/// `yulius wait` follows a merged task's staging request (#1727, #1831): while the request is
+/// testing, the merged head's ended checks do not end the wait, which has no time limit; it ends
+/// on the request's outcome, which names the request instead of "has no staging request".
+#[tokio::test]
+async fn yulius_wait_follows_a_merged_tasks_staging_request() -> TestResult {
+    use yulius::wait_cli::{limit_line, settled};
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    let state = |head: String| {
+        let app = f.h.app.clone();
+        async move { app.agent_wait_state(&token("t1"), Some(&head)).await }
+    };
+    // Merged, no request yet: the wait says nothing of staging.
+    let none = state(r1.clone()).await?;
+    assert_eq!(none.staging_request, None);
+    let answer = staging_answer(&f, "t1").await?;
+    let receipt = answer["text"].as_str().unwrap_or_default();
+    assert!(
+        receipt.contains(
+            "to wait for it instead, start `yulius wait` with run_in_background: it ends with \
+             the outcome"
+        ),
+        "{receipt}"
+    );
+    let id = answer["staging"]["id"].as_str().ok_or("id")?.to_owned();
+    let testing = state(r1.clone()).await?;
+    assert_eq!(testing.staging_request.as_deref(), Some(id.as_str()));
+    assert_eq!(testing.staging_state.as_deref(), Some("testing"));
+    assert_eq!(testing.staging_outcome, None);
+    // The head's checks passed before the request: they no longer end the wait.
+    let ci = gate(&f, &r1, RunState::Passed).await?;
+    let gated = state(r1.clone()).await?;
+    assert!(gated.checks_ended(), "{gated:?}");
+    assert_eq!(settled(&gated, None), None, "{gated:?}");
+    assert_eq!(limit_line(&gated, 30), None);
+    settle(&f).await?;
+    let verified = state(r1.clone()).await?;
+    assert_eq!(verified.staging_state.as_deref(), Some("verified"));
+    let deploy = request(&f, &id).await?.cd_run_id.ok_or("its deploy")?;
+    assert_eq!(verified.staging_cd_run.as_deref(), Some(deploy.as_str()));
+    let line = settled(&verified, Some(&gated)).ok_or("the outcome ends the wait")?;
+    assert!(
+        line.contains(&format!(
+            "staging request {id} for revision {} of [cd.staging] is verified",
+            &r1[..12]
+        )) && line.contains(&format!("CI run {ci}"))
+            && line.contains(&format!("CD run {deploy}")),
+        "{line}"
+    );
+    assert!(!line.contains("has no staging request"), "{line}");
+    // A wait that starts afterwards ends on the same outcome, at once.
+    assert_eq!(settled(&verified, None).as_deref(), Some(line.as_str()));
+    // A retry clears the request's run before its new run is recorded: the task's latest run,
+    // the earlier attempt, is still the request's deploy, so its end does not end the wait.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE staging_requests SET cd_run_id = NULL, state = 'deploying' WHERE id = '{id}'"
+        ))
+        .await?;
+    let retrying = state(r1.clone()).await?;
+    assert_eq!(retrying.cd_run.as_deref(), Some(deploy.as_str()));
+    assert_eq!(retrying.staging_cd_run.as_deref(), Some(deploy.as_str()));
+    let unreported = yulius_app::agent_wait::WaitState {
+        cd_unreported: true,
+        ..retrying.clone()
+    };
+    assert_eq!(settled(&unreported, None), None, "{unreported:?}");
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE staging_requests SET cd_run_id = '{deploy}', state = 'verified' WHERE id = '{id}'"
+        ))
+        .await?;
+    // While the task's next pull request is open, its merged revision's request is not followed.
+    f.h.store
+        .execute_for_tests(
+            "INSERT INTO delivery(task_id, stage, pr_number, updated_at) VALUES ('t1','pr_open',9,1)",
+        )
+        .await?;
+    let next = state(r1.clone()).await?;
+    assert_eq!(next.staging_request, None, "{next:?}");
+    f.h.store
+        .execute_for_tests("DELETE FROM delivery WHERE task_id = 't1'")
+        .await?;
+    assert!(state(r1).await?.staging_request.is_some());
+    // A later landing has no request yet: an older revision's request is not followed.
+    let r2 = land(&f, "t1", "two.txt").await?;
+    let later = state(r2).await?;
+    assert_eq!(later.staging_request, None, "{later:?}");
+    Ok(())
+}
+
 /// After a failed gate the line says how to go on,
 /// and once the fix merged it names the fix's revision as due, then the newer request.
 #[tokio::test]

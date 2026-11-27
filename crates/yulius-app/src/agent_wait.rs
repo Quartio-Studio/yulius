@@ -359,9 +359,47 @@ pub struct WaitState {
     /// It ended and no wait reported it yet (a run that ended before the wait began, review M4).
     #[serde(default)]
     pub cd_unreported: bool,
+    /// The task's latest staging request for its current merged revision (#1727): its id.
+    #[serde(default)]
+    pub staging_request: Option<String>,
+    /// Its state (`testing`, `inherited`, `ready`, `deploying`, `verified`, …); while it is
+    /// pending the wait waits for it.
+    #[serde(default)]
+    pub staging_state: Option<String>,
+    /// Its outcome and the next step, once it is no longer pending.
+    #[serde(default)]
+    pub staging_outcome: Option<String>,
+    /// The CD run that deploys it, once one does: that run's end is reported by the request.
+    #[serde(default)]
+    pub staging_cd_run: Option<String>,
 }
 
 impl WaitState {
+    /// Whether this state differs from `since`, the state a client sent back, in a field that
+    /// client knows: a client older than a field leaves it out of `since` and is never told of a
+    /// difference it cannot see, which would answer it at once over and over (#1727).
+    #[must_use]
+    pub fn differs_from(&self, since: &serde_json::Value) -> bool {
+        let (Ok(serde_json::Value::Object(now)), Some(since)) =
+            (serde_json::to_value(self), since.as_object())
+        else {
+            return true;
+        };
+        since
+            .iter()
+            .any(|(key, sent)| now.get(key).is_some_and(|value| value != sent))
+    }
+
+    /// Whether the task's staging request is still on its way (testing, inherited, ready or
+    /// deploying).
+    #[must_use]
+    pub fn staging_pending(&self) -> bool {
+        self.staging_state
+            .as_deref()
+            .and_then(yulius_domain::staging::StagingState::parse)
+            .is_some_and(yulius_domain::staging::StagingState::is_pending)
+    }
+
     /// Whether the checks at the head have ended (passed or not).
     #[must_use]
     pub fn checks_ended(&self) -> bool {
@@ -1825,6 +1863,27 @@ impl App {
         }
     }
 
+    /// The task's latest staging request when it is for the task's current merged revision
+    /// (#1727): an older revision's request is not what a wait at the latest merge is about,
+    /// and a task whose next pull request is open has no current landing.
+    async fn current_staging_request(
+        &self,
+        task: &TaskRecord,
+    ) -> AppResult<Option<crate::ports::store_ext::StagingRequestRecord>> {
+        let store = &self.deps.store;
+        let Some(request) = store.latest_task_staging(&task.id).await? else {
+            return Ok(None);
+        };
+        let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
+            return Ok(None);
+        };
+        let branch = crate::delivery::delivery_profile(&sandbox).integration_branch;
+        let landing = store.staging_landing(&task.id, &branch, None).await?;
+        Ok(landing
+            .is_some_and(|landing| landing == request.revision)
+            .then_some(request))
+    }
+
     /// The state `yulius wait` compares (local records only).
     ///
     /// # Errors
@@ -1887,7 +1946,31 @@ impl App {
             }
             _ => false,
         };
+        let staging = self.current_staging_request(task).await?;
         Ok(WaitState {
+            staging_request: staging.as_ref().map(|request| request.id.clone()),
+            staging_state: staging
+                .as_ref()
+                .map(|request| request.state.as_str().to_owned()),
+            staging_cd_run: staging.as_ref().and_then(|request| {
+                request.cd_run_id.clone().or_else(|| {
+                    cd.as_ref()
+                        .filter(|run| {
+                            crate::ci::staging::deploys_request(run.note.as_deref(), &request.id)
+                        })
+                        .map(|run| run.id.clone())
+                })
+            }),
+            staging_outcome: match staging.filter(|request| !request.state.is_pending()) {
+                Some(request) => Some(
+                    self.redact_for_sandbox(
+                        &task.sandbox_id,
+                        &crate::ci::staging::staging_outcome_text(&request),
+                    )
+                    .await,
+                ),
+                None => None,
+            },
             cd_unreported,
             cd_run: cd.as_ref().map(|run| run.id.clone()),
             cd_state: cd.as_ref().map(|run| run.state.as_str().to_owned()),
@@ -1925,7 +2008,7 @@ impl App {
         &self,
         token: &str,
         head: Option<&str>,
-        since: Option<&WaitState>,
+        since: Option<&serde_json::Value>,
         timeout: Duration,
     ) -> AppResult<WaitState> {
         let deadline = tokio::time::Instant::now() + timeout.min(WAIT_MAX);
@@ -1947,7 +2030,8 @@ impl App {
         }
         loop {
             let state = self.agent_wait_state(token, head).await?;
-            if since.is_none_or(|since| *since != state) || tokio::time::Instant::now() >= deadline
+            if since.is_none_or(|since| state.differs_from(since))
+                || tokio::time::Instant::now() >= deadline
             {
                 return Ok(state);
             }
@@ -2180,6 +2264,49 @@ fn short(sha: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `yulius wait` older than the staging fields sends `since` without them: the state is
+    /// unchanged for it, so the long poll holds instead of answering at once again and again.
+    #[test]
+    fn a_client_is_compared_only_on_the_fields_it_sent() {
+        let state = WaitState {
+            head: "0123456789abcdef".into(),
+            checks: "passed".into(),
+            stage: "merged_integration".into(),
+            staging_request: Some("req1".into()),
+            staging_state: Some("testing".into()),
+            ..WaitState::default()
+        };
+        let mut old = serde_json::to_value(&state).unwrap_or_default();
+        for key in [
+            "staging_request",
+            "staging_state",
+            "staging_outcome",
+            "staging_cd_run",
+        ] {
+            old.as_object_mut().map(|o| o.remove(key));
+        }
+        assert!(
+            !state.differs_from(&old),
+            "old client: nothing it knows moved"
+        );
+        let full = serde_json::to_value(&state).unwrap_or_default();
+        assert!(!state.differs_from(&full));
+        let moved = WaitState {
+            staging_state: Some("verified".into()),
+            ..state.clone()
+        };
+        assert!(moved.differs_from(&full), "a field the client knows moved");
+        let checks = WaitState {
+            checks: "failed".into(),
+            ..state.clone()
+        };
+        assert!(checks.differs_from(&old));
+        assert!(
+            state.differs_from(&serde_json::json!(null)),
+            "no object: answer"
+        );
+    }
 
     #[test]
     fn active_wait_guard_balances_and_never_underflows() {
