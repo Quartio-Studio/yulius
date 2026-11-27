@@ -79,6 +79,15 @@ const CONTAINED_RED_NOTE: &str =
 
 /// How a staging deploy's run note starts: the queue knows its own runs by it.
 const DEPLOY_NOTE: &str = "merge-first staging: request";
+/// Whether a CD run's `note` says it deploys the staging request `id` (a retry clears the
+/// request's run before it records the next one).
+pub(crate) fn deploys_request(note: Option<&str>, id: &str) -> bool {
+    note.and_then(|note| note.strip_prefix(DEPLOY_NOTE))
+        .is_some_and(|rest| {
+            rest.strip_prefix(' ')
+                .is_some_and(|rest| rest.starts_with(&format!("{id} ")))
+        })
+}
 /// How a restore's run note starts, before the part's label.
 const RESTORE_NOTE: &str = "merge-first staging: restoring the last verified release of";
 

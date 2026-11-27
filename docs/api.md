@@ -2302,7 +2302,7 @@ run is unknown or finished.
 body `{"head": "<sha>"|null, "since": WaitState|null, "timeout_secs": n|null}`; answers a
 `WaitState` (`{"head", "checks": "none|queued|running|passed|failed|error|cancelled",
 "checks_detail", "stage", "merge_armed", "merge_outcome", "merge_outcome_head",
-"push_problem", "staging_request", "staging_state", "staging_outcome", …}`) once it differs from
+"push_problem", "staging_request", "staging_state", "staging_outcome", "staging_cd_run", …}`) once it differs from
 `since`, or when the timeout (default 50 s, at most 55 s) passed. The `staging_*` fields are the
 task's latest staging request for its current merged revision: while it is pending the wait has
 no time limit and ends with its outcome, which replaces the merge's old checks and notice.

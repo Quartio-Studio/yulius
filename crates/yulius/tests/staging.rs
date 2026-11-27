@@ -3386,6 +3386,22 @@ async fn yulius_wait_follows_a_merged_tasks_staging_request() -> TestResult {
     assert!(!line.contains("has no staging request"), "{line}");
     // A wait that starts afterwards ends on the same outcome, at once.
     assert_eq!(settled(&verified, None).as_deref(), Some(line.as_str()));
+    // A retry clears the request's run before its new run is recorded: the task's latest run,
+    // the earlier attempt, is still the request's deploy, so its end does not end the wait.
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE staging_requests SET cd_run_id = NULL, state = 'deploying' WHERE id = '{id}'"
+        ))
+        .await?;
+    let retrying = state(r1.clone()).await?;
+    assert_eq!(retrying.cd_run.as_deref(), Some(deploy.as_str()));
+    assert_eq!(retrying.staging_cd_run.as_deref(), Some(deploy.as_str()));
+    assert_eq!(settled(&retrying, None), None, "{retrying:?}");
+    f.h.store
+        .execute_for_tests(&format!(
+            "UPDATE staging_requests SET cd_run_id = '{deploy}', state = 'verified' WHERE id = '{id}'"
+        ))
+        .await?;
     // While the task's next pull request is open, its merged revision's request is not followed.
     f.h.store
         .execute_for_tests(

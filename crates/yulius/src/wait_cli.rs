@@ -567,7 +567,7 @@ mod tests {
     /// environment, a rollback) ends: it is reported as always, whatever the request's state.
     #[test]
     fn another_cd_run_of_a_staging_task_is_still_reported() {
-        for (state, outcome) in [
+        for (request, outcome) in [
             (
                 "verified",
                 Some("staging request req1 is verified, CD run cd1"),
@@ -580,10 +580,10 @@ mod tests {
                 cd_state: Some("running".into()),
                 cd_detail: Some("dev".into()),
                 staging_request: Some("req1".into()),
-                staging_state: Some(state.into()),
+                staging_state: Some(request.into()),
                 staging_outcome: outcome.map(str::to_owned),
                 staging_cd_run: Some("cd1".into()),
-                ..state_of("none")
+                ..state("none")
             };
             let ended = WaitState {
                 cd_state: Some("failed".into()),
@@ -592,7 +592,7 @@ mod tests {
             let line = settled(&ended, Some(&running)).unwrap_or_default();
             assert!(
                 line.contains("The CD run cd2 (dev) ended failed"),
-                "{state}: {line}"
+                "{request}: {line}"
             );
             let told_late = WaitState {
                 cd_unreported: true,
@@ -601,7 +601,7 @@ mod tests {
             let line = settled(&told_late, None).unwrap_or_default();
             assert!(
                 line.contains("The CD run cd2 (dev) ended failed"),
-                "{state}: {line}"
+                "{request}: {line}"
             );
         }
     }
@@ -613,7 +613,7 @@ mod tests {
             stage: "merged_integration".into(),
             staging_request: Some("req1".into()),
             staging_state: Some("testing".into()),
-            ..state_of("none")
+            ..state("none")
         };
         let failed = WaitState {
             staging_state: Some("gate_failed".into()),
@@ -672,10 +672,6 @@ mod tests {
             "{}",
             describe(&checked)
         );
-    }
-
-    fn state_of(checks: &str) -> WaitState {
-        state(checks)
     }
 
     /// Without a staging request the merged head's wait ends as before (#1831 AC-3).

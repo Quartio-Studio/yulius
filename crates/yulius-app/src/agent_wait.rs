@@ -1952,9 +1952,15 @@ impl App {
             staging_state: staging
                 .as_ref()
                 .map(|request| request.state.as_str().to_owned()),
-            staging_cd_run: staging
-                .as_ref()
-                .and_then(|request| request.cd_run_id.clone()),
+            staging_cd_run: staging.as_ref().and_then(|request| {
+                request.cd_run_id.clone().or_else(|| {
+                    cd.as_ref()
+                        .filter(|run| {
+                            crate::ci::staging::deploys_request(run.note.as_deref(), &request.id)
+                        })
+                        .map(|run| run.id.clone())
+                })
+            }),
             staging_outcome: match staging.filter(|request| !request.state.is_pending()) {
                 Some(request) => Some(
                     self.redact_for_sandbox(

@@ -45,10 +45,11 @@ reviewed and merged into `dev` by `delivery_merge`.
   an older revision, or a task whose next pull request is open, has none. Owner: the server's
   `agent_wait_state`, read on every long poll.
 - **WAIT-002** While that request is pending (testing, inherited, ready, deploying) the merged
-  head's ended checks, its replayed merge notice and its staging deploy's CD run (the request's
-  `cd_run_id`, `staging_cd_run`) do not end the wait; any other CD run of the task (another
-  environment, a rollback) is reported when it ends, as before, and `limit_line` treats it as under way (no time limit; the next span still bounds an
-  outage of Yulius). The wait ends when the request leaves pending, with `staging_outcome_text`
+  head's ended checks, its replayed merge notice and its staging deploy's CD run
+  (`staging_cd_run`: the request's `cd_run_id`, or during a retry the task's latest run whose note
+  names the request) do not end the wait; any other CD run of the task (another environment, a
+  rollback) is reported when it ends, as before. `limit_line` treats the pending request as
+  under way (no time limit; the next span still bounds an outage of Yulius). The wait ends when the request leaves pending, with `staging_outcome_text`
   (id, revision, state, runs, next step).
 - **WAIT-003** A wait that starts at the merged head (its replayed merge notice, its ended checks
   or its staging deploy's unreported end) when the request already has its outcome ends with that
@@ -158,3 +159,7 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   misreported) fixed with `staging_cd_run`; F2 (older client answered at once) fixed with
   `differs_from`; F3 to F6 and the nits (tests per branch, receipt and CD id assertions,
   ADR-0466 refined, WAIT-003 scoped to the merged head, redaction) answered.
+- Review round 2 approved 6cb380e57. Its minor (a retry clears the request's run before the next
+  is recorded, so the earlier attempt's end could end a wait started then) is fixed test-first:
+  `staging_cd_run` falls back to the task's latest run whose note names the request
+  (`ci::staging::deploys_request`); the integration test's retry step failed before the change.
