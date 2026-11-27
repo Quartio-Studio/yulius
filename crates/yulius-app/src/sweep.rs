@@ -107,15 +107,21 @@ fn is_cargo_lock(name: &str) -> bool {
 /// plain file (a link, or a FIFO an agent made: opened without blocking and refused). A profile
 /// without lock files has none to take.
 fn lock_profiles(root: &Path, profiles: &[PathBuf]) -> Option<HeldLocks> {
+    let mut held = HeldLocks::default();
+    // Refused part way: the locks taken already are released as `held` drops (#1836 review).
+    lock_profiles_into(root, profiles, &mut held).then_some(held)
+}
+
+/// [`lock_profiles`] into `held`; `false` when one is held or is not a plain file.
+fn lock_profiles_into(root: &Path, profiles: &[PathBuf], held: &mut HeldLocks) -> bool {
     use nix::fcntl::OFlag;
-    let mut held = Vec::new();
     for profile in profiles {
         for (name, lock) in children(profile) {
             if !is_cargo_lock(&name) {
                 continue;
             }
             if !no_link_between(root, &lock) {
-                return None;
+                return false;
             }
             let flags = OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
             let opened = std::fs::OpenOptions::new()
@@ -126,35 +132,39 @@ fn lock_profiles(root: &Path, profiles: &[PathBuf]) -> Option<HeldLocks> {
                 Ok(file) => {
                     let plain = file.metadata().is_ok_and(|meta| meta.file_type().is_file());
                     if !plain || file.try_lock().is_err() {
-                        return None;
+                        return false;
                     }
-                    held.push(file);
+                    held.0.push(Lease(file));
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return None,
+                Err(_) => return false,
             }
         }
     }
-    Some(HeldLocks(held))
+    true
 }
 
-/// Cargo's locks a sweep holds. They are released on drop with `LOCK_UN`, which frees a lock
-/// for every descriptor of its open file: a process forked meanwhile keeps a duplicate until it
-/// execs, and closing ours alone would leave the lock held until then (#1826).
-struct HeldLocks(Vec<File>);
+/// A file this process locked with `flock`, released with `LOCK_UN` when dropped: `flock`
+/// belongs to the open file, not to the descriptor, and a process forked meanwhile keeps a
+/// duplicate until it execs, so closing ours alone would leave the lock held until then
+/// (#1826). Used for Cargo's locks a sweep takes and the compile cache's lease.
+#[derive(Debug)]
+pub(crate) struct Lease(pub(crate) File);
 
-impl Drop for HeldLocks {
+impl Drop for Lease {
     fn drop(&mut self) {
-        for file in &self.0 {
-            let _ = file.unlock();
-        }
+        let _ = self.0.unlock();
     }
 }
 
+/// Cargo's locks a sweep holds.
+#[derive(Default)]
+struct HeldLocks(Vec<Lease>);
+
 impl HeldLocks {
     #[cfg(all(test, target_os = "linux"))]
-    fn files(&self) -> &[File] {
-        &self.0
+    fn files(&self) -> Vec<&File> {
+        self.0.iter().map(|lease| &lease.0).collect()
     }
 }
 
@@ -628,6 +638,37 @@ mod tests {
             "the sweep's lock outlived it in a duplicate"
         );
         drop(forked);
+        Ok(())
+    }
+
+    /// The same when the sweep is refused part way (#1836 review): the locks it took before a
+    /// held one are released, not only closed, so a duplicate does not keep them.
+    #[test]
+    fn a_sweep_refused_part_way_releases_the_locks_it_took() -> TestResult {
+        let f = fixture()?;
+        let release = f.target.join("release");
+        file(&release.join(".cargo-lock"), 0, 0)?;
+        let cargo = File::open(release.join(".cargo-lock"))?;
+        cargo.lock()?;
+        let mut held = HeldLocks::default();
+        let profiles = [f.profile.clone(), release];
+        assert!(
+            !lock_profiles_into(&f.root, &profiles, &mut held),
+            "release is held"
+        );
+        let forked = held
+            .files()
+            .first()
+            .ok_or("debug's lock taken first")?
+            .try_clone()?;
+        drop(held);
+        let debug = File::open(f.profile.join(".cargo-lock"))?;
+        assert!(
+            debug.try_lock().is_ok(),
+            "debug's lock outlived the refusal in a duplicate"
+        );
+        drop(forked);
+        cargo.unlock()?;
         Ok(())
     }
 

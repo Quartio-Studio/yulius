@@ -389,6 +389,8 @@ mod tests {
             .args(["10", "12", "1048576", "64"])
             .arg("head -c 1000000 /dev/zero > big; echo \"head exited $?\"")
             .current_dir(dir.path())
+            // The assertion reads the C locale's message, as production runs set `LANG`.
+            .env("LC_ALL", "C")
             .status()
             .unwrap_or_else(|e| panic!("python3: {e}"));
         assert!(status.success(), "{status:?}");

@@ -69,15 +69,20 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **PROC-1795** A watch run's write past its file bound fails with EFBIG ("File too large") on
   every host: the wrapper ignores SIGXFSZ for the run's processes, so the disposition the server
   inherited (Python ignores it; a plain shell does not) no longer decides how the bound shows.
+  On a production host, where the server starts sandbox shells with SIGXFSZ at its default, this
+  changes what a watch script meets: a write past the bound is refused instead of killing the
+  writer (exit 1, not 153), a shell loop writing to a full file now runs to its CPU bound, and a
+  script's own `trap … XFSZ` has no effect. The run still ends on its output bound and says so.
 - **PROC-1775** The MCP probe test counts a zombie grandchild as gone (`/proc/<pid>/stat` state
   `Z` on Linux), so it passes whichever process reaps it, and still fails for one still running.
-- **PROC-1826** The sweep releases Cargo's locks with `LOCK_UN` before closing them: `flock`
-  belongs to the open file, and a process forked meanwhile keeps a duplicate until it execs, so a
-  plain close left the lock held and the next sweep (or Cargo) read busy. Tests release their own
-  locks the same way.
-- **PROC-1760** The identity tests write their fake executable from a child process, so no
-  descriptor of the test process can be inherited by a child another thread forks, which made
-  running the script fail with ETXTBSY ("Text file busy").
+- **PROC-1826** The sweep releases Cargo's locks with `LOCK_UN` before closing them (`Lease`),
+  also when it is refused part way: `flock` belongs to the open file, and a process forked
+  meanwhile keeps a duplicate until it execs, so a plain close left the lock held and the next
+  sweep (or Cargo) read busy. Tests release their own locks the same way, and the compile
+  cache's prune releases its lease the same way (`disk.rs`, the same cause).
+- **PROC-1760** The identity tests write every executable they run (`write_exe`) from a child
+  process, so no descriptor of the test process can be inherited by a child another thread
+  forks, which made running the script fail with ETXTBSY ("Text file busy").
 
 ## Plan
 
@@ -95,7 +100,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [ ] #1817: a test holds prove-on-dev's refusal when dev cannot be deployed
 - [ ] #1811: the security scan card reads vidoc.toml as the scanner does
 - [ ] #1800: the briefing's mandatory parts fit the budget in every docs layout
-- [ ] #1795: the watch file-size bound holds whether the writer gets EFBIG or SIGXFSZ
+- [ ] #1795: a watch's write past its file bound is refused (EFBIG) on every host
 - [ ] #1775: the MCP probe test counts a zombie grandchild as gone
 - [ ] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
 - [ ] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
@@ -217,4 +222,13 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   stands for a forked child's duplicate) failed "the sweep's lock outlived it in a duplicate"
   before `HeldLocks` unlocked on drop.
 - #1760: holding a write descriptor of the fake executable made the shim test fail with
-  `exec: …: Text file busy` (126); the fake executable is now written by a child process.
+  `exec: …: Text file busy` (126); the test executables are now written by a child process. The
+  issue's 50 runs under load: the deterministic probes above stand for them; the review of
+  #1836 ran the whole `yulius-app` lib binary 300 times (200 unpinned, 100 on 4 CPUs with 64
+  threads) with no failure in the sweep, identity, probe or watch tests.
+- Review round 1 of #1836 (Fable 5.2, request changes at 638a97f): the macOS dead-code blocker
+  was fixed at 0755a5d; its major (locks taken before a refusal were only closed) is fixed with
+  `Lease` and `lock_profiles_into`, tested by
+  `sweep::tests::a_sweep_refused_part_way_releases_the_locks_it_took` (it and the duplicate test
+  fail when `Lease` does not unlock); the wrapper test runs with `LC_ALL=C`; the other identity
+  test executables go through `write_exe`; `disk.rs`'s lease uses `Lease` too.

@@ -195,7 +195,14 @@ fn prune_compile_cache(
     if lease.try_lock().is_err() {
         return Ok(None);
     }
-    let store = match openat(&lease, STORE, flags.union(OFlag::O_CLOEXEC), Mode::empty()) {
+    // Released, not only closed, on every return (#1836 review: the same cause as #1826).
+    let lease = crate::sweep::Lease(lease);
+    let store = match openat(
+        &lease.0,
+        STORE,
+        flags.union(OFlag::O_CLOEXEC),
+        Mode::empty(),
+    ) {
         Err(Errno::ENOENT | Errno::ENOTDIR | Errno::ELOOP) => return Ok(None),
         result => result?,
     };
