@@ -66,6 +66,23 @@ reviewed and merged into `dev` by `delivery_merge`.
   `skipped_disabled` with the reason "its creator, <login>, is disabled" (the automation's page
   shows a run's reason). The check reads the creator at each slot, so enabling the person again
   lets the automation run at its next time; nothing about the automation itself changes.
+- **PROC-1795** A watch run's write past its file bound fails with EFBIG ("File too large") on
+  every host: the wrapper ignores SIGXFSZ for the run's processes, so the disposition the server
+  inherited (Python ignores it; a plain shell does not) no longer decides how the bound shows.
+  On a production host, where the server starts sandbox shells with SIGXFSZ at its default, this
+  changes what a watch script meets: a write past the bound is refused instead of killing the
+  writer (exit 1, not 153), a shell loop writing to a full file now runs to its CPU bound, and a
+  script's own `trap … XFSZ` has no effect. The run still ends on its output bound and says so.
+- **PROC-1775** The MCP probe test counts a zombie grandchild as gone (`/proc/<pid>/stat` state
+  `Z` on Linux), so it passes whichever process reaps it, and still fails for one still running.
+- **PROC-1826** The sweep releases Cargo's locks with `LOCK_UN` before closing them (`Lease`),
+  also when it is refused part way: `flock` belongs to the open file, and a process forked
+  meanwhile keeps a duplicate until it execs, so a plain close left the lock held and the next
+  sweep (or Cargo) read busy. Tests release their own locks the same way, and the compile
+  cache's prune releases its lease the same way (`disk.rs`, the same cause).
+- **PROC-1760** The identity tests write every executable they run (`write_exe`) from a child
+  process, so no descriptor of the test process can be inherited by a child another thread
+  forks, which made running the script fail with ETXTBSY ("Text file busy").
 
 ## Plan
 
@@ -83,7 +100,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [ ] #1817: a test holds prove-on-dev's refusal when dev cannot be deployed
 - [ ] #1811: the security scan card reads vidoc.toml as the scanner does
 - [ ] #1800: the briefing's mandatory parts fit the budget in every docs layout
-- [ ] #1795: the watch file-size bound holds whether the writer gets EFBIG or SIGXFSZ
+- [ ] #1795: a watch's write past its file bound is refused (EFBIG) on every host
 - [ ] #1775: the MCP probe test counts a zombie grandchild as gone
 - [ ] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
 - [ ] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
@@ -190,3 +207,28 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   redundant: every path ends there, mutation M1 survived), and
   `automations::a_disabled_creator_gets_no_task_by_run_now` covers Run now with a stale context.
   Not covered by a test: the "no longer a user" arm (no production path deletes a user).
+
+### #1795, #1775, #1826, #1760 (inherited process state in tests)
+
+- #1795: run directly from a shell (SIGXFSZ at its default; `scripts/cargo` is Python, which
+  ignores it), `watches::run_bounds_are_enforced` failed; with the wrapper's `trap '' XFSZ` it
+  passes. Unit test `ci::watch_run::tests::a_write_past_the_file_bound_fails_with_efbig_whatever_the_disposition`
+  (python3 starts the wrapper with SIGXFSZ default) failed with `head exited 153`, "File size
+  limit exceeded", before the change.
+- #1775: under a Python subreaper that never reaps orphans (`PR_SET_CHILD_SUBREAPER`, as the
+  scratch-target wrapper), `silent_stdio_server_times_out_and_is_reaped` failed "grandchild …
+  survived"; with the zombie check it passes there and normally.
+- #1826: `sweep::tests::a_duplicate_of_a_sweeps_lock_does_not_outlive_the_sweep` (a `try_clone`
+  stands for a forked child's duplicate) failed "the sweep's lock outlived it in a duplicate"
+  before `HeldLocks` unlocked on drop.
+- #1760: holding a write descriptor of the fake executable made the shim test fail with
+  `exec: …: Text file busy` (126); the test executables are now written by a child process. The
+  issue's 50 runs under load: the deterministic probes above stand for them; the review of
+  #1836 ran the whole `yulius-app` lib binary 300 times (200 unpinned, 100 on 4 CPUs with 64
+  threads) with no failure in the sweep, identity, probe or watch tests.
+- Review round 1 of #1836 (Fable 5.2, request changes at 638a97f): the macOS dead-code blocker
+  was fixed at 0755a5d; its major (locks taken before a refusal were only closed) is fixed with
+  `Lease` and `lock_profiles_into`, tested by
+  `sweep::tests::a_sweep_refused_part_way_releases_the_locks_it_took` (it and the duplicate test
+  fail when `Lease` does not unlock); the wrapper test runs with `LC_ALL=C`; the other identity
+  test executables go through `write_exe`; `disk.rs`'s lease uses `Lease` too.

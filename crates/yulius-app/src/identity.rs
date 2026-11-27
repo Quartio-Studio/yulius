@@ -828,16 +828,11 @@ mod tests {
         let real_dir = dir.join("real");
         std::fs::create_dir_all(&shim_dir)?;
         std::fs::create_dir_all(&real_dir)?;
-        write_file(
-            &shim_dir.join("gh"),
-            gh_shim(Path::new(exe)).as_bytes(),
-            0o755,
-        )?;
+        write_exe(&shim_dir.join("gh"), gh_shim(Path::new(exe)).as_bytes())?;
         if gh_present {
-            write_file(
+            write_exe(
                 &real_dir.join("gh"),
                 b"#!/bin/sh\necho \"token=${GH_TOKEN:-${GITHUB_TOKEN:-none}} args=$*\"\n",
-                0o755,
             )?;
         }
         let path = format!(
@@ -865,11 +860,27 @@ mod tests {
     }
 
     /// A fake `yulius` that prints a token for `gh-token`.
+    /// An executable script for a test to run, written by a child process: a process another
+    /// test thread forks while this one holds a file open for writing keeps that descriptor
+    /// until it execs, and running the script then fails with "Text file busy" (ETXTBSY, #1760).
+    fn write_exe(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        child.stdin.take().ok_or("stdin")?.write_all(bytes)?;
+        let written = child.wait()?;
+        assert!(written.success(), "{written:?}");
+        Ok(())
+    }
+
     fn fake_exe(body: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let dir = unique_dir("yulius-fake-exe");
         std::fs::create_dir_all(&dir)?;
         let exe = dir.join("yulius");
-        write_file(&exe, format!("#!/bin/sh\n{body}\n").as_bytes(), 0o755)?;
+        write_exe(&exe, format!("#!/bin/sh\n{body}\n").as_bytes())?;
         Ok(exe)
     }
 
@@ -881,7 +892,7 @@ mod tests {
         let dir = unique_dir("yulius-agent-shim");
         std::fs::create_dir_all(&dir)?;
         let shim = dir.join("yulius");
-        write_file(&shim, agent_yulius_shim(&exe).as_bytes(), 0o755)?;
+        write_exe(&shim, agent_yulius_shim(&exe).as_bytes())?;
         let run = |args: &[&str]| -> Result<(i32, String), Box<dyn std::error::Error>> {
             let out = std::process::Command::new("/bin/sh")
                 .arg(&shim)
@@ -981,18 +992,17 @@ mod tests {
             std::fs::create_dir_all(d)?;
         }
         let exe = exe_dir.join("yulius");
-        write_file(&exe, b"#!/bin/sh\necho ghu_Synthetic\n", 0o755)?;
+        write_exe(&exe, b"#!/bin/sh\necho ghu_Synthetic\n")?;
         let shim = gh_shim(&exe);
         // Two shim directories (contained and uncontained flavours) and a symlinked spelling of
         // one of them: the shim must skip every copy of itself, never loop.
-        write_file(&shim_a.join("gh"), shim.as_bytes(), 0o755)?;
-        write_file(&shim_b.join("gh"), shim.as_bytes(), 0o755)?;
+        write_exe(&shim_a.join("gh"), shim.as_bytes())?;
+        write_exe(&shim_b.join("gh"), shim.as_bytes())?;
         let link = dir.join("link");
         std::os::unix::fs::symlink(&shim_b, &link)?;
-        write_file(
+        write_exe(
             &real.join("gh"),
             b"#!/bin/sh\necho \"token=${GH_TOKEN:-none}\"\n",
-            0o755,
         )?;
         let path = format!(
             "{}::{}:{}:{}:{}",

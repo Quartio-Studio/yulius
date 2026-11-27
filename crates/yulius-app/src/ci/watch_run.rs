@@ -30,8 +30,11 @@ use crate::ports::store_ext::WatchRecord;
 /// `$1` stdout, `$2` stderr, `$3` CPU seconds (soft: SIGXCPU), `$4` CPU seconds (hard: SIGKILL),
 /// `$5` data KiB, `$6` file KiB, `$7` the script, after `--` so a script starting with `-` is
 /// never read as bash's options (review round 1). No core files: SIGXCPU's default action
-/// dumps one (review round 2).
-const WRAPPER: &str = r#"ulimit -St "$3" && ulimit -Ht "$4" && ulimit -d "$5" && ulimit -f "$6" && ulimit -c 0 || exit 125
+/// dumps one (review round 2). SIGXFSZ is ignored, for the run's processes too, so a write past
+/// the file bound fails with EFBIG ("File too large") on every host instead of killing its
+/// writer where the server started with the default disposition (#1795).
+const WRAPPER: &str = r#"trap '' XFSZ
+ulimit -St "$3" && ulimit -Ht "$4" && ulimit -d "$5" && ulimit -f "$6" && ulimit -c 0 || exit 125
 exec >>"$1" 2>>"$2" </dev/null
 exec /bin/bash -c -- "$7""#;
 /// CPU seconds a run gets past its soft limit (SIGXCPU) before the hard one kills it.
@@ -123,9 +126,8 @@ impl App {
                 let limit = bounds.output_kib.saturating_mul(1024);
                 let mut bytes = Vec::new();
                 let _ = stdout.take(limit.saturating_add(1)).read_to_end(&mut bytes);
-                // A file at its bound: a write past it was refused (EFBIG) or killed its writer
-                // (SIGXFSZ), whichever the run's signal dispositions made it; either way the
-                // output is cut, so the run failed on its output bound (WCH-003).
+                // A file at its bound: a write past it was refused (EFBIG, the wrapper ignores
+                // SIGXFSZ); the output is cut, so the run failed on its output bound (WCH-003).
                 let full = |len: u64| limit > 0 && len >= limit;
                 let err_len = stderr.metadata().map_or(0, |m| m.len());
                 let at_bound =
@@ -362,5 +364,41 @@ impl App {
         }
         let _ = std::fs::remove_dir_all(&run_dir);
         let _ = std::fs::remove_dir_all(self.watch_base_dir(sandbox).join("runs").join(run_id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A write past the file bound fails with EFBIG and says so, whatever the signal
+    /// disposition the server started with (#1795): with SIGXFSZ at its default the writer was
+    /// killed instead ("File size limit exceeded"), and the reason differed by host. Python, a
+    /// prerequisite, starts the wrapper with SIGXFSZ restored to its default.
+    #[test]
+    fn a_write_past_the_file_bound_fails_with_efbig_whatever_the_disposition() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
+        let (out, err) = (dir.path().join("out"), dir.path().join("err"));
+        let launcher = "import os, signal, sys\n\
+                        signal.signal(signal.SIGXFSZ, signal.SIG_DFL)\n\
+                        os.execv('/bin/bash', ['/bin/bash', '-c'] + sys.argv[1:])";
+        let status = std::process::Command::new("python3")
+            .args(["-c", launcher, WRAPPER, "yulius-watch"])
+            .arg(&out)
+            .arg(&err)
+            .args(["10", "12", "1048576", "64"])
+            .arg("head -c 1000000 /dev/zero > big; echo \"head exited $?\"")
+            .current_dir(dir.path())
+            // The assertion reads the C locale's message, as production runs set `LANG`.
+            .env("LC_ALL", "C")
+            .status()
+            .unwrap_or_else(|e| panic!("python3: {e}"));
+        assert!(status.success(), "{status:?}");
+        let stdout = std::fs::read_to_string(&out).unwrap_or_default();
+        let stderr = std::fs::read_to_string(&err).unwrap_or_default();
+        assert_eq!(stdout.trim(), "head exited 1", "{stdout}\n{stderr}");
+        assert!(stderr.contains("File too large"), "{stderr}");
+        let big = std::fs::metadata(dir.path().join("big")).map_or(0, |m| m.len());
+        assert_eq!(big, 64 * 1024);
     }
 }

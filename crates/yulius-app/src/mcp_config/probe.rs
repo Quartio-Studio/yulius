@@ -641,10 +641,23 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_secs(5));
         let pid: i32 = std::fs::read_to_string(&marker)?.trim().parse()?;
-        // The background grandchild was in the same process group and received SIGKILL.
+        // The background grandchild was in the same process group and received SIGKILL. A
+        // zombie is gone too: whoever reaps it (the sandbox's init, a build wrapper's subreaper)
+        // may not have yet, and `kill(pid, 0)` still answers for it (#1775).
+        let running = |pid: i32| {
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+                && std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(
+                    !cfg!(target_os = "linux"),
+                    |stat| {
+                        stat.rsplit_once(')')
+                            .and_then(|(_, rest)| rest.split_whitespace().next())
+                            != Some("Z")
+                    },
+                )
+        };
         let mut alive = true;
         for _ in 0..50 {
-            alive = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+            alive = running(pid);
             if !alive {
                 break;
             }
