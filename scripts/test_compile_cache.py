@@ -33,23 +33,27 @@ def session_states(leader):
 
 
 def wait_for_report(terminal, marker, shell, budget=REPORT_IDLE_BUDGET, ceiling=REPORT_CEILING):
-    """Reads `terminal` until `marker`; `(found, output)`. Only time in which nothing of the
-    shell's session can run counts against `budget` (#1807): a loaded host that has not scheduled
-    the shell or its job yet spends none of it, while a stopped, dead or sleeping shell with
-    nothing runnable does. `ceiling` bounds the wait in wall-clock time whatever runs."""
+    """Reads `terminal` until `marker`; `(how, output)`, `how` being "found", "idle" (the
+    budget), "ceiling" or "closed". Only time in which nothing of the shell's session can run
+    counts against `budget` (#1807): a loaded host that has not scheduled the shell or its job yet
+    spends none of it, while a stopped, dead or sleeping shell with nothing runnable does.
+    `ceiling` bounds the wait in wall-clock time whatever runs, output or not."""
     import select
     import time
     output = b""
     idle_for = 0.0
     started = mark = time.monotonic()
     while marker not in output:
+        now = time.monotonic()
+        if now - started >= ceiling:
+            return "ceiling", output
         if select.select([terminal], [], [], .05)[0]:
             try:
                 chunk = os.read(terminal, 4096)
             except OSError:
                 chunk = b""
             if not chunk:
-                return False, output
+                return "closed", output
             output += chunk
             mark = time.monotonic()
             continue
@@ -58,9 +62,9 @@ def wait_for_report(terminal, marker, shell, budget=REPORT_IDLE_BUDGET, ceiling=
         if not any(state in ("R", "D") for _, state in states):
             idle_for += now - mark
         mark = now
-        if idle_for >= budget or now - started >= ceiling:
-            return False, output
-    return True, output
+        if idle_for >= budget:
+            return "idle", output
+    return "found", output
 
 
 @unittest.skipUnless(sys.platform == "linux", "the instance cache runs on Linux")
@@ -777,19 +781,23 @@ signal.pause()
 
     def test_a_shell_that_cannot_report_fails_the_wait_within_its_budget(self):
         """#1807 review: a stopped shell, with nothing of its session runnable, spends the idle
-        budget: the wait fails within it instead of hanging."""
+        budget: the wait ends on that budget, not on its ceiling, and never hangs."""
         import pty
         import signal
         import time
         pid, terminal = pty.fork()
         if pid == 0:
-            os.execv("/bin/sh", ["/bin/sh", "-c", "sleep 60"])
+            os.execv("/bin/sh", ["/bin/sh", "-c", "echo ready; exec sleep 60"])
         try:
+            how, _ = wait_for_report(terminal, b"ready", pid)
+            self.assertEqual(how, "found")
             os.kill(pid, signal.SIGSTOP)
-            started = time.monotonic()
-            found, _ = wait_for_report(terminal, b"never", pid, budget=1.0)
-            self.assertFalse(found)
-            self.assertLess(time.monotonic() - started, 4.0)
+            deadline = time.monotonic() + REPORT_CEILING
+            while (pid, "T") not in session_states(pid):
+                self.assertLess(time.monotonic(), deadline, "the shell never stopped")
+                time.sleep(.01)
+            how, _ = wait_for_report(terminal, b"never", pid, budget=1.0)
+            self.assertEqual(how, "idle")
         finally:
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
@@ -800,7 +808,6 @@ signal.pause()
 
     def check_shell_job(self, read_immediately, start_background=True):
         import pty
-        import select
         import signal
         import time
         gate = self.sandbox / "input.fifo"
@@ -823,8 +830,8 @@ print('received '+input(), flush=True)
             os.execve(shell, [shell, "--noprofile", "--norc", "-i"], env)
 
         def read_until(marker):
-            ok, output = wait_for_report(terminal, marker, pid)
-            self.assertTrue(ok, f"shell did not report {marker!r}: {output!r}")
+            how, output = wait_for_report(terminal, marker, pid)
+            self.assertEqual(how, "found", f"shell did not report {marker!r}: {output!r}")
             return output
 
         job = None

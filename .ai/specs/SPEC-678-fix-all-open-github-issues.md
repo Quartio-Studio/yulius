@@ -254,6 +254,11 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   accrued for a stopped, dead or spinning shell, so the wait could hang) is fixed by counting only
   runnable states, reading the whole session, and the 60 s ceiling; `/proc` is read as bytes;
   the clock mark moves after each read; the Telegram wait reads the count before its look.
+- Review round 2 (request changes at 3bf1ad6): the regression test raced the fork and asserted
+  wall-clock time; now the child says it is ready, the test waits until it is stopped (`T`), and
+  asserts the wait ended on its idle budget (`wait_for_report` returns which bound ended it).
+  With a stopped shell counted as runnable it fails (`'ceiling' != 'idle'`). The ceiling is
+  checked on every pass, output or not.
 - #1820: probe delaying the Needs-you notice 300 ms and the reply's answer 1 s reproduced the
   CI failure exactly (`left: "Needs your decision · app …"`, line 3000); with the test waiting for
   the second run's notice first it passes with the same probe.
