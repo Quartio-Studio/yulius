@@ -111,7 +111,8 @@ fn refused_url() -> io::Result<(String, std::os::fd::OwnedFd)> {
     let socket = socket(
         AddressFamily::Inet,
         SockType::Stream,
-        SockFlag::SOCK_CLOEXEC,
+        // No close-on-exec flag on macOS; a child holding the reserved port changes nothing.
+        SockFlag::empty(),
         None,
     )?;
     bind(
