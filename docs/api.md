@@ -2301,8 +2301,10 @@ run is unknown or finished.
 body `{"head": "<sha>"|null, "since": WaitState|null, "timeout_secs": n|null}`; answers a
 `WaitState` (`{"head", "checks": "none|queued|running|passed|failed|error|cancelled",
 "checks_detail", "stage", "merge_armed", "merge_outcome", "merge_outcome_head",
-"push_problem", …}`) once it differs from `since`, or when the timeout (default 50 s, at most
-55 s) passed.
+"push_problem", "staging_request", "staging_state", "staging_outcome", …}`) once it differs from
+`since`, or when the timeout (default 50 s, at most 55 s) passed. The `staging_*` fields are the
+task's latest staging request for its current merged revision: while it is pending the wait has
+no time limit and ends with its outcome, which replaces the merge's old checks and notice.
 
 `POST /internal/git-credential` (the run's task token; the Git credential helper and `yulius
 gh-token`): `{"protocol", "host", "path?"}` → `{"token"}`, the App's agent token for the project's

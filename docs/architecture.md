@@ -416,7 +416,8 @@ keeps GitHub's availability apart from task state: during an outage, task displa
 delivery and pull observations, and display reads are shared per credential and revalidated with
 ETags.
 
-The agent does not poll: it waits with `yulius wait` in a background shell (a long poll), and the
+The agent does not poll: it waits with `yulius wait` in a background shell (a long poll; after a
+merge-first merge it also follows the task's staging request to its verdict), and the
 pull request watch types what happens to an open pull request into the session every 20 s, as one
 bracketed paste, never over a person's possible draft or a question on screen. Each event has a key,
 typed once (`<data>/pr-notices.json`).

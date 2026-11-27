@@ -40,6 +40,20 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **FIX-1547** `task_message::a_flag_of_a_held_message_does_not_stop_the_pull_request_watch`
   passes when the news's submit hook reaches Yulius after its turn's Stop (the race behind its
   "timed out waiting for the turn's end" failures).
+- **WAIT-001** (#1727, #1831) `WaitState` carries the task's latest staging request for its
+  current merged revision (`staging_request`, `staging_state`, `staging_outcome`); a request of
+  an older revision, or a task whose next pull request is open, has none. Owner: the server's
+  `agent_wait_state`, read on every long poll.
+- **WAIT-002** While that request is pending (testing, inherited, ready, deploying) the merged
+  head's ended checks, its replayed merge notice and its staging deploy's CD run do not end the
+  wait, and `limit_line` treats it as under way (no time limit; the next span still bounds an
+  outage of Yulius). The wait ends when the request leaves pending, with `staging_outcome_text`
+  (id, revision, state, runs, next step).
+- **WAIT-003** A wait that starts when the request already has its outcome ends with that outcome
+  instead of the merge notice that said there was no request; with no request the merge notice
+  and its hint stay as they are.
+- **WAIT-004** The `cd_deploy` receipt of a pending request says that `yulius wait` with
+  `run_in_background` ends with the outcome.
 
 ## Plan
 
@@ -85,6 +99,12 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **AC-3** (FIX-1547) With a probe at the racing step the test fails without the fix and passes
   with it, and its other assertions are unchanged.
 
+- **AC-4** (WAIT-001..003) A merged task with a real staging request in `testing`: the wait
+  state names it, `settled` returns nothing over the head's passed checks and `limit_line` none;
+  after the queue verifies it, `settled` returns the request's verified outcome (with CI and CD
+  run ids) and a wait started afterwards gets the same line; a later landing has no request.
+- **AC-5** (WAIT-002, WAIT-003) Without a staging request the merge notice still ends the wait.
+
 ## Test plan
 
 Each slice adds or changes the test its issue names, run in full with its test binary; flaky
@@ -112,3 +132,15 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   `activity=Some(Working)`, "timed out waiting for the turn's end" (36.5 s).
 - Unchanged test, 140 busy loops, `nextest --stress-count 40 --test-threads 40`: 40/40 passed.
 - Closed on GitHub with that evidence; the quarantine ends with the issue.
+
+### #1831, #1727 (yulius wait and the staging request)
+
+- New: `wait_cli::tests::a_pending_staging_request_keeps_the_wait_until_its_outcome`,
+  `a_staging_deploy_ends_the_wait_with_the_requests_verdict`,
+  `without_a_staging_request_the_merge_notice_stays`, and the integration test
+  `staging::yulius_wait_follows_a_merged_tasks_staging_request` (real Git, queue, deploy and
+  verify scripts).
+- Mutation: without `!staging_pending` on the checks-ended line, both pending tests fail.
+- `staging::a_staging_deploy_is_the_requesting_tasks_cd_run` (SPEC-631 SWK-004) still sees the
+  staging deploy as the task's CD run in the wait state.
+- `staging::` (91) and `wait_cli::` (13): 104 passed.

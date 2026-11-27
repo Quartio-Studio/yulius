@@ -4,6 +4,10 @@ What changed for the people and agents using Yulius in the last four weeks, newe
 each. A change nobody using Yulius would notice (a refactor, a test fix, this repository's own process)
 gets no line; the merged pull request is its record. Older entries: [archive](archive/changes-until-2026-11-26.md).
 
+## 2026-11-27
+
+- `yulius wait` follows a merged task's staging request: it waits while the request is tested and deployed and ends with its verdict, instead of ending at once on the merge's old checks or saying there is no staging request.
+
 ## 2026-11-26
 
 - The superadmin, who signs in with a password, can deploy production, release and merge a pull request: Yulius acts through the GitHub App, and the run and the audit say so. Every other rule still applies, GitHub's ruleset on the production branch included.
