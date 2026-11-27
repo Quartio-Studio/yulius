@@ -19,10 +19,10 @@ reviewed and merged into `dev` by `delivery_merge`.
 - Out of this repository's reach, by the owner's request: #1385 (quartio-v2's part of SPEC-497)
   is left as it is; #321 needs a measurement on the production VM's host, which a sandbox cannot
   reach (no `/sys/fs/cgroup`), so it gets a comment with what remains.
-- Waiting for an owner's decision (asked with `needs_you` on 2026-11-27): #638 (whether
-  `GH_TOKEN`/`GITHUB_TOKEN` become reserved, which reverses SPEC-004 GH-003) and #1239 (a
-  time-gated cleanup whose condition, no session from before 2026-11-13 alive on any instance,
-  cannot be proven from a sandbox).
+- Owner's decisions, asked with `needs_you` and answered on 2026-11-27: #638 keeps
+  `GH_TOKEN`/`GITHUB_TOKEN` allowed (SPEC-004 GH-003 stays), so it was closed with that
+  decision; #1239 removes the old fingerprint format now (the two weeks after 2026-11-13 have
+  passed, and a session from before it would only stop running commands until continued).
 - #1647's code fix merged in #1657; what remains is switching the App's webhook on, a person's
   action on the instance.
 - Each slice below cites its issue; its own requirements and evidence are added to this spec in
@@ -38,12 +38,12 @@ reviewed and merged into `dev` by `delivery_merge`.
   quarantined test leaves quarantine only once fixed (closing its issue ends the quarantine).
 - **FIX-003** No slice widens a security boundary beyond what its issue asks.
 - **FIX-1547** `task_message::a_flag_of_a_held_message_does_not_stop_the_pull_request_watch`
-  passes under load; its last wait ("the turn's end") waits on the condition the fixture really
-  reaches.
+  passes when the news's submit hook reaches Yulius after its turn's Stop (the race behind its
+  "timed out waiting for the turn's end" failures).
 
 ## Plan
 
-- [ ] #1547: the held-message pull-request-watch test waits on what its fixture reaches
+- [x] #1547: the held-message test's cause shown fixed on dev by #1732; its quarantine ended
 - [ ] #1831 #1727: yulius wait follows the task's staging request
 - [ ] #1824: a disabled person's automations create no task
 - [ ] #1808: the parking candidate's later stall is reported deterministically
@@ -73,7 +73,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [ ] #1544: egress warning-capture tests observe their own warning
 - [ ] #1532: a branch fast-forwarded to a head with skipped jobs gets its own run
 - [ ] #1520: the Superagent deep-link panel test is deterministic
-- [ ] #638 #1239: owner-decided issues settled as decided
+- [ ] #1239: the old fingerprint format is removed and a version 1 file is rewritten as version 2
 - [ ] Final report of every issue's outcome given
 
 ## Acceptance criteria
@@ -82,8 +82,8 @@ reviewed and merged into `dev` by `delivery_merge`.
   justified comment, or is named in the final report under "Not done" with its reason.
 - **AC-2** (FIX-002) Each flaky-test slice records the probe that reproduced the failure and the
   same probe passing after the fix.
-- **AC-3** (FIX-1547) With a probe at the racing step the test failed before the fix and passes
-  after it, and its other assertions are unchanged.
+- **AC-3** (FIX-1547) With a probe at the racing step the test fails without the fix and passes
+  with it, and its other assertions are unchanged.
 
 ## Test plan
 
@@ -98,3 +98,17 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   (ADR-0325). Each slice's details are added in its own pull request.
 - Issues needing a person's action or decision are asked with `needs_you` and the work goes on
   with the others, as the owner's request says.
+
+## Evidence
+
+### #1547 (closed, fixed on dev by #1732)
+
+- All three failures (PR #1536, #1543 on 2026-11-20; task #596 on 2026-11-22) were `Error:
+  "timed out waiting for the turn's end"`. #1732 (16556d990, 2026-11-23) changed `hook_event` to
+  read a hook's send time on Yulius's clock (`Clock::of_wall`).
+- Probe at `race::Point::HookArrived` (`<session>/UserPromptSubmit`), holding the news's submit
+  until the news turn's Stop is answered: on dev d6e17997d the hold fired and the test passed
+  (6.5 s). With `hooks.rs:251` reverted to `wall.0.min(now)` it failed as in CI,
+  `activity=Some(Working)`, "timed out waiting for the turn's end" (36.5 s).
+- Unchanged test, 140 busy loops, `nextest --stress-count 40 --test-threads 40`: 40/40 passed.
+- Closed on GitHub with that evidence; the quarantine ends with the issue.
