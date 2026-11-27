@@ -2282,3 +2282,24 @@ fn staging_next(request: &StagingRequestRecord) -> String {
         _ => String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only a deploy note naming exactly this request counts as its deploy (#1727): a request
+    /// whose id another one's starts with, a restore and no note do not.
+    #[test]
+    fn a_deploy_note_names_its_request_exactly() {
+        let note = format!("{DEPLOY_NOTE} req-1 (a task's delivery)");
+        assert!(deploys_request(Some(&note), "req-1"));
+        assert!(!deploys_request(Some(&note), "req-12"));
+        assert!(!deploys_request(Some(&note), "req"));
+        let longer = format!("{DEPLOY_NOTE} req-12 (a task's delivery)");
+        assert!(!deploys_request(Some(&longer), "req-1"));
+        let restore = format!("{RESTORE_NOTE} app after failed run cd-1");
+        assert!(!deploys_request(Some(&restore), "req-1"));
+        assert!(!deploys_request(Some("deploy by a person"), "req-1"));
+        assert!(!deploys_request(None, "req-1"));
+    }
+}

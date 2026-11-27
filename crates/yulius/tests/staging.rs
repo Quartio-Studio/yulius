@@ -3396,7 +3396,11 @@ async fn yulius_wait_follows_a_merged_tasks_staging_request() -> TestResult {
     let retrying = state(r1.clone()).await?;
     assert_eq!(retrying.cd_run.as_deref(), Some(deploy.as_str()));
     assert_eq!(retrying.staging_cd_run.as_deref(), Some(deploy.as_str()));
-    assert_eq!(settled(&retrying, None), None, "{retrying:?}");
+    let unreported = yulius_app::agent_wait::WaitState {
+        cd_unreported: true,
+        ..retrying.clone()
+    };
+    assert_eq!(settled(&unreported, None), None, "{unreported:?}");
     f.h.store
         .execute_for_tests(&format!(
             "UPDATE staging_requests SET cd_run_id = '{deploy}', state = 'verified' WHERE id = '{id}'"
