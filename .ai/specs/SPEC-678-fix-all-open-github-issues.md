@@ -60,6 +60,12 @@ reviewed and merged into `dev` by `delivery_merge`.
   older than the staging fields (one that survives an update) is not answered at once in a loop.
 - **WAIT-004** The `cd_deploy` receipt of a pending request says that `yulius wait` with
   `run_in_background` ends with the outcome.
+- **AUT-1824** A scheduled run, the start's catch-up run, a manual run or a run a crash left
+  `scheduled` (resolved at the next start) of an automation whose creator is disabled (or no
+  longer a user) creates no task; the run is recorded as
+  `skipped_disabled` with the reason "its creator, <login>, is disabled" (the automation's page
+  shows a run's reason). The check reads the creator at each slot, so enabling the person again
+  lets the automation run at its next time; nothing about the automation itself changes.
 
 ## Plan
 
@@ -114,6 +120,11 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **AC-6** (WAIT-004, WAIT-005) The pending receipt names `yulius wait`; a `since` without the
   staging fields does not differ from the state on them.
 
+- **AC-7** (AUT-1824) A creator disabled through `PATCH /api/admin/users/{id}`: the next
+  scheduled slot, a run left `scheduled` and the start's catch-up create no task, and each run
+  says why; enabled again, nothing missed is replayed and the next day's slot creates one;
+  Run now with the creator's context from before the disable is skipped the same way.
+
 ## Test plan
 
 Each slice adds or changes the test its issue names, run in full with its test binary; flaky
@@ -127,6 +138,11 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   (ADR-0325). Each slice's details are added in its own pull request.
 - Issues needing a person's action or decision are asked with `needs_you` and the work goes on
   with the others, as the owner's request says.
+- #1824: a disabled creator's runs are skipped (`skipped_disabled` with the reason), rather than
+  disabling the automation when the person is disabled. Skipping needs no state to restore when
+  the person is enabled again and cannot lose an automation someone else disabled on purpose; a
+  new run state would change the wire contract and the pages for the same information the
+  reason already carries (migration 0072 records a paused schedule the same way).
 
 ## Evidence
 
@@ -163,3 +179,14 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   is recorded, so the earlier attempt's end could end a wait started then) is fixed test-first:
   `staging_cd_run` falls back to the task's latest run whose note names the request
   (`ci::staging::deploys_request`); the integration test's retry step failed before the change.
+
+### #1824 (a disabled person's automations)
+
+- `automations::a_disabled_creators_automation_creates_no_task` failed before the change (a task
+  was created at the first slot) and passes after it; its crash-left `scheduled` step failed
+  until `resolve_pending` checked the creator too; `automation` tests: 26 passed.
+- Review (Fable 5.2, after a first reviewer was cut off by a usage limit) approved ef893618c.
+  Its minors answered: `resolve_pending` is the single check (the `process_slot` branch was
+  redundant: every path ends there, mutation M1 survived), and
+  `automations::a_disabled_creator_gets_no_task_by_run_now` covers Run now with a stale context.
+  Not covered by a test: the "no longer a user" arm (no production path deletes a user).

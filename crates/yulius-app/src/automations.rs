@@ -91,7 +91,8 @@ pub enum RunState {
     TaskCreated,
     /// The automation's previous task was still active.
     SkippedPreviousActive,
-    /// The automation was disabled when the slot was processed.
+    /// The automation, or the person who created it, was disabled when the slot was processed
+    /// (the run's error says which).
     SkippedDisabled,
     /// Task creation failed (see the error).
     Failed,
@@ -1192,6 +1193,17 @@ impl App {
         self.resolve_pending(&fresh, slot).await
     }
 
+    /// Why `automation`'s creator cannot have a run's task now (#1824): a disabled person's
+    /// tasks are stopped and refused a git credential (ADR-0481), so their automations create
+    /// none. Enabling the person again lets the automation run at its next time.
+    async fn creator_cannot_run(&self, automation: &AutomationRecord) -> AppResult<Option<String>> {
+        Ok(match self.deps.store.user(&automation.created_by).await? {
+            Some(user) if user.disabled_at.is_none() => None,
+            Some(user) => Some(format!("its creator, {}, is disabled", user.label())),
+            None => Some("its creator is no longer a person of this instance".to_owned()),
+        })
+    }
+
     /// Completes a `scheduled` run: links the task created with its key, or creates it.
     async fn resolve_pending(
         self: &Arc<Self>,
@@ -1200,19 +1212,30 @@ impl App {
     ) -> AppResult<AutomationRunRecord> {
         let store = &self.deps.store;
         let key = run_key(&automation.id, slot);
-        let outcome: Result<TaskId, AppError> = match store.task_by_automation_run(&key).await? {
-            Some(task) => Ok(task),
-            None => match self.create_automation_task(automation, &key).await {
-                Ok(task) => Ok(task),
-                Err(err) => match store.task_by_automation_run(&key).await? {
-                    Some(task) => Ok(task),
-                    None => Err(err),
-                },
-            },
+        let existing = store.task_by_automation_run(&key).await?;
+        // A run left `scheduled` (a crash, a dropped request) whose creator is disabled since
+        // creates nothing either: it ends skipped, as a new run would.
+        let skipped = match existing {
+            None => self.creator_cannot_run(automation).await?,
+            Some(_) => None,
         };
-        let (state, task, error) = match outcome {
-            Ok(task) => (RunState::TaskCreated, Some(task), None),
-            Err(err) => (RunState::Failed, None, Some(err.public_message())),
+        let (state, task, error) = if let Some(why) = skipped {
+            (RunState::SkippedDisabled, None, Some(why))
+        } else {
+            let outcome: Result<TaskId, AppError> = match existing {
+                Some(task) => Ok(task),
+                None => match self.create_automation_task(automation, &key).await {
+                    Ok(task) => Ok(task),
+                    Err(err) => match store.task_by_automation_run(&key).await? {
+                        Some(task) => Ok(task),
+                        None => Err(err),
+                    },
+                },
+            };
+            match outcome {
+                Ok(task) => (RunState::TaskCreated, Some(task), None),
+                Err(err) => (RunState::Failed, None, Some(err.public_message())),
+            }
         };
         let finished = store
             .finish_run(&automation.id, slot, state, task.as_ref(), error.as_deref())

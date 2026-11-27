@@ -59,7 +59,9 @@ the one way left that acted on the disabled person's authority.
 ## Consequences
 
 - None of the person's tasks keeps running or keeps a GitHub credential. Their enabled
-  automations are not covered: they still create tasks, which then get no credential (#1824).
+  automations create no task while they are disabled: each run is recorded as
+  `skipped_disabled` with the reason "its creator, <login>, is disabled", and the automation runs
+  again at its next time once the person is enabled (SPEC-678, #1824).
 - Disabling someone by mistake stops their work. Enabling them again and continuing each task
   recovers its work, but not every waiting task's plan: a cancelled chained task loses its link to
   its predecessor, a prepared one its start time and a queued one its place in the queue.
