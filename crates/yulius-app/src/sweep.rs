@@ -152,7 +152,7 @@ impl Drop for HeldLocks {
 }
 
 impl HeldLocks {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     fn files(&self) -> &[File] {
         &self.0
     }
