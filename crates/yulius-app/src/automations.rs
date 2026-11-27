@@ -1214,19 +1214,30 @@ impl App {
     ) -> AppResult<AutomationRunRecord> {
         let store = &self.deps.store;
         let key = run_key(&automation.id, slot);
-        let outcome: Result<TaskId, AppError> = match store.task_by_automation_run(&key).await? {
-            Some(task) => Ok(task),
-            None => match self.create_automation_task(automation, &key).await {
-                Ok(task) => Ok(task),
-                Err(err) => match store.task_by_automation_run(&key).await? {
-                    Some(task) => Ok(task),
-                    None => Err(err),
-                },
-            },
+        let existing = store.task_by_automation_run(&key).await?;
+        // A run left `scheduled` (a crash, a dropped request) whose creator is disabled since
+        // creates nothing either: it ends skipped, as a new run would.
+        let skipped = match existing {
+            None => self.creator_cannot_run(automation).await?,
+            Some(_) => None,
         };
-        let (state, task, error) = match outcome {
-            Ok(task) => (RunState::TaskCreated, Some(task), None),
-            Err(err) => (RunState::Failed, None, Some(err.public_message())),
+        let (state, task, error) = if let Some(why) = skipped {
+            (RunState::SkippedDisabled, None, Some(why))
+        } else {
+            let outcome: Result<TaskId, AppError> = match existing {
+                Some(task) => Ok(task),
+                None => match self.create_automation_task(automation, &key).await {
+                    Ok(task) => Ok(task),
+                    Err(err) => match store.task_by_automation_run(&key).await? {
+                        Some(task) => Ok(task),
+                        None => Err(err),
+                    },
+                },
+            };
+            match outcome {
+                Ok(task) => (RunState::TaskCreated, Some(task), None),
+                Err(err) => (RunState::Failed, None, Some(err.public_message())),
+            }
         };
         let finished = store
             .finish_run(&automation.id, slot, state, task.as_ref(), error.as_deref())

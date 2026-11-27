@@ -60,8 +60,9 @@ reviewed and merged into `dev` by `delivery_merge`.
   older than the staging fields (one that survives an update) is not answered at once in a loop.
 - **WAIT-004** The `cd_deploy` receipt of a pending request says that `yulius wait` with
   `run_in_background` ends with the outcome.
-- **AUT-1824** A scheduled run, the start's catch-up run or a manual run of an automation whose
-  creator is disabled (or no longer a user) creates no task; the run is recorded as
+- **AUT-1824** A scheduled run, the start's catch-up run, a manual run or a run a crash left
+  `scheduled` (resolved at the next start) of an automation whose creator is disabled (or no
+  longer a user) creates no task; the run is recorded as
   `skipped_disabled` with the reason "its creator, <login>, is disabled" (the automation's page
   shows a run's reason). The check reads the creator at each slot, so enabling the person again
   lets the automation run at its next time; nothing about the automation itself changes.
@@ -120,8 +121,8 @@ reviewed and merged into `dev` by `delivery_merge`.
   staging fields does not differ from the state on them.
 
 - **AC-7** (AUT-1824) A creator disabled through `PATCH /api/admin/users/{id}`: the next
-  scheduled slot and the start's catch-up create no task, and the run says why; enabled again,
-  the next day's slot creates one.
+  scheduled slot, a run left `scheduled` and the start's catch-up create no task, and each run
+  says why; enabled again, nothing missed is replayed and the next day's slot creates one.
 
 ## Test plan
 
@@ -181,4 +182,5 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 ### #1824 (a disabled person's automations)
 
 - `automations::a_disabled_creators_automation_creates_no_task` failed before the change (a task
-  was created at the first slot) and passes after it; `automation` tests: 25 passed.
+  was created at the first slot) and passes after it; its crash-left `scheduled` step failed
+  until `resolve_pending` checked the creator too; `automation` tests: 25 passed.

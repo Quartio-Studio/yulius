@@ -1126,13 +1126,34 @@ async fn a_disabled_creators_automation_creates_no_task() -> TestResult {
         why.contains("its creator, alice, is disabled"),
         "{skipped:?}"
     );
-    // The start's catch-up run is skipped the same way.
+    // A run a crash left `scheduled` and the start's catch-up run are skipped the same way.
+    let pending = Timestamp(BASE + 9 * HOUR + 30 * MIN);
+    w.h.store
+        .insert_run(&AutomationRunRecord {
+            automation_id: id.clone(),
+            scheduled_for: pending,
+            state: RunState::Scheduled,
+            task_id: None,
+            error: None,
+            created_at: pending,
+        })
+        .await?;
     set_clock(&w.h, BASE + DAY + 9 * HOUR + 10_000);
     w.h.app.automation_startup().await?;
     assert!(automation_tasks(&w.h, &id).await?.is_empty());
-    assert_eq!(runs(&w, &id).await?.len(), 2);
+    let all = runs(&w, &id).await?;
+    assert_eq!(all.len(), 3, "{all:?}");
+    for run in &all {
+        assert_eq!(run["state"], "skipped_disabled", "{all:?}");
+        let why = run["error"].as_str().unwrap_or_default();
+        assert!(why.contains("its creator, alice, is disabled"), "{all:?}");
+    }
 
+    // Enabled again: nothing missed meanwhile is replayed; the next regular time runs.
     assert_eq!(set_disabled(false).await?.status, StatusCode::OK);
+    set_clock(&w.h, BASE + DAY + 9 * HOUR + 20_000);
+    w.h.app.automation_tick().await?;
+    assert!(automation_tasks(&w.h, &id).await?.is_empty());
     set_clock(&w.h, BASE + 2 * DAY + 9 * HOUR + 10_000);
     w.h.app.automation_tick().await?;
     assert_eq!(automation_tasks(&w.h, &id).await?.len(), 1);
