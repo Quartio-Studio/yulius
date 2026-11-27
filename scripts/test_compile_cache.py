@@ -11,6 +11,62 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent
 
 
+# How long a shell may sit idle, with nothing of its session able to run, before its report counts as
+# missing; and the wall-clock ceiling that ends a wait whatever runs (a spinning shell or job).
+REPORT_IDLE_BUDGET = 5.0
+REPORT_CEILING = 60.0
+
+
+def session_states(leader):
+    """`(pid, state)` of each process in the session `leader` leads (a `pty.fork` shell)."""
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_bytes().rsplit(b")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 3 and int(fields[3]) == leader:
+            found.append((int(entry.name), fields[0].decode("ascii", "replace")))
+    return found
+
+
+def wait_for_report(terminal, marker, shell, budget=REPORT_IDLE_BUDGET, ceiling=REPORT_CEILING):
+    """Reads `terminal` until `marker`; `(how, output)`, `how` being "found", "idle" (the
+    budget), "ceiling" or "closed". Only time in which nothing of the shell's session can run
+    counts against `budget` (#1807): a loaded host that has not scheduled the shell or its job yet
+    spends none of it, while a stopped, dead or sleeping shell with nothing runnable does.
+    `ceiling` bounds the wait in wall-clock time whatever runs, output or not."""
+    import select
+    import time
+    output = b""
+    idle_for = 0.0
+    started = mark = time.monotonic()
+    while marker not in output:
+        now = time.monotonic()
+        if now - started >= ceiling:
+            return "ceiling", output
+        if select.select([terminal], [], [], .05)[0]:
+            try:
+                chunk = os.read(terminal, 4096)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                return "closed", output
+            output += chunk
+            mark = time.monotonic()
+            continue
+        now = time.monotonic()
+        states = session_states(shell)
+        if not any(state in ("R", "D") for _, state in states):
+            idle_for += now - mark
+        mark = now
+        if idle_for >= budget:
+            return "idle", output
+    return "found", output
+
+
 @unittest.skipUnless(sys.platform == "linux", "the instance cache runs on Linux")
 class CompileCache(unittest.TestCase):
     def setUp(self):
@@ -723,12 +779,35 @@ signal.pause()
     def test_shell_can_foreground_a_disposable_build_started_in_background(self):
         self.check_shell_job(read_immediately=True)
 
+    def test_a_shell_that_cannot_report_fails_the_wait_within_its_budget(self):
+        """#1807 review: a stopped shell, with nothing of its session runnable, spends the idle
+        budget: the wait ends on that budget, not on its ceiling, and never hangs."""
+        import pty
+        import signal
+        import time
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execv("/bin/sh", ["/bin/sh", "-c", "echo ready; exec sleep 60"])
+        try:
+            how, _ = wait_for_report(terminal, b"ready", pid)
+            self.assertEqual(how, "found")
+            os.kill(pid, signal.SIGSTOP)
+            deadline = time.monotonic() + REPORT_CEILING
+            while (pid, "T") not in session_states(pid):
+                self.assertLess(time.monotonic(), deadline, "the shell never stopped")
+                time.sleep(.01)
+            how, _ = wait_for_report(terminal, b"never", pid, budget=1.0)
+            self.assertEqual(how, "idle")
+        finally:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            os.close(terminal)
+
     def test_ctrl_z_stops_a_running_background_build_brought_forward(self):
         self.check_shell_job(read_immediately=False)
 
     def check_shell_job(self, read_immediately, start_background=True):
         import pty
-        import select
         import signal
         import time
         gate = self.sandbox / "input.fifo"
@@ -751,12 +830,8 @@ print('received '+input(), flush=True)
             os.execve(shell, [shell, "--noprofile", "--norc", "-i"], env)
 
         def read_until(marker):
-            output = b""
-            deadline = time.monotonic() + 5
-            while marker not in output:
-                self.assertTrue(select.select([terminal], [], [], max(0, deadline - time.monotonic()))[0],
-                                f"shell did not report {marker!r}: {output!r}")
-                output += os.read(terminal, 4096)
+            how, output = wait_for_report(terminal, marker, pid)
+            self.assertEqual(how, "found", f"shell did not report {marker!r}: {output!r}")
             return output
 
         job = None
