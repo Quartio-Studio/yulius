@@ -340,7 +340,8 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          \n\
          1. Know the product first: read the docs index below, earlier specs, parallel and\n   \
             previous tasks and earlier sessions before designing; extend what exists.\n\
-         2. Features and fixes need a spec; research, questions, docs and chores do not. A spec\n   \
+         2. Features and fixes need a spec; research, questions, docs and chores do not (a chore\n   \
+            that changes code runs as the Chore workflow). A spec\n   \
             is `docs/specs/YYYY-MM-DD-<slug>.md` with frontmatter (`yulius-task`, `status`) and\n   \
             the sections Goal, Context, Requirements, Plan (a `- [ ]` checklist), Acceptance\n   \
             criteria, Test plan and Decisions. When the task is complete, check every Plan item,\n   \
@@ -832,7 +833,8 @@ mod tests {
         let agents = file(&web, "AGENTS.md")?;
         for needle in [
             "never commit or push to `dev` or\n  `main` directly",
-            "Features and fixes need a spec; research, questions, docs and chores do not.",
+            "Features and fixes need a spec; research, questions, docs and chores do not (a chore\n   \
+             that changes code runs as the Chore workflow).",
             "all the work known now as steps of similar effort\n   (3-12 per pull request, at most 60)",
             "independent review in a fresh session",
             "no `git stash` as a tool",

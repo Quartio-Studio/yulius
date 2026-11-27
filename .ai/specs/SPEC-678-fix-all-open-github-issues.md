@@ -92,17 +92,22 @@ reviewed and merged into `dev` by `delivery_merge`.
   budget. A wall-clock ceiling of 60 s ends the wait whatever runs (a spinning shell or job).
 - **WAIT-1820** The Telegram reply test waits for the second run's own notice before it
   records the message count, so the next message after its reply can only be the answer.
-- **DOC-1769** AGENTS.md and `docs/engineering/specifications.md` say what `spec_required`
-  does: the Feature and Fix workflows require a spec, Chore, Docs and Research do not, and a task
-  without a workflow needs one once its branch changes more than documentation; a chore that
-  changes code runs as the Chore workflow. The mechanism is unchanged (a documentation fix: the
+- **DOC-1769** AGENTS.md, `docs/engineering/specifications.md`, the bundled
+  `delivery-pipeline` skill and the scaffolded AGENTS.md say what `spec_required` does: the
+  workflow's `spec:` gate decides (Feature, Fix and Infra bootstrap require a spec; Chore, Docs
+  and Research / Question do not), and a task without a workflow needs one once its branch
+  changes more than documentation; a chore that changes code runs as the Chore workflow. The mechanism is unchanged (a documentation fix: the
   owner's cleanup charter's chores start with the Chore workflow, or write a short spec).
 - **DOC-1761** The infra-bootstrap skill says production-stage `[cd.*]` secrets run outside
   agents' reach and dev-stage ones need the allowance that lets any task copy them (ADR-0105).
 - **BRF-1800** The briefing's mandatory parts fit `DEFAULT_BUDGET_BYTES` whole in every changes
-  layout (log newest first, log newest last, a folder of notes), with the security scan's
-  section: the scan section, the folder's change-note rule, the "Read before you build" changes
-  line and two sentences of Discipline and Dev servers are shorter; no rule is dropped.
+  layout (log newest first, log newest last, a folder of notes), for every spec policy and
+  harness, with the security scan's section: the scan section, the folder's change-note rule, the
+  "Read before you build" changes line and two sentences are shorter, and an instruction file's
+  path is cut at 60 bytes (was 120); no rule is dropped ("rerun it" for the scan's exit 3 goes:
+  the scanner says "run it again" itself). Out of scope, for the final report: a task whose
+  workflow instructions lower the budget below the full 9,500 can still be cut (the review of
+  #1838 measured it); that is how the budget is split, not #1800's overflow.
 
 ## Plan
 
@@ -283,5 +288,8 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   `EnvFiles::Allowed`, production stage `cd_prod` or `auto_allow`.
 - #1800: new `briefing::tests::the_worst_case_with_the_scan_keeps_every_mandatory_part_whole`
   failed on dev ("the scan section was cut"; mandatory 9,530 bytes, 9,723 in the folder layout,
-  against 9,500). After the rewording: 9,347 (log) and 9,462 (folder), the scan section whole in
-  all three layouts. `yulius-domain`, `yulius-app`, `yulius`: 4,994 passed (scratch copy).
+  against 9,500). After the rewording the test covered Required/Claude Code only; review round 1
+  (request changes at e3398c3) showed Codex and `ByChange` still cut the scan section. The test
+  now runs 27 cases (3 layouts × 3 policies × 3 harnesses); with the old 120-byte cap on
+  instruction-file paths it fails ("log, newest first, Required, Codex: the scan section was
+  cut"); with 60 it passes.

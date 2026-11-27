@@ -597,7 +597,9 @@ fn header(input: &BriefingInput<'_>) -> String {
         .repo_instructions
         .iter()
         .take(MAX_INSTRUCTION_FILES)
-        .map(|file| code(file, 120))
+        // An instruction file's path is short in practice (`AGENTS.md`, `crates/x/AGENTS.md`):
+        // a long one is cut so the mandatory parts keep their room (#1800).
+        .map(|file| code(file, 60))
         .collect();
     if input.repo_instructions.len() > MAX_INSTRUCTION_FILES {
         files.push(format!("… {TRUNCATION_MARKER}"));
@@ -699,7 +701,7 @@ fn changes_rule(input: &BriefingInput<'_>) -> String {
     if input.layout.changes_folder().is_some() {
         return format!(
             "Add one new file to {changes}, named \
-             `YYYY-MM-DD-{}-<short-slug>.md` (or as AGENTS.md or its newest files do); never \
+             `YYYY-MM-DD-{}-<short-slug>.md` (or as AGENTS.md or the folder's newest files do); never \
              edit other tasks' files; none for an internal change.",
             input.task.number
         );
@@ -1729,7 +1731,7 @@ mod tests {
         assert!(
             text.contains(
                 "Add one new file to `docs/changes/`, named \
-                 `YYYY-MM-DD-12-<short-slug>.md` (or as AGENTS.md or its newest files do); never \
+                 `YYYY-MM-DD-12-<short-slug>.md` (or as AGENTS.md or the folder's newest files do); never \
                  edit other tasks' files; none for an internal change."
             ),
             "{text}"
@@ -2127,8 +2129,9 @@ mod tests {
     }
 
     /// #1800: the worst-case input with the security scan's section fits the budget whole in
-    /// every changes layout (top of a log, end of a log, a folder of notes): the hard cut never
-    /// falls inside a mandatory part, which the heading checks alone would not see.
+    /// every changes layout (top of a log, end of a log, a folder of notes), for every spec policy
+    /// and harness: the hard cut never falls inside a mandatory part, which the heading checks
+    /// alone would not see.
     #[test]
     fn the_worst_case_with_the_scan_keeps_every_mandatory_part_whole() -> TestResult {
         let profile = DeliveryProfile::standard();
@@ -2137,12 +2140,30 @@ mod tests {
             ..DocsLayout::default()
         };
         let top = DocsLayout::default();
-        for (layout, at_end, name) in [
+        let cases = [
             (&top, false, "log, newest first"),
             (&top, true, "log, newest last"),
             (&folder, false, "folder"),
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|layout| {
+            [
+                SpecPolicy::Required,
+                SpecPolicy::NotRequired,
+                SpecPolicy::ByChange,
+            ]
+            .into_iter()
+            .flat_map(move |policy| {
+                [Harness::ClaudeCode, Harness::Codex, Harness::Antigravity]
+                    .into_iter()
+                    .map(move |harness| (layout, policy, harness))
+            })
+        });
+        for ((layout, at_end, layout_name), policy, harness) in cases {
+            let name = format!("{layout_name}, {policy:?}, {harness:?}");
             let mut input = base(&profile, layout)?;
+            input.task.spec_policy = policy;
+            input.harness = harness;
             let huge = "żółw lorem ipsum ".repeat(20_000);
             let long = "żółw lorem ipsum ".repeat(40);
             input.project_name = huge.clone();
@@ -2668,7 +2689,7 @@ mod tests {
             vidoc: VidocBriefing::On,
             ..base(&profile, &layout)?
         });
-        assert!(section.len() <= 640, "{} bytes: {section}", section.len());
+        assert!(section.len() <= 500, "{} bytes: {section}", section.len());
         // Review round 1: a playground has no switch, and no `YULIUS_VIDOC_SWITCH`.
         let playground = security_scan(&BriefingInput {
             vidoc: VidocBriefing::On,
