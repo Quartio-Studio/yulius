@@ -2280,7 +2280,10 @@ mod tests {
         ] {
             old.as_object_mut().map(|o| o.remove(key));
         }
-        assert!(!state.differs_from(&old), "old client: nothing it knows moved");
+        assert!(
+            !state.differs_from(&old),
+            "old client: nothing it knows moved"
+        );
         let full = serde_json::to_value(&state).unwrap_or_default();
         assert!(!state.differs_from(&full));
         let moved = WaitState {
@@ -2293,7 +2296,10 @@ mod tests {
             ..state.clone()
         };
         assert!(checks.differs_from(&old));
-        assert!(state.differs_from(&serde_json::json!(null)), "no object: answer");
+        assert!(
+            state.differs_from(&serde_json::json!(null)),
+            "no object: answer"
+        );
     }
 
     #[test]

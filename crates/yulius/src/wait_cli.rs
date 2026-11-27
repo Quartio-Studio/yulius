@@ -568,7 +568,10 @@ mod tests {
     #[test]
     fn another_cd_run_of_a_staging_task_is_still_reported() {
         for (state, outcome) in [
-            ("verified", Some("staging request req1 is verified, CD run cd1")),
+            (
+                "verified",
+                Some("staging request req1 is verified, CD run cd1"),
+            ),
             ("testing", None),
         ] {
             let running = WaitState {
@@ -587,13 +590,19 @@ mod tests {
                 ..running.clone()
             };
             let line = settled(&ended, Some(&running)).unwrap_or_default();
-            assert!(line.contains("The CD run cd2 (dev) ended failed"), "{state}: {line}");
+            assert!(
+                line.contains("The CD run cd2 (dev) ended failed"),
+                "{state}: {line}"
+            );
             let told_late = WaitState {
                 cd_unreported: true,
                 ..ended
             };
             let line = settled(&told_late, None).unwrap_or_default();
-            assert!(line.contains("The CD run cd2 (dev) ended failed"), "{state}: {line}");
+            assert!(
+                line.contains("The CD run cd2 (dev) ended failed"),
+                "{state}: {line}"
+            );
         }
     }
 
@@ -658,7 +667,11 @@ mod tests {
         };
         assert_eq!(settled(&no_commit, None), None);
         // A decided request is not under way: no staging part in the progress line.
-        assert!(!describe(&checked).contains("staging"), "{}", describe(&checked));
+        assert!(
+            !describe(&checked).contains("staging"),
+            "{}",
+            describe(&checked)
+        );
     }
 
     fn state_of(checks: &str) -> WaitState {
