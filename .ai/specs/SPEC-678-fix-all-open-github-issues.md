@@ -92,6 +92,17 @@ reviewed and merged into `dev` by `delivery_merge`.
   budget. A wall-clock ceiling of 60 s ends the wait whatever runs (a spinning shell or job).
 - **WAIT-1820** The Telegram reply test waits for the second run's own notice before it
   records the message count, so the next message after its reply can only be the answer.
+- **DOC-1769** AGENTS.md and `docs/engineering/specifications.md` say what `spec_required`
+  does: the Feature and Fix workflows require a spec, Chore, Docs and Research do not, and a task
+  without a workflow needs one once its branch changes more than documentation; a chore that
+  changes code runs as the Chore workflow. The mechanism is unchanged (a documentation fix: the
+  owner's cleanup charter's chores start with the Chore workflow, or write a short spec).
+- **DOC-1761** The infra-bootstrap skill says production-stage `[cd.*]` secrets run outside
+  agents' reach and dev-stage ones need the allowance that lets any task copy them (ADR-0105).
+- **BRF-1800** The briefing's mandatory parts fit `DEFAULT_BUDGET_BYTES` whole in every changes
+  layout (log newest first, log newest last, a folder of notes), with the security scan's
+  section: the scan section, the folder's change-note rule, the "Read before you build" changes
+  line and two sentences of Discipline and Dev servers are shorter; no rule is dropped.
 
 ## Plan
 
@@ -262,3 +273,15 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 - #1820: probe delaying the Needs-you notice 300 ms and the reply's answer 1 s reproduced the
   CI failure exactly (`left: "Needs your decision · app …"`, line 3000); with the test waiting for
   the second run's notice first it passes with the same probe.
+
+### #1769, #1761, #1800 (what agents are told)
+
+- #1769: checked against the code: `SpecPolicy::from_workflow` maps the Chore, Docs and Research
+  workflows' `spec: optional` to not required, Feature and Fix to required, no workflow to
+  `ByChange`; the documents now say so. `scripts/check_repository.py` passes.
+- #1761: the skill's sentence matches `allowed_for` (`vault/env_files.rs`): dev stage needs
+  `EnvFiles::Allowed`, production stage `cd_prod` or `auto_allow`.
+- #1800: new `briefing::tests::the_worst_case_with_the_scan_keeps_every_mandatory_part_whole`
+  failed on dev ("the scan section was cut"; mandatory 9,530 bytes, 9,723 in the folder layout,
+  against 9,500). After the rewording: 9,347 (log) and 9,462 (folder), the scan section whole in
+  all three layouts. `yulius-domain`, `yulius-app`, `yulius`: 4,994 passed (scratch copy).

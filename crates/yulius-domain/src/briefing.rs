@@ -671,8 +671,8 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          4. Start each behavior change with a test that fails without it. Make it pass and \
          cover failures. Run each touched test binary in full. Wait on conditions, never sleeps. \
          Flaky tests are reproduced and fixed or quarantined with an issue, never retried until green.\n\
-         5. Decide like a senior engineer: compare options, choose and justify yourself (do not \
-         ask the user to choose). Write an {decisions} only for a build or run choice someone \
+         5. Decide like a senior engineer: compare options, choose and justify it yourself. \
+         Write an {decisions} only for a build or run choice someone \
          may want to reverse, with two rejected alternatives. Keep the \
          architecture document {architecture} (with a Mermaid diagram), the product \
          summary and AGENTS.md true in the same change. No secrets in the repository: keys go \
@@ -698,10 +698,9 @@ fn changes_rule(input: &BriefingInput<'_>) -> String {
     let changes = code(&input.layout.changes, 200);
     if input.layout.changes_folder().is_some() {
         return format!(
-            "Add one new file to {changes} for your change, named \
-             `YYYY-MM-DD-{}-<short-slug>.md` (unless AGENTS.md or the newest files there use \
-             another naming: follow it), and never edit other tasks' files. Skip it for an \
-             internal change.",
+            "Add one new file to {changes}, named \
+             `YYYY-MM-DD-{}-<short-slug>.md` (or as AGENTS.md or its newest files do); never \
+             edit other tasks' files; none for an internal change.",
             input.task.number
         );
     }
@@ -873,7 +872,7 @@ fn read_first(input: &BriefingInput<'_>) -> String {
          - {architecture}: components and data flow.\n\
          - {decisions}: decisions already taken.\n\
          - {specs}: earlier task specs; search them for the area you touch.\n\
-         - {changes}: what was delivered recently{per_change}.\n\
+         - {changes}: what was delivered recently.\n\
          Sessions are docs too: when you do not know how something was implemented or why, \
          search other tasks' transcripts and the imported sessions with `sessions_search` and \
          read one with `session_read` before guessing. When you change what a document \
@@ -883,11 +882,6 @@ fn read_first(input: &BriefingInput<'_>) -> String {
         architecture = code(&layout.architecture, 200),
         specs = code(&layout.specs_dir, 200),
         changes = code(&layout.changes, 200),
-        per_change = if layout.changes_folder().is_some() {
-            ", one file per change"
-        } else {
-            ""
-        },
     )
 }
 
@@ -951,7 +945,7 @@ fn ports(input: &BriefingInput<'_>) -> String {
     } else {
         let last = (u32::from(input.port_base) + u32::from(input.port_count) - 1).min(65_535);
         format!(
-            "Use only ports {}-{last} for development servers so parallel projects do not \
+            "Use only ports {}-{last} for dev servers so parallel projects do not \
              collide; open previews in the Yulius browser.",
             input.port_base
         )
@@ -1032,18 +1026,17 @@ fn security_scan(input: &BriefingInput<'_>) -> String {
         }
         VidocBriefing::On => {}
     }
-    let mut text = "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
-     branch changed (`--all`: the whole repository) to Vidoc's vidoc-1. It exits 1 on critical \
-     or high findings, or medium ones in your changed lines; decide on low ones there (fix, or \
-     say why not in Evidence); 2 is not run and 3 incomplete (rerun it), never a pass. A \
-     project's CI runs it built in (`yulius \
-     security-scan --ci`) and files findings outside your change as issues."
+    let mut text = "## Security scan\n\n`yulius security-scan` sends your branch's changed files \
+     (`--all`: the whole repository) to Vidoc. It exits 1 on critical or high findings, or \
+     medium ones in your changed lines; decide on low ones there (fix, or say why not in \
+     Evidence); 2 is not run, 3 incomplete: never a pass. CI runs `yulius security-scan --ci` \
+     and files findings outside your change as issues."
         .to_owned();
     // A playground has no switch (SPEC-359 VSB-006).
     if !input.playground {
         text.push_str(
-            " If Vidoc refuses the key or its quota is used up, point any `needs_you` to the \
-             sandbox's Vidoc switch (`$YULIUS_VIDOC_SWITCH`), where its admins turn it off.",
+            " If Vidoc refuses the key or its quota is used up, point `needs_you` to \
+             `$YULIUS_VIDOC_SWITCH`.",
         );
     }
     text.push_str("\n\n");
@@ -1735,17 +1728,14 @@ mod tests {
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         assert!(
             text.contains(
-                "Add one new file to `docs/changes/` for your change, named \
-                 `YYYY-MM-DD-12-<short-slug>.md` (unless AGENTS.md or the newest files there use \
-                 another naming: follow it), and never edit other tasks' files. Skip it for an \
-                 internal change."
+                "Add one new file to `docs/changes/`, named \
+                 `YYYY-MM-DD-12-<short-slug>.md` (or as AGENTS.md or its newest files do); never \
+                 edit other tasks' files; none for an internal change."
             ),
             "{text}"
         );
         assert!(!text.contains("change at the top of"), "{text}");
-        assert!(
-            text.contains("- `docs/changes/`: what was delivered recently, one file per change.")
-        );
+        assert!(text.contains("- `docs/changes/`: what was delivered recently."));
         let section = &text[text.find("## Recent changes").ok_or("recent")?..];
         assert!(
             section.contains("From the newest notes in `docs/changes/`:\n> `2026-10-31-488-folder.md`:\n> # Change notes as files"),
@@ -2131,6 +2121,65 @@ mod tests {
             assert!(
                 text.contains(heading),
                 "optional part dropped entirely: {heading}"
+            );
+        }
+        Ok(())
+    }
+
+    /// #1800: the worst-case input with the security scan's section fits the budget whole in
+    /// every changes layout (top of a log, end of a log, a folder of notes): the hard cut never
+    /// falls inside a mandatory part, which the heading checks alone would not see.
+    #[test]
+    fn the_worst_case_with_the_scan_keeps_every_mandatory_part_whole() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let folder = DocsLayout {
+            changes: "docs/changes/".to_owned(),
+            ..DocsLayout::default()
+        };
+        let top = DocsLayout::default();
+        for (layout, at_end, name) in [
+            (&top, false, "log, newest first"),
+            (&top, true, "log, newest last"),
+            (&folder, false, "folder"),
+        ] {
+            let mut input = base(&profile, layout)?;
+            let huge = "żółw lorem ipsum ".repeat(20_000);
+            let long = "żółw lorem ipsum ".repeat(40);
+            input.project_name = huge.clone();
+            input.task.title = huge.clone();
+            input.task.goal = format!("{huge}\n{huge}");
+            input.task.steps = (0..500)
+                .map(|n| step(&format!("step {n} {long}"), StepStatus::Pending, 1))
+                .collect();
+            input.product_head = Some(&huge);
+            input.changes_head = Some(&huge);
+            input.changes_newest_at_end = at_end;
+            input.repo_instructions = vec![long.clone(); 50];
+            input.isolated = true;
+            input.docker = true;
+            input.vidoc = VidocBriefing::On;
+            let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+            assert!(
+                text.len() <= DEFAULT_BUDGET_BYTES,
+                "{name}: {} bytes",
+                text.len()
+            );
+            let scan = security_scan(&input);
+            assert!(
+                text.contains(scan.trim_end()),
+                "{name}: the scan section was cut"
+            );
+            for heading in MANDATORY_HEADINGS
+                .into_iter()
+                .chain(["## Containers", "## Security scan"])
+            {
+                assert!(text.contains(heading), "{name}: missing {heading}");
+            }
+            let (parts, _) = fitted_parts(&input, DEFAULT_BUDGET_BYTES, DEFAULT_BUDGET_BYTES);
+            let mandatory = mandatory_len(&parts);
+            assert!(
+                mandatory <= DEFAULT_BUDGET_BYTES,
+                "{name}: mandatory parts take {mandatory} of {DEFAULT_BUDGET_BYTES} bytes"
             );
         }
         Ok(())

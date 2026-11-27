@@ -1,7 +1,10 @@
 # Writing specifications
 
 Features and fixes get a spec before code; research, questions, documentation and chores do
-not (SPEC-001 DSC-013). A task's spec is `.ai/specs/SPEC-NNN-<slug>.md` (Yulius names it in the
+not (SPEC-001 DSC-013). Yulius decides it by the task's workflow: the Feature and Fix workflows
+require one, the Chore, Docs and Research workflows do not, and a task without a workflow needs
+one once its branch changes anything other than documentation (otherwise Yulius starts no CI run
+for it). So a chore that changes code is started with the Chore workflow, or writes a short spec. A task's spec is `.ai/specs/SPEC-NNN-<slug>.md` (Yulius names it in the
 briefing) in the form `spec_check` validates: start from [the template](../../.ai/templates/spec.md)
 and skill `om-spec-writing`. Record observable behavior, constraints, decisions and evidence
 rather than a code narrative.

@@ -438,7 +438,7 @@ async fn a_changes_folder_briefs_one_new_file_per_change() -> TestResult {
         .ok_or("no additionalContext")?;
     assert!(
         context.contains(
-            "Add one new file to `docs/changes/` for your change, named \
+            "Add one new file to `docs/changes/`, named \
              `YYYY-MM-DD-1-<short-slug>.md`"
         ),
         "{context}"
