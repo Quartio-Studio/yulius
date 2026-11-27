@@ -492,7 +492,11 @@ mod tests {
             ..state("passed")
         };
         assert_eq!(settled(&testing, None), None, "old checks and notice wait");
-        assert_eq!(limit_line(&testing, 30), None, "no limit while staging runs");
+        assert_eq!(
+            limit_line(&testing, 30),
+            None,
+            "no limit while staging runs"
+        );
         assert!(
             describe(&testing).contains("staging request req1 testing"),
             "{}",
