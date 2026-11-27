@@ -1149,8 +1149,6 @@ impl App {
                 RunState::SkippedDisabled,
                 "the automation is disabled".to_owned(),
             ))
-        } else if let Some(why) = self.creator_cannot_run(&fresh).await? {
-            Some((RunState::SkippedDisabled, why))
         } else {
             self.previous_active_task(&fresh).await?.map(|t| {
                 (

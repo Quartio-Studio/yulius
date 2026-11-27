@@ -1161,17 +1161,25 @@ async fn a_disabled_creators_automation_creates_no_task() -> TestResult {
 }
 
 /// #1824: a manual run (Run now from a request that began before the disable) of a disabled
-/// creator's automation creates no task either, and its reason wins over "the previous task is
-/// still active" at a scheduled slot.
+/// creator's automation creates no task either. The disable stopped the earlier run's task, so
+/// the next slot is skipped for the creator, not for an active previous task.
 #[tokio::test]
-async fn a_disabled_creator_gets_no_task_by_run_now_or_over_an_active_one() -> TestResult {
+async fn a_disabled_creator_gets_no_task_by_run_now() -> TestResult {
     use yulius_app::ports::store::UserStore as _;
     let w = world().await?;
     let id = create_automation(&w, daily("Nightly", "0 9 * * *")).await?;
     set_clock(&w.h, BASE + 9 * HOUR + 10_000);
     w.h.app.automation_tick().await?;
-    assert_eq!(automation_tasks(&w.h, &id).await?.len(), 1, "queued: active");
-    let alice = w.h.store.user(&UserId::parse("u-alice")?).await?.ok_or("alice")?;
+    assert_eq!(
+        automation_tasks(&w.h, &id).await?.len(),
+        1,
+        "queued: active"
+    );
+    let alice =
+        w.h.store
+            .user(&UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
     let superadmin = support::setup_superadmin_creds(&w.h).await?;
     let disabled = call(
         &w.h.router,
@@ -1188,7 +1196,10 @@ async fn a_disabled_creator_gets_no_task_by_run_now_or_over_an_active_one() -> T
     let history = runs(&w, &id).await?;
     assert_eq!(history[0]["state"], "skipped_disabled", "{history:?}");
     let why = history[0]["error"].as_str().unwrap_or_default();
-    assert!(why.contains("its creator, alice, is disabled"), "{history:?}");
+    assert!(
+        why.contains("its creator, alice, is disabled"),
+        "{history:?}"
+    );
 
     // The creator's context, read before the disable, as a request already under way has it.
     let ctx = yulius_app::auth::AuthContext {

@@ -122,7 +122,8 @@ reviewed and merged into `dev` by `delivery_merge`.
 
 - **AC-7** (AUT-1824) A creator disabled through `PATCH /api/admin/users/{id}`: the next
   scheduled slot, a run left `scheduled` and the start's catch-up create no task, and each run
-  says why; enabled again, nothing missed is replayed and the next day's slot creates one.
+  says why; enabled again, nothing missed is replayed and the next day's slot creates one;
+  Run now with the creator's context from before the disable is skipped the same way.
 
 ## Test plan
 
@@ -183,4 +184,9 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 
 - `automations::a_disabled_creators_automation_creates_no_task` failed before the change (a task
   was created at the first slot) and passes after it; its crash-left `scheduled` step failed
-  until `resolve_pending` checked the creator too; `automation` tests: 25 passed.
+  until `resolve_pending` checked the creator too; `automation` tests: 26 passed.
+- Review (Fable 5.2, after a first reviewer was cut off by a usage limit) approved ef893618c.
+  Its minors answered: `resolve_pending` is the single check (the `process_slot` branch was
+  redundant: every path ends there, mutation M1 survived), and
+  `automations::a_disabled_creator_gets_no_task_by_run_now` covers Run now with a stale context.
+  Not covered by a test: the "no longer a user" arm (no production path deletes a user).
