@@ -17,7 +17,7 @@ Merge-first staging: quick checks → merge → full gate on the merged revision
 ```
 
 Research, questions about the product, documentation and small chores skip the spec (a chore that
-changes code runs as the Chore workflow; without a workflow, a code change needs one); when they
+changes code runs as the Chore workflow; without a workflow, a code change needs a spec); when they
 change the repository they still follow the Git and gate rules, and their merge still needs the
 independent review `delivery_merge` asks for.
 

@@ -105,9 +105,21 @@ reviewed and merged into `dev` by `delivery_merge`.
   harness, with the security scan's section: the scan section, the folder's change-note rule, the
   "Read before you build" changes line and two sentences are shorter, and an instruction file's
   path is cut at 60 bytes (was 120); no rule is dropped ("rerun it" for the scan's exit 3 goes:
-  the scanner says "run it again" itself). Out of scope, for the final report: a task whose
-  workflow instructions lower the budget below the full 9,500 can still be cut (the review of
-  #1838 measured it); that is how the budget is split, not #1800's overflow.
+  the scanner says "run it again" itself). Out of scope, a defect for the final report (this task
+  opens no issue): mandatory parts can still pass the budget, measured by the review of #1838 at
+  dev ea5942f8f + this change. With workflow instructions taking part of the budget: Research /
+  Question 8,251 bytes against 8,115, Infra bootstrap 8,147 against 8,095, Feature with
+  merge-first 8,367 against 8,361, Fix with merge-first 8,363 against 8,326. At the full budget
+  the folder, Codex, `ByChange` worst case reaches 9,505 with merge-first, 9,554 with
+  `[local]`, 10,107 with one foundations gap and 9,965 with a 200-byte branch and spec path.
+- **ISO-1693** The `hook_client` tests that need a server nobody answers use `refused_url()`:
+  a socket bound to its port that never listens, kept until the test ends. A port a test only
+  freed could be bound meanwhile by a test in another process, whose server then took this
+  test's request.
+- **ISO-1544** The egress proxy tests capture log lines through one global subscriber that
+  writes each line into the capture of the thread that logged it, instead of a subscriber per
+  test (`set_default`), with which another test's start or end in the same process could leave
+  a warning unseen.
 
 ## Plan
 
@@ -293,3 +305,18 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   now runs 27 cases (3 layouts × 3 policies × 3 harnesses); with the old 120-byte cap on
   instruction-file paths it fails ("log, newest first, Required, Codex: the scan section was
   cut"); with 60 it passes.
+
+### #1693, #1544 (tests that share a host or a process)
+
+- #1693: not reproduced by load (300 stressed runs passed). Cause found in the code: four tests
+  bound a port, dropped the listener and connected to it; a parallel test process can get that
+  port for its own `serve_once`, and its server then takes the stray request (a different
+  request line). `refused_url()` keeps the port bound without listening; the new test
+  `a_refused_url_keeps_its_port_and_refuses` shows no other socket can take it and a connection
+  is refused. `hook_client`: 26 passed.
+- #1544: the six `a_full_` tests in one process with two test threads: dev failed 16 of 600 runs
+  (a warning not captured); with the global capture 0 of 600, and the whole `proxy` binary in
+  one process 0 of 50 with 16 threads.
+- With them, two nits of #1837's last review in `scripts/test_compile_cache.py`: a just-forked
+  shell counts as its session before its `setsid`, and a wait keeps only the last 64 KiB of
+  output.

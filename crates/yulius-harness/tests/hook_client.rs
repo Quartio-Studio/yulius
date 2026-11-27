@@ -101,6 +101,41 @@ fn join(handle: JoinHandle<io::Result<Request>>) -> io::Result<Request> {
 }
 
 /// A listener that must never receive a connection.
+/// A URL nothing answers on, whose port stays taken until the guard drops: a socket bound to it
+/// that never listens refuses every connection. A port a test only frees could be bound by a
+/// test running in parallel meanwhile, whose server would then take this test's request (#1693).
+fn refused_url() -> io::Result<(String, std::os::fd::OwnedFd)> {
+    use nix::sys::socket::{
+        AddressFamily, SockFlag, SockType, SockaddrIn, bind, getsockname, socket,
+    };
+    let socket = socket(
+        AddressFamily::Inet,
+        SockType::Stream,
+        SockFlag::SOCK_CLOEXEC,
+        None,
+    )?;
+    bind(
+        std::os::fd::AsRawFd::as_raw_fd(&socket),
+        &SockaddrIn::new(127, 0, 0, 1, 0),
+    )?;
+    let bound: SockaddrIn = getsockname(std::os::fd::AsRawFd::as_raw_fd(&socket))?;
+    Ok((format!("http://127.0.0.1:{}", bound.port()), socket))
+}
+
+/// The port of a [`refused_url`] stays taken while its guard lives, and refuses connections.
+#[test]
+fn a_refused_url_keeps_its_port_and_refuses() -> TestResult {
+    let (url, guard) = refused_url()?;
+    let port = url.rsplit(':').next().ok_or("port")?.parse::<u16>()?;
+    assert!(
+        TcpListener::bind(("127.0.0.1", port)).is_err(),
+        "no other socket gets the port"
+    );
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    drop(guard);
+    Ok(())
+}
+
 fn untouched_listener() -> io::Result<(String, TcpListener)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
@@ -217,9 +252,7 @@ fn non_200_and_unsupported_framing_print_nothing() -> TestResult {
 
 #[test]
 fn unreachable_server_is_fail_open() -> TestResult {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
-    drop(listener);
+    let (url, _refusing) = refused_url()?;
     let mut output = Vec::new();
     let code = run_hook(
         "claude",
@@ -543,8 +576,7 @@ fn a_held_hook_fails_open_on_refusal_or_after_its_bound() -> TestResult {
 /// Without a prior hold, an unreachable server still fails open at once (no retry loop).
 #[test]
 fn an_unheld_hook_does_not_retry() -> TestResult {
-    let (url, listener) = untouched_listener()?;
-    drop(listener);
+    let (url, _refusing) = refused_url()?;
     let started = Instant::now();
     let mut output = Vec::new();
     run_hook_with(
@@ -666,9 +698,7 @@ fn a_subagents_start_goes_to_yulius_and_its_answer_is_printed() -> TestResult {
             "tool_input": {"subagent_type": "yulius-reviewer", "prompt": "p", "description": "d",
                 "run_in_background": true}})
     );
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let gone = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
-    drop(listener);
+    let (gone, _refusing) = refused_url()?;
     let mut output = Vec::new();
     let code = run_hook(
         "claude",
@@ -687,9 +717,7 @@ fn a_subagents_start_goes_to_yulius_and_its_answer_is_printed() -> TestResult {
 #[test]
 fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
     let edit = br#"{"tool_name":"Write","tool_input":{"file_path":"/w/api.rs","content":"x"}}"#;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let gone = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
-    drop(listener);
+    let (gone, _refusing) = refused_url()?;
     let mut output = Vec::new();
     let code = run_hook(
         "claude",

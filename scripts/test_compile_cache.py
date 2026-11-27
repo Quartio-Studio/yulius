@@ -15,6 +15,8 @@ SCRIPTS = Path(__file__).resolve().parent
 # missing; and the wall-clock ceiling that ends a wait whatever runs (a spinning shell or job).
 REPORT_IDLE_BUDGET = 5.0
 REPORT_CEILING = 60.0
+# The output a wait keeps and prints when it fails.
+REPORT_KEPT_BYTES = 64 * 1024
 
 
 def session_states(leader):
@@ -27,7 +29,9 @@ def session_states(leader):
             fields = (entry / "stat").read_bytes().rsplit(b")", 1)[1].split()
         except (OSError, IndexError):
             continue
-        if len(fields) > 3 and int(fields[3]) == leader:
+        # The leader itself counts before its `setsid` (a shell just forked is not yet the
+        # leader of its own session).
+        if len(fields) > 3 and (int(fields[3]) == leader or int(entry.name) == leader):
             found.append((int(entry.name), fields[0].decode("ascii", "replace")))
     return found
 
@@ -54,7 +58,8 @@ def wait_for_report(terminal, marker, shell, budget=REPORT_IDLE_BUDGET, ceiling=
                 chunk = b""
             if not chunk:
                 return "closed", output
-            output += chunk
+            # Only the tail is kept: the marker is looked for in it, and a failure prints it.
+            output = (output + chunk)[-REPORT_KEPT_BYTES:]
             mark = time.monotonic()
             continue
         now = time.monotonic()
