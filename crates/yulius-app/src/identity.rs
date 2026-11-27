@@ -865,11 +865,23 @@ mod tests {
     }
 
     /// A fake `yulius` that prints a token for `gh-token`.
+    /// An executable script, written by a child process: a process another test thread forks
+    /// while this one held the file open for writing would keep that descriptor until it execs,
+    /// and running the script then fails with "Text file busy" (ETXTBSY, #1760).
     fn fake_exe(body: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let dir = unique_dir("yulius-fake-exe");
         std::fs::create_dir_all(&dir)?;
         let exe = dir.join("yulius");
-        write_file(&exe, format!("#!/bin/sh\n{body}\n").as_bytes(), 0o755)?;
+        let written = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s\\n' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+                "sh",
+            ])
+            .arg(format!("#!/bin/sh\n{body}"))
+            .arg(&exe)
+            .status()?;
+        assert!(written.success(), "{written:?}");
         Ok(exe)
     }
 

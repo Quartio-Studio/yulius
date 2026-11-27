@@ -106,7 +106,7 @@ fn is_cargo_lock(name: &str) -> bool {
 /// Cargo's locks of `profiles`, each taken without waiting; `None` when one is held or is not a
 /// plain file (a link, or a FIFO an agent made: opened without blocking and refused). A profile
 /// without lock files has none to take.
-fn lock_profiles(root: &Path, profiles: &[PathBuf]) -> Option<Vec<File>> {
+fn lock_profiles(root: &Path, profiles: &[PathBuf]) -> Option<HeldLocks> {
     use nix::fcntl::OFlag;
     let mut held = Vec::new();
     for profile in profiles {
@@ -135,7 +135,27 @@ fn lock_profiles(root: &Path, profiles: &[PathBuf]) -> Option<Vec<File>> {
             }
         }
     }
-    Some(held)
+    Some(HeldLocks(held))
+}
+
+/// Cargo's locks a sweep holds. They are released on drop with `LOCK_UN`, which frees a lock
+/// for every descriptor of its open file: a process forked meanwhile keeps a duplicate until it
+/// execs, and closing ours alone would leave the lock held until then (#1826).
+struct HeldLocks(Vec<File>);
+
+impl Drop for HeldLocks {
+    fn drop(&mut self) {
+        for file in &self.0 {
+            let _ = file.unlock();
+        }
+    }
+}
+
+impl HeldLocks {
+    #[cfg(test)]
+    fn files(&self) -> &[File] {
+        &self.0
+    }
 }
 
 /// Whether the file system of `path` records no access times (`noatime`): then only modification
@@ -591,6 +611,26 @@ mod tests {
         Ok(())
     }
 
+    /// A process forked while the sweep holds its locks keeps duplicates of them until it execs
+    /// (`O_CLOEXEC` closes them only then), and `flock` belongs to the open file, not to the
+    /// descriptor: once the sweep is done its locks are free even then, so the next sweep and
+    /// Cargo are not told busy (#1826, #1760). `try_clone` stands for that child's duplicate.
+    #[test]
+    fn a_duplicate_of_a_sweeps_lock_does_not_outlive_the_sweep() -> TestResult {
+        let f = fixture()?;
+        file(&f.profile.join(".cargo-lock"), 0, 0)?;
+        let held = lock_profiles(&f.root, std::slice::from_ref(&f.profile)).ok_or("locked")?;
+        let forked = held.files().first().ok_or("one lock")?.try_clone()?;
+        drop(held);
+        let again = lock_profiles(&f.root, std::slice::from_ref(&f.profile));
+        assert!(
+            again.is_some(),
+            "the sweep's lock outlived it in a duplicate"
+        );
+        drop(forked);
+        Ok(())
+    }
+
     #[test]
     fn a_cross_target_profile_s_lock_counts_too() -> TestResult {
         let f = fixture()?;
@@ -607,6 +647,8 @@ mod tests {
                 .join(format!("deps/libadler2-{OLD}.rlib"))
                 .exists()
         );
+        // Released for every duplicate a process forked meanwhile may hold (#1760).
+        cargo.unlock()?;
         drop(cargo);
         let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert_eq!(outcome.units, 2, "one per profile");
