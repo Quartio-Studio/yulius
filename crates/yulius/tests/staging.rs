@@ -3349,8 +3349,16 @@ async fn yulius_wait_follows_a_merged_tasks_staging_request() -> TestResult {
     // Merged, no request yet: the wait says nothing of staging.
     let none = state(r1.clone()).await?;
     assert_eq!(none.staging_request, None);
-    let asked = ask(&f, "t1").await?;
-    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let answer = staging_answer(&f, "t1").await?;
+    let receipt = answer["text"].as_str().unwrap_or_default();
+    assert!(
+        receipt.contains(
+            "to wait for it instead, start `yulius wait` with run_in_background: it ends with \
+             the outcome"
+        ),
+        "{receipt}"
+    );
+    let id = answer["staging"]["id"].as_str().ok_or("id")?.to_owned();
     let testing = state(r1.clone()).await?;
     assert_eq!(testing.staging_request.as_deref(), Some(id.as_str()));
     assert_eq!(testing.staging_state.as_deref(), Some("testing"));
@@ -3364,17 +3372,32 @@ async fn yulius_wait_follows_a_merged_tasks_staging_request() -> TestResult {
     settle(&f).await?;
     let verified = state(r1.clone()).await?;
     assert_eq!(verified.staging_state.as_deref(), Some("verified"));
+    let deploy = request(&f, &id).await?.cd_run_id.ok_or("its deploy")?;
+    assert_eq!(verified.staging_cd_run.as_deref(), Some(deploy.as_str()));
     let line = settled(&verified, Some(&gated)).ok_or("the outcome ends the wait")?;
     assert!(
         line.contains(&format!(
             "staging request {id} for revision {} of [cd.staging] is verified",
             &r1[..12]
-        )) && line.contains(&format!("CI run {ci}")),
+        )) && line.contains(&format!("CI run {ci}"))
+            && line.contains(&format!("CD run {deploy}")),
         "{line}"
     );
     assert!(!line.contains("has no staging request"), "{line}");
     // A wait that starts afterwards ends on the same outcome, at once.
     assert_eq!(settled(&verified, None).as_deref(), Some(line.as_str()));
+    // While the task's next pull request is open, its merged revision's request is not followed.
+    f.h.store
+        .execute_for_tests(
+            "INSERT INTO delivery(task_id, stage, pr_number, updated_at) VALUES ('t1','pr_open',9,1)",
+        )
+        .await?;
+    let next = state(r1.clone()).await?;
+    assert_eq!(next.staging_request, None, "{next:?}");
+    f.h.store
+        .execute_for_tests("DELETE FROM delivery WHERE task_id = 't1'")
+        .await?;
+    assert!(state(r1).await?.staging_request.is_some());
     // A later landing has no request yet: an older revision's request is not followed.
     let r2 = land(&f, "t1", "two.txt").await?;
     let later = state(r2).await?;

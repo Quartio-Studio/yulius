@@ -45,13 +45,18 @@ reviewed and merged into `dev` by `delivery_merge`.
   an older revision, or a task whose next pull request is open, has none. Owner: the server's
   `agent_wait_state`, read on every long poll.
 - **WAIT-002** While that request is pending (testing, inherited, ready, deploying) the merged
-  head's ended checks, its replayed merge notice and its staging deploy's CD run do not end the
-  wait, and `limit_line` treats it as under way (no time limit; the next span still bounds an
+  head's ended checks, its replayed merge notice and its staging deploy's CD run (the request's
+  `cd_run_id`, `staging_cd_run`) do not end the wait; any other CD run of the task (another
+  environment, a rollback) is reported when it ends, as before, and `limit_line` treats it as under way (no time limit; the next span still bounds an
   outage of Yulius). The wait ends when the request leaves pending, with `staging_outcome_text`
   (id, revision, state, runs, next step).
-- **WAIT-003** A wait that starts when the request already has its outcome ends with that outcome
-  instead of the merge notice that said there was no request; with no request the merge notice
-  and its hint stay as they are.
+- **WAIT-003** A wait that starts at the merged head (its replayed merge notice, its ended checks
+  or its staging deploy's unreported end) when the request already has its outcome ends with that
+  outcome instead of the merge notice that said there was no request; with no request the merge
+  notice and its hint stay as they are. The outcome is redacted for the sandbox, as its typed
+  notice is.
+- **WAIT-005** The server compares `since` only on the fields the client sent, so a `yulius wait`
+  older than the staging fields (one that survives an update) is not answered at once in a loop.
 - **WAIT-004** The `cd_deploy` receipt of a pending request says that `yulius wait` with
   `run_in_background` ends with the outcome.
 
@@ -103,7 +108,10 @@ reviewed and merged into `dev` by `delivery_merge`.
   state names it, `settled` returns nothing over the head's passed checks and `limit_line` none;
   after the queue verifies it, `settled` returns the request's verified outcome (with CI and CD
   run ids) and a wait started afterwards gets the same line; a later landing has no request.
-- **AC-5** (WAIT-002, WAIT-003) Without a staging request the merge notice still ends the wait.
+- **AC-5** (WAIT-002, WAIT-003) Without a staging request the merge notice still ends the wait;
+  another CD run of a task with a current request (decided or pending) is reported when it ends.
+- **AC-6** (WAIT-004, WAIT-005) The pending receipt names `yulius wait`; a `since` without the
+  staging fields does not differ from the state on them.
 
 ## Test plan
 
@@ -137,10 +145,16 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 
 - New: `wait_cli::tests::a_pending_staging_request_keeps_the_wait_until_its_outcome`,
   `a_staging_deploy_ends_the_wait_with_the_requests_verdict`,
-  `without_a_staging_request_the_merge_notice_stays`, and the integration test
+  `another_cd_run_of_a_staging_task_is_still_reported`,
+  `each_path_to_a_staging_outcome_ends_the_wait`,
+  `without_a_staging_request_the_merge_notice_stays`,
+  `agent_wait::tests::a_client_is_compared_only_on_the_fields_it_sent`, and the integration test
   `staging::yulius_wait_follows_a_merged_tasks_staging_request` (real Git, queue, deploy and
-  verify scripts).
+  verify scripts; receipt sentence, CI and CD run ids, open next pull request, later landing).
 - Mutation: without `!staging_pending` on the checks-ended line, both pending tests fail.
 - `staging::a_staging_deploy_is_the_requesting_tasks_cd_run` (SPEC-631 SWK-004) still sees the
   staging deploy as the task's CD run in the wait state.
-- `staging::` (91) and `wait_cli::` (13): 104 passed.
+- Review round 1 (Fable 5.2, request changes at 7ce41f021): F1 major (another CD run swallowed or
+  misreported) fixed with `staging_cd_run`; F2 (older client answered at once) fixed with
+  `differs_from`; F3 to F6 and the nits (tests per branch, receipt and CD id assertions,
+  ADR-0466 refined, WAIT-003 scoped to the merged head, redaction) answered.

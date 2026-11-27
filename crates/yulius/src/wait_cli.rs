@@ -116,9 +116,11 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             && now.cd_run == before.cd_run
             && now.cd_state.as_deref() != Some("running")
     });
-    // A merged task's deploy is its staging request's (SPEC-631 SWK-004): the request says how
-    // it ended, with this run, once it is decided (#1727).
-    if (cd_ended_now || now.cd_unreported) && now.staging_request.is_some() {
+    // The deploy of the task's staging request is its CD run (SPEC-631 SWK-004): the request
+    // says how it ended, with this run, once it is decided (#1727). Any other run of the task
+    // (another environment, a rollback) is reported as it always was.
+    let staging_deploy = now.cd_run.is_some() && now.cd_run == now.staging_cd_run;
+    if (cd_ended_now || now.cd_unreported) && staging_deploy {
         if let Some(staging) = &now.staging_outcome {
             return Some(staging.clone());
         }
@@ -154,7 +156,7 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             if let Some(staging) = &now.staging_outcome {
                 return Some(staging.clone());
             }
-        } else if !staging_pending {
+        } else {
             return Some(outcome.clone());
         }
     }
@@ -533,6 +535,7 @@ mod tests {
             cd_state: Some("running".into()),
             staging_request: Some("req1".into()),
             staging_state: Some("deploying".into()),
+            staging_cd_run: Some("cd1".into()),
             ..state("passed")
         };
         assert_eq!(settled(&deploying, None), None);
@@ -558,6 +561,108 @@ mod tests {
             settled(&told_late, None).as_deref(),
             Some("staging request req1 is verified, CD run cd1")
         );
+    }
+
+    /// A merged task's staging request is current, and another CD run of the task (a second
+    /// environment, a rollback) ends: it is reported as always, whatever the request's state.
+    #[test]
+    fn another_cd_run_of_a_staging_task_is_still_reported() {
+        for (state, outcome) in [
+            ("verified", Some("staging request req1 is verified, CD run cd1")),
+            ("testing", None),
+        ] {
+            let running = WaitState {
+                stage: "merged_integration".into(),
+                cd_run: Some("cd2".into()),
+                cd_state: Some("running".into()),
+                cd_detail: Some("dev".into()),
+                staging_request: Some("req1".into()),
+                staging_state: Some(state.into()),
+                staging_outcome: outcome.map(str::to_owned),
+                staging_cd_run: Some("cd1".into()),
+                ..state_of("none")
+            };
+            let ended = WaitState {
+                cd_state: Some("failed".into()),
+                ..running.clone()
+            };
+            let line = settled(&ended, Some(&running)).unwrap_or_default();
+            assert!(line.contains("The CD run cd2 (dev) ended failed"), "{state}: {line}");
+            let told_late = WaitState {
+                cd_unreported: true,
+                ..ended
+            };
+            let line = settled(&told_late, None).unwrap_or_default();
+            assert!(line.contains("The CD run cd2 (dev) ended failed"), "{state}: {line}");
+        }
+    }
+
+    /// Each place a merged task's staging outcome ends the wait, apart (#1727, #1831).
+    #[test]
+    fn each_path_to_a_staging_outcome_ends_the_wait() {
+        let pending = WaitState {
+            stage: "merged_integration".into(),
+            staging_request: Some("req1".into()),
+            staging_state: Some("testing".into()),
+            ..state_of("none")
+        };
+        let failed = WaitState {
+            staging_state: Some("gate_failed".into()),
+            staging_outcome: Some("req1 is gate_failed".into()),
+            ..pending.clone()
+        };
+        // During the wait, at a head with no run of its own.
+        assert_eq!(
+            settled(&failed, Some(&pending)).as_deref(),
+            Some("req1 is gate_failed")
+        );
+        // At its start: the staging deploy's end was not reported yet.
+        let deployed = WaitState {
+            staging_state: Some("verified".into()),
+            staging_outcome: Some("req1 is verified, CD run cd1".into()),
+            staging_cd_run: Some("cd1".into()),
+            cd_run: Some("cd1".into()),
+            cd_state: Some("passed".into()),
+            cd_unreported: true,
+            ..pending.clone()
+        };
+        assert_eq!(
+            settled(&deployed, None).as_deref(),
+            Some("req1 is verified, CD run cd1")
+        );
+        // At its start, over the replayed merge notice, with no ended checks.
+        let replayed = WaitState {
+            merge_outcome: Some("merged; has no staging request".into()),
+            merge_outcome_head: Some("0123456789abcdef".into()),
+            cd_unreported: false,
+            ..deployed.clone()
+        };
+        assert_eq!(
+            settled(&replayed, None).as_deref(),
+            Some("req1 is verified, CD run cd1")
+        );
+        // At its start, over the merged head's passed checks, with no merge notice.
+        let checked = WaitState {
+            checks: "passed".into(),
+            cd_unreported: false,
+            ..deployed.clone()
+        };
+        assert_eq!(
+            settled(&checked, None).as_deref(),
+            Some("req1 is verified, CD run cd1")
+        );
+        // A pending request at a head with no commit: nothing to say yet, keep waiting.
+        let no_commit = WaitState {
+            head: String::new(),
+            ..pending.clone()
+        };
+        assert_eq!(settled(&no_commit, None), None);
+        // A decided request is not under way: no staging part in the progress line.
+        assert!(!describe(&checked).contains("staging"), "{}", describe(&checked));
+    }
+
+    fn state_of(checks: &str) -> WaitState {
+        state(checks)
     }
 
     /// Without a staging request the merged head's wait ends as before (#1831 AC-3).

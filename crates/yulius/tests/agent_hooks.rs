@@ -2648,7 +2648,7 @@ async fn goal_stop_yields_to_a_live_yulius_wait_then_continues_the_step() -> Tes
     let f = task_with_open_step(Agent::Codex, TaskMode::Goal, "Check the build").await?;
     assert_eq!(stop_of(&f, Agent::Codex).await?["decision"], "block");
     let app = Arc::clone(&f.h.app);
-    let initial = app.agent_wait_state(TOKEN, None).await?;
+    let initial = serde_json::to_value(app.agent_wait_state(TOKEN, None).await?)?;
     let waiter = tokio::spawn(async move {
         app.agent_wait(TOKEN, None, Some(&initial), Duration::from_secs(30))
             .await

@@ -1158,7 +1158,8 @@ promotion that cannot complete now (its pull request's checks). Every run is aud
 starts (`cd.deploy`), its end (`cd.finished`), cancellations (`cd.cancel`) and refused production
 deploys (`cd.refused`). Agents use the MCP tools `cd_status`, `cd_deploy` and `cd_rollback` (dev-stage environments only;
 production-stage ones are refused whatever they pass); `yulius wait` returns when the task's CD run ends (`cd_run`, `cd_state`,
-`cd_detail` in its state).
+`cd_detail` in its state); the deploy of the task's staging request (`staging_cd_run`) ends it with
+the request's verdict instead.
 
 ### Rollback (SPEC-415, ADR-0263)
 
@@ -2305,6 +2306,8 @@ body `{"head": "<sha>"|null, "since": WaitState|null, "timeout_secs": n|null}`; 
 `since`, or when the timeout (default 50 s, at most 55 s) passed. The `staging_*` fields are the
 task's latest staging request for its current merged revision: while it is pending the wait has
 no time limit and ends with its outcome, which replaces the merge's old checks and notice.
+`since` is compared only on the fields it carries, so a client older than a field is not answered
+at once for a change it cannot see.
 
 `POST /internal/git-credential` (the run's task token; the Git credential helper and `yulius
 gh-token`): `{"protocol", "host", "path?"}` → `{"token"}`, the App's agent token for the project's

@@ -122,8 +122,9 @@ pub async fn agent_wait(
 pub struct AgentWaitRequest {
     #[serde(default)]
     head: Option<String>,
+    /// The state the client saw, as it sent it: only the fields it knows are compared.
     #[serde(default)]
-    since: Option<yulius_app::agent_wait::WaitState>,
+    since: Option<serde_json::Value>,
     #[serde(default)]
     timeout_secs: Option<u64>,
 }
