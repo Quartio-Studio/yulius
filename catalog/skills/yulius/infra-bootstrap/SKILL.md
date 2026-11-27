@@ -266,8 +266,10 @@ example when it starts deploying for real), and update the ADR of each choice yo
        script).
      - It is reusable: a second run replaces the first, and a task iterates on it.
      - It uses only the dev service credentials agent sessions are allowed (`.env` through
-       `secret_copy_to_env`). Staging SSH keys, release publishing or signing keys and production
-       credentials stay named only in their `[cd.*]` tables, which run outside the agent's reach.
+       `secret_copy_to_env`). Release publishing or signing keys, production credentials and any
+       staging key that must stay out of agents' reach belong to a production-stage `[cd.*]`
+       table, which runs outside the agent's reach. A dev-stage table's secrets need the same
+       allowance that lets any task copy them into `.env` (ADR-0105), so agents can use them.
      - The gate checks the refusal: `scripts/cd/deploy.sh local` with a non-local target exits
        non-zero.
    - **Who deploys.** A merge deploys nothing by itself. Dev: a person on the CD page, or an agent with
