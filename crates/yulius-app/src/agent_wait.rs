@@ -359,9 +359,29 @@ pub struct WaitState {
     /// It ended and no wait reported it yet (a run that ended before the wait began, review M4).
     #[serde(default)]
     pub cd_unreported: bool,
+    /// The task's latest staging request for its current merged revision (#1727): its id.
+    #[serde(default)]
+    pub staging_request: Option<String>,
+    /// Its state (`testing`, `inherited`, `ready`, `deploying`, `verified`, …); while it is
+    /// pending the wait waits for it.
+    #[serde(default)]
+    pub staging_state: Option<String>,
+    /// Its outcome and the next step, once it is no longer pending.
+    #[serde(default)]
+    pub staging_outcome: Option<String>,
 }
 
 impl WaitState {
+    /// Whether the task's staging request is still on its way (testing, inherited, ready or
+    /// deploying).
+    #[must_use]
+    pub fn staging_pending(&self) -> bool {
+        self.staging_state
+            .as_deref()
+            .and_then(yulius_domain::staging::StagingState::parse)
+            .is_some_and(yulius_domain::staging::StagingState::is_pending)
+    }
+
     /// Whether the checks at the head have ended (passed or not).
     #[must_use]
     pub fn checks_ended(&self) -> bool {
@@ -1825,6 +1845,27 @@ impl App {
         }
     }
 
+    /// The task's latest staging request when it is for the task's current merged revision
+    /// (#1727): an older revision's request is not what a wait at the latest merge is about,
+    /// and a task whose next pull request is open has no current landing.
+    async fn current_staging_request(
+        &self,
+        task: &TaskRecord,
+    ) -> AppResult<Option<crate::ports::store_ext::StagingRequestRecord>> {
+        let store = &self.deps.store;
+        let Some(request) = store.latest_task_staging(&task.id).await? else {
+            return Ok(None);
+        };
+        let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
+            return Ok(None);
+        };
+        let branch = crate::delivery::delivery_profile(&sandbox).integration_branch;
+        let landing = store.staging_landing(&task.id, &branch, None).await?;
+        Ok(landing
+            .is_some_and(|landing| landing == request.revision)
+            .then_some(request))
+    }
+
     /// The state `yulius wait` compares (local records only).
     ///
     /// # Errors
@@ -1887,7 +1928,15 @@ impl App {
             }
             _ => false,
         };
+        let staging = self.current_staging_request(task).await?;
         Ok(WaitState {
+            staging_request: staging.as_ref().map(|request| request.id.clone()),
+            staging_state: staging
+                .as_ref()
+                .map(|request| request.state.as_str().to_owned()),
+            staging_outcome: staging
+                .filter(|request| !request.state.is_pending())
+                .map(|request| crate::ci::staging::staging_outcome_text(&request)),
             cd_unreported,
             cd_run: cd.as_ref().map(|run| run.id.clone()),
             cd_state: cd.as_ref().map(|run| run.state.as_str().to_owned()),

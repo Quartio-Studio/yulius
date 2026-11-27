@@ -3333,6 +3333,55 @@ async fn delivery_status_asks_a_merged_task_for_its_staging_request() -> TestRes
     Ok(())
 }
 
+/// `yulius wait` follows a merged task's staging request (#1727, #1831): while the request is
+/// testing, the merged head's ended checks do not end the wait, which has no time limit; it ends
+/// on the request's outcome, which names the request instead of "has no staging request".
+#[tokio::test]
+async fn yulius_wait_follows_a_merged_tasks_staging_request() -> TestResult {
+    use yulius::wait_cli::{limit_line, settled};
+    let f = fixture(&staging_toml()).await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    let state = |head: String| {
+        let app = f.h.app.clone();
+        async move { app.agent_wait_state(&token("t1"), Some(&head)).await }
+    };
+    // Merged, no request yet: the wait says nothing of staging.
+    let none = state(r1.clone()).await?;
+    assert_eq!(none.staging_request, None);
+    let asked = ask(&f, "t1").await?;
+    let id = asked["id"].as_str().ok_or("id")?.to_owned();
+    let testing = state(r1.clone()).await?;
+    assert_eq!(testing.staging_request.as_deref(), Some(id.as_str()));
+    assert_eq!(testing.staging_state.as_deref(), Some("testing"));
+    assert_eq!(testing.staging_outcome, None);
+    // The head's checks passed before the request: they no longer end the wait.
+    let ci = gate(&f, &r1, RunState::Passed).await?;
+    let gated = state(r1.clone()).await?;
+    assert!(gated.checks_ended(), "{gated:?}");
+    assert_eq!(settled(&gated, None), None, "{gated:?}");
+    assert_eq!(limit_line(&gated, 30), None);
+    settle(&f).await?;
+    let verified = state(r1.clone()).await?;
+    assert_eq!(verified.staging_state.as_deref(), Some("verified"));
+    let line = settled(&verified, Some(&gated)).ok_or("the outcome ends the wait")?;
+    assert!(
+        line.contains(&format!(
+            "staging request {id} for revision {} of [cd.staging] is verified",
+            &r1[..12]
+        )) && line.contains(&format!("CI run {ci}")),
+        "{line}"
+    );
+    assert!(!line.contains("has no staging request"), "{line}");
+    // A wait that starts afterwards ends on the same outcome, at once.
+    assert_eq!(settled(&verified, None).as_deref(), Some(line.as_str()));
+    // A later landing has no request yet: an older revision's request is not followed.
+    let r2 = land(&f, "t1", "two.txt").await?;
+    let later = state(r2).await?;
+    assert_eq!(later.staging_request, None, "{later:?}");
+    Ok(())
+}
+
 /// After a failed gate the line says how to go on,
 /// and once the fix merged it names the fix's revision as due, then the newer request.
 #[tokio::test]

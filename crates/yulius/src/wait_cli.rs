@@ -98,6 +98,16 @@ pub fn run_with(
 /// the wait last saw, `None` when it starts).
 #[must_use]
 pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
+    // The task's staging request reached its outcome during this wait (#1727), or a request
+    // that already had one appeared: its outcome and the next step.
+    if let Some(before) = before
+        && let Some(outcome) = &now.staging_outcome
+        && (before.staging_request != now.staging_request
+            || before.staging_state != now.staging_state)
+    {
+        return Some(outcome.clone());
+    }
+    let staging_pending = now.staging_pending();
     // A CD run this task started ended (SPEC-134 CDT-003): during this wait, or before it began
     // and no wait reported it yet. First: its end is reported once, while a merge outcome stays
     // readable for the next wait.
@@ -106,7 +116,13 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             && now.cd_run == before.cd_run
             && now.cd_state.as_deref() != Some("running")
     });
-    if cd_ended_now || now.cd_unreported {
+    // A merged task's deploy is its staging request's (SPEC-631 SWK-004): the request says how
+    // it ended, with this run, once it is decided (#1727).
+    if (cd_ended_now || now.cd_unreported) && now.staging_request.is_some() {
+        if let Some(staging) = &now.staging_outcome {
+            return Some(staging.clone());
+        }
+    } else if cd_ended_now || now.cd_unreported {
         return Some(format!(
             "The CD run {} ({}) ended {}. Read it with `cd_status` and run_id {}.",
             now.cd_run.as_deref().unwrap_or("?"),
@@ -132,7 +148,15 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
         }
     };
     if decided && let Some(outcome) = &now.merge_outcome {
-        return Some(outcome.clone());
+        // A request recorded since that merge is the newer news: the merge notice said there
+        // was none (#1831). While it is under way the wait waits for its outcome.
+        if before.is_none() && now.staging_request.is_some() {
+            if let Some(staging) = &now.staging_outcome {
+                return Some(staging.clone());
+            }
+        } else if !staging_pending {
+            return Some(outcome.clone());
+        }
     }
     let deploying = now.cd_state.as_deref() == Some("running");
     // Yulius could not push this head (DLV-201): no run will come until the agent acts.
@@ -184,7 +208,12 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             }
         ));
     }
-    if now.checks_ended() && !now.merge_armed && !deploying {
+    // A merged task's staging request under way: the merge's old checks are no news (#1727).
+    if now.checks_ended() && !now.merge_armed && !deploying && !staging_pending {
+        // The merged revision's staging outcome is newer than its checks (#1727).
+        if let Some(staging) = &now.staging_outcome {
+            return Some(staging.clone());
+        }
         let head = short(&now.head);
         return Some(match now.checks.as_str() {
             "passed" => format!(
@@ -201,7 +230,8 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             ),
         });
     }
-    if before.is_none() && now.head.is_empty() && !now.merge_armed && !deploying {
+    if before.is_none() && now.head.is_empty() && !now.merge_armed && !deploying && !staging_pending
+    {
         return Some(
             "Nothing to wait for: this directory has no commit. Run `yulius wait` in the task's \
              worktree."
@@ -212,13 +242,15 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
 }
 
 /// The line a wait ends with at its limit (`minutes`), or `None` while something it waits for is
-/// under way (a run at its head queued or running, an armed merge, a deploy): then it has no
+/// under way (a run at its head queued or running, an armed merge, a deploy, the task's staging
+/// request): then it has no
 /// limit (SPEC-444 PRN-010; a wait ended after 90 min with its run still queued, quartio-v2 #121).
 #[must_use]
 pub fn limit_line(state: &WaitState, minutes: u64) -> Option<String> {
     let under_way = matches!(state.checks.as_str(), "queued" | "running")
         || state.merge_armed
-        || state.cd_state.as_deref() == Some("running");
+        || state.cd_state.as_deref() == Some("running")
+        || state.staging_pending();
     if under_way {
         return None;
     }
@@ -261,7 +293,16 @@ fn describe(state: &WaitState) -> String {
         (Some(run), Some("running")) => format!("; CD run {run} deploying"),
         _ => String::new(),
     };
-    format!("{checks}{armed}; delivery {}{train}{cd}", state.stage)
+    let staging = match (&state.staging_request, &state.staging_state) {
+        (Some(id), Some(request)) if state.staging_pending() => {
+            format!("; staging request {id} {request}")
+        }
+        _ => String::new(),
+    };
+    format!(
+        "{checks}{armed}; delivery {}{train}{cd}{staging}",
+        state.stage
+    )
 }
 
 fn short(sha: &str) -> &str {
@@ -431,6 +472,103 @@ mod tests {
         };
         let line = settled(&unreported, Some(&earlier)).unwrap_or_default();
         assert!(line.contains("CD run r1 (dev) ended failed"), "{line}");
+    }
+
+    /// A merged task whose staging request is under way (#1727, #1831): neither the merge's old
+    /// checks nor its replayed merge notice end the wait, which has no time limit while the
+    /// request runs, and ends with the request's outcome.
+    #[test]
+    fn a_pending_staging_request_keeps_the_wait_until_its_outcome() {
+        let testing = WaitState {
+            stage: "merged_integration".into(),
+            merge_outcome: Some(
+                "Yulius merged pull request #7 into `dev` at 0123456789ab. Staging: your merged \
+                 revision 0123456789ab has no staging request."
+                    .into(),
+            ),
+            merge_outcome_head: Some("0123456789abcdef".into()),
+            staging_request: Some("req1".into()),
+            staging_state: Some("testing".into()),
+            ..state("passed")
+        };
+        assert_eq!(settled(&testing, None), None, "old checks and notice wait");
+        assert_eq!(limit_line(&testing, 30), None, "no limit while staging runs");
+        assert!(
+            describe(&testing).contains("staging request req1 testing"),
+            "{}",
+            describe(&testing)
+        );
+        let deploying = WaitState {
+            staging_state: Some("deploying".into()),
+            ..testing.clone()
+        };
+        assert_eq!(settled(&deploying, Some(&testing)), None);
+        let verified = WaitState {
+            staging_state: Some("verified".into()),
+            staging_outcome: Some("Yulius: staging request req1 … is verified.".into()),
+            ..deploying.clone()
+        };
+        assert_eq!(
+            settled(&verified, Some(&deploying)).as_deref(),
+            Some("Yulius: staging request req1 … is verified.")
+        );
+        // A wait that starts after the outcome ends with it, not with the merge notice that
+        // said there was no request.
+        let line = settled(&verified, None).unwrap_or_default();
+        assert_eq!(line, "Yulius: staging request req1 … is verified.");
+        assert!(!line.contains("has no staging request"), "{line}");
+    }
+
+    /// The deploy of a merged task's staging request is its CD run (SPEC-631 SWK-004): its end
+    /// alone does not end the wait; the request's verdict does, naming the run.
+    #[test]
+    fn a_staging_deploy_ends_the_wait_with_the_requests_verdict() {
+        let deploying = WaitState {
+            stage: "merged_integration".into(),
+            cd_run: Some("cd1".into()),
+            cd_state: Some("running".into()),
+            staging_request: Some("req1".into()),
+            staging_state: Some("deploying".into()),
+            ..state("passed")
+        };
+        assert_eq!(settled(&deploying, None), None);
+        let ran = WaitState {
+            cd_state: Some("passed".into()),
+            ..deploying.clone()
+        };
+        assert_eq!(settled(&ran, Some(&deploying)), None, "still verifying");
+        let verified = WaitState {
+            staging_state: Some("verified".into()),
+            staging_outcome: Some("staging request req1 is verified, CD run cd1".into()),
+            ..ran.clone()
+        };
+        assert_eq!(
+            settled(&verified, Some(&ran)).as_deref(),
+            Some("staging request req1 is verified, CD run cd1")
+        );
+        let told_late = WaitState {
+            cd_unreported: true,
+            ..verified
+        };
+        assert_eq!(
+            settled(&told_late, None).as_deref(),
+            Some("staging request req1 is verified, CD run cd1")
+        );
+    }
+
+    /// Without a staging request the merged head's wait ends as before (#1831 AC-3).
+    #[test]
+    fn without_a_staging_request_the_merge_notice_stays() {
+        let merged = WaitState {
+            stage: "merged_integration".into(),
+            merge_outcome: Some("merged; has no staging request".into()),
+            merge_outcome_head: Some("0123456789abcdef".into()),
+            ..state("passed")
+        };
+        assert_eq!(
+            settled(&merged, None).as_deref(),
+            Some("merged; has no staging request")
+        );
     }
 
     #[test]

@@ -2226,7 +2226,7 @@ fn run_ids_of(ci: Option<&str>, cd: Option<&str>) -> String {
 }
 
 /// What a task reads about its staging request's outcome, with the next step.
-pub(super) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
+pub(crate) fn staging_outcome_text(request: &StagingRequestRecord) -> String {
     let what = format!(
         "Yulius: staging request {} for revision {} of [cd.{}] is {}",
         request.id,
