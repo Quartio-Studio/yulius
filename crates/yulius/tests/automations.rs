@@ -1160,6 +1160,56 @@ async fn a_disabled_creators_automation_creates_no_task() -> TestResult {
     Ok(())
 }
 
+/// #1824: a manual run (Run now from a request that began before the disable) of a disabled
+/// creator's automation creates no task either, and its reason wins over "the previous task is
+/// still active" at a scheduled slot.
+#[tokio::test]
+async fn a_disabled_creator_gets_no_task_by_run_now_or_over_an_active_one() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let w = world().await?;
+    let id = create_automation(&w, daily("Nightly", "0 9 * * *")).await?;
+    set_clock(&w.h, BASE + 9 * HOUR + 10_000);
+    w.h.app.automation_tick().await?;
+    assert_eq!(automation_tasks(&w.h, &id).await?.len(), 1, "queued: active");
+    let alice = w.h.store.user(&UserId::parse("u-alice")?).await?.ok_or("alice")?;
+    let superadmin = support::setup_superadmin_creds(&w.h).await?;
+    let disabled = call(
+        &w.h.router,
+        Method::PATCH,
+        "/api/admin/users/u-alice",
+        Some(json!({"disabled": true})),
+        &superadmin,
+    )
+    .await?;
+    assert_eq!(disabled.status, StatusCode::OK, "{}", disabled.body);
+
+    set_clock(&w.h, BASE + DAY + 9 * HOUR + 10_000);
+    w.h.app.automation_tick().await?;
+    let history = runs(&w, &id).await?;
+    assert_eq!(history[0]["state"], "skipped_disabled", "{history:?}");
+    let why = history[0]["error"].as_str().unwrap_or_default();
+    assert!(why.contains("its creator, alice, is disabled"), "{history:?}");
+
+    // The creator's context, read before the disable, as a request already under way has it.
+    let ctx = yulius_app::auth::AuthContext {
+        user: alice,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    set_clock(&w.h, BASE + DAY + 10 * HOUR);
+    let run = w.h.app.run_automation_now(&ctx, &id, None).await?;
+    assert_eq!(run.state, "skipped_disabled", "{run:?}");
+    assert!(
+        run.error
+            .as_deref()
+            .is_some_and(|why| why.contains("its creator, alice, is disabled")),
+        "{run:?}"
+    );
+    assert_eq!(automation_tasks(&w.h, &id).await?.len(), 1, "no new task");
+    Ok(())
+}
+
 #[tokio::test]
 async fn previous_active_task_skips_the_run() -> TestResult {
     let w = world().await?;
