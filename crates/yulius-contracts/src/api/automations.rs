@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct AutomationRunView {
     /// Scheduled time.
     pub scheduled_for: String,
-    /// `task_created`, `skipped_previous_active`, `skipped_disabled` or `failed`.
+    /// `task_created`, `skipped_previous_active`, `skipped_disabled` (the automation or its
+    /// creator is disabled; `error` says which) or `failed`.
     pub state: String,
     /// Created task.
     pub task_id: Option<String>,

@@ -6,6 +6,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-27
 
+- An automation whose creator is disabled creates no task; each skipped run says why, and the automation runs again once the person is enabled.
 - `yulius wait` follows a merged task's staging request: it waits while the request is tested and deployed and ends with its verdict, instead of ending at once on the merge's old checks or saying there is no staging request.
 
 ## 2026-11-26

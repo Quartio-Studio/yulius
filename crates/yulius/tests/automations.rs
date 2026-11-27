@@ -1097,6 +1097,48 @@ async fn disabled_automations_do_not_run_or_replay_after_enabling() -> TestResul
     Ok(())
 }
 
+/// #1824: an automation whose creator is disabled creates no task, scheduled or caught up at a
+/// start, and its run says why; once the person is enabled again it runs at its next time.
+#[tokio::test]
+async fn a_disabled_creators_automation_creates_no_task() -> TestResult {
+    let w = world().await?;
+    let id = create_automation(&w, daily("Nightly", "0 9 * * *")).await?;
+    let superadmin = support::setup_superadmin_creds(&w.h).await?;
+    let set_disabled = |disabled: bool| {
+        call(
+            &w.h.router,
+            Method::PATCH,
+            "/api/admin/users/u-alice",
+            Some(json!({"disabled": disabled})),
+            &superadmin,
+        )
+    };
+    assert_eq!(set_disabled(true).await?.status, StatusCode::OK);
+
+    set_clock(&w.h, BASE + 9 * HOUR + 10_000);
+    w.h.app.automation_tick().await?;
+    assert!(automation_tasks(&w.h, &id).await?.is_empty());
+    let skipped = runs(&w, &id).await?;
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert_eq!(skipped[0]["state"], "skipped_disabled", "{skipped:?}");
+    let why = skipped[0]["error"].as_str().unwrap_or_default();
+    assert!(
+        why.contains("its creator, alice, is disabled"),
+        "{skipped:?}"
+    );
+    // The start's catch-up run is skipped the same way.
+    set_clock(&w.h, BASE + DAY + 9 * HOUR + 10_000);
+    w.h.app.automation_startup().await?;
+    assert!(automation_tasks(&w.h, &id).await?.is_empty());
+    assert_eq!(runs(&w, &id).await?.len(), 2);
+
+    assert_eq!(set_disabled(false).await?.status, StatusCode::OK);
+    set_clock(&w.h, BASE + 2 * DAY + 9 * HOUR + 10_000);
+    w.h.app.automation_tick().await?;
+    assert_eq!(automation_tasks(&w.h, &id).await?.len(), 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn previous_active_task_skips_the_run() -> TestResult {
     let w = world().await?;

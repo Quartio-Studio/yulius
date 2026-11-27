@@ -91,7 +91,8 @@ pub enum RunState {
     TaskCreated,
     /// The automation's previous task was still active.
     SkippedPreviousActive,
-    /// The automation was disabled when the slot was processed.
+    /// The automation, or the person who created it, was disabled when the slot was processed
+    /// (the run's error says which).
     SkippedDisabled,
     /// Task creation failed (see the error).
     Failed,
@@ -1148,6 +1149,8 @@ impl App {
                 RunState::SkippedDisabled,
                 "the automation is disabled".to_owned(),
             ))
+        } else if let Some(why) = self.creator_cannot_run(&fresh).await? {
+            Some((RunState::SkippedDisabled, why))
         } else {
             self.previous_active_task(&fresh).await?.map(|t| {
                 (
@@ -1190,6 +1193,17 @@ impl App {
             return Ok(row);
         }
         self.resolve_pending(&fresh, slot).await
+    }
+
+    /// Why `automation`'s creator cannot have a run's task now (#1824): a disabled person's
+    /// tasks are stopped and refused a git credential (ADR-0481), so their automations create
+    /// none. Enabling the person again lets the automation run at its next time.
+    async fn creator_cannot_run(&self, automation: &AutomationRecord) -> AppResult<Option<String>> {
+        Ok(match self.deps.store.user(&automation.created_by).await? {
+            Some(user) if user.disabled_at.is_none() => None,
+            Some(user) => Some(format!("its creator, {}, is disabled", user.label())),
+            None => Some("its creator is no longer a person of this instance".to_owned()),
+        })
     }
 
     /// Completes a `scheduled` run: links the task created with its key, or creates it.
