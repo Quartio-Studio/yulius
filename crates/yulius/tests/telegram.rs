@@ -2992,8 +2992,10 @@ async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         // Its notice is sent after its request is stored: only once it is out can the next
-        // message be the answer to a reply (#1820).
+        // message be the answer to a reply (#1820). The count is read before the look, so a
+        // notice sent in between is the message waited for.
         let notice = loop {
+            let seen = w.fake.sent_to(100).len();
             if let Some(id) = w
                 .fake
                 .sent_id(100, "Needs you")
@@ -3001,7 +3003,7 @@ async fn a_reply_to_a_runs_notice_answers_that_run() -> TestResult {
             {
                 break id;
             }
-            w.fake.wait_sent(100, w.fake.sent_to(100).len() + 1).await?;
+            w.fake.wait_sent(100, seen + 1).await?;
         };
         let before = w.fake.sent_to(100).len();
         w.fake.raw(

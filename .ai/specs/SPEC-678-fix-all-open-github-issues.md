@@ -85,10 +85,11 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **PROC-1760** The identity tests write every executable they run (`write_exe`) from a child
   process, so no descriptor of the test process can be inherited by a child another thread
   forks, which made running the script fail with ETXTBSY ("Text file busy").
-- **WAIT-1807** The compile-cache Ctrl+Z test's wait for the shell's "Stopped" report spends
-  its 5 s only while the shell sleeps and no member of the job can run: a host that has not
-  scheduled the shell or the job yet spends none of it, and a shell that really fails to report
-  still fails the test within the same budget.
+- **WAIT-1807** The compile-cache shell tests' wait for the shell's reports
+  (`wait_for_report`) spends its 5 s only while nothing of the shell's session is runnable (R or
+  D): a host that has not scheduled the shell or its job yet spends none of it, while a stopped,
+  dead or sleeping shell does, so a shell that really fails to report still fails within the
+  budget. A wall-clock ceiling of 60 s ends the wait whatever runs (a spinning shell or job).
 - **WAIT-1820** The Telegram reply test waits for the second run's own notice before it
   records the message count, so the next message after its reply can only be the answer.
 
@@ -243,11 +244,16 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 
 ### #1807, #1820 (tests wait on the condition)
 
-- #1807: probe that stops the shell (SIGSTOP) for 6 s right after Ctrl+Z, as an unscheduled shell
-  on a loaded host: the test failed `shell did not report b'Stopped': b'^Z'` (5.07 s) as in CI;
-  with the idle-time budget it passes (6.07 s). `python3 -m unittest discover -s scripts -p
-  test_compile_cache.py`: OK; the two job-control tests 10 of 10 pinned to one CPU beside six
-  busy loops.
+- #1807: probe that leaves the shell runnable but unscheduled for 8 s right after Ctrl+Z
+  (`SCHED_IDLE`, pinned to CPU 0 beside 80 busy loops, as on a loaded host): dev 4be78a780 fails
+  `shell did not report b'Stopped': b'^Z'` as in CI; the fix passes (8.17 s). New test
+  `test_a_shell_that_cannot_report_fails_the_wait_within_its_budget`: a stopped shell fails the
+  wait within its budget. `python3 -m unittest discover -s scripts -p test_compile_cache.py`: 50
+  OK.
+- Review round 1 of #1837 (Fable 5.2, request changes at a0d6759): its major (the budget never
+  accrued for a stopped, dead or spinning shell, so the wait could hang) is fixed by counting only
+  runnable states, reading the whole session, and the 60 s ceiling; `/proc` is read as bytes;
+  the clock mark moves after each read; the Telegram wait reads the count before its look.
 - #1820: probe delaying the Needs-you notice 300 ms and the reply's answer 1 s reproduced the
   CI failure exactly (`left: "Needs your decision · app …"`, line 3000); with the test waiting for
   the second run's notice first it passes with the same probe.

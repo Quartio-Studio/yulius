@@ -11,6 +11,58 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent
 
 
+# How long a shell may sit idle, with nothing of its session able to run, before its report counts as
+# missing; and the wall-clock ceiling that ends a wait whatever runs (a spinning shell or job).
+REPORT_IDLE_BUDGET = 5.0
+REPORT_CEILING = 60.0
+
+
+def session_states(leader):
+    """`(pid, state)` of each process in the session `leader` leads (a `pty.fork` shell)."""
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_bytes().rsplit(b")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 3 and int(fields[3]) == leader:
+            found.append((int(entry.name), fields[0].decode("ascii", "replace")))
+    return found
+
+
+def wait_for_report(terminal, marker, shell, budget=REPORT_IDLE_BUDGET, ceiling=REPORT_CEILING):
+    """Reads `terminal` until `marker`; `(found, output)`. Only time in which nothing of the
+    shell's session can run counts against `budget` (#1807): a loaded host that has not scheduled
+    the shell or its job yet spends none of it, while a stopped, dead or sleeping shell with
+    nothing runnable does. `ceiling` bounds the wait in wall-clock time whatever runs."""
+    import select
+    import time
+    output = b""
+    idle_for = 0.0
+    started = mark = time.monotonic()
+    while marker not in output:
+        if select.select([terminal], [], [], .05)[0]:
+            try:
+                chunk = os.read(terminal, 4096)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                return False, output
+            output += chunk
+            mark = time.monotonic()
+            continue
+        now = time.monotonic()
+        states = session_states(shell)
+        if not any(state in ("R", "D") for _, state in states):
+            idle_for += now - mark
+        mark = now
+        if idle_for >= budget or now - started >= ceiling:
+            return False, output
+    return True, output
+
+
 @unittest.skipUnless(sys.platform == "linux", "the instance cache runs on Linux")
 class CompileCache(unittest.TestCase):
     def setUp(self):
@@ -723,6 +775,26 @@ signal.pause()
     def test_shell_can_foreground_a_disposable_build_started_in_background(self):
         self.check_shell_job(read_immediately=True)
 
+    def test_a_shell_that_cannot_report_fails_the_wait_within_its_budget(self):
+        """#1807 review: a stopped shell, with nothing of its session runnable, spends the idle
+        budget: the wait fails within it instead of hanging."""
+        import pty
+        import signal
+        import time
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execv("/bin/sh", ["/bin/sh", "-c", "sleep 60"])
+        try:
+            os.kill(pid, signal.SIGSTOP)
+            started = time.monotonic()
+            found, _ = wait_for_report(terminal, b"never", pid, budget=1.0)
+            self.assertFalse(found)
+            self.assertLess(time.monotonic() - started, 4.0)
+        finally:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            os.close(terminal)
+
     def test_ctrl_z_stops_a_running_background_build_brought_forward(self):
         self.check_shell_job(read_immediately=False)
 
@@ -750,41 +822,9 @@ print('received '+input(), flush=True)
             os.chdir(self.task)
             os.execve(shell, [shell, "--noprofile", "--norc", "-i"], env)
 
-        def state_of(process):
-            try:
-                return (Path("/proc") / str(process) / "stat").read_text().rsplit(")", 1)[1].split()
-            except OSError:
-                return None
-
-        def idle():
-            # Only time in which nothing it waits for can still run counts against the shell:
-            # the shell asleep, and no member of the job runnable. A loaded host that has not
-            # scheduled the shell or the job yet spends none of it (#1807).
-            if (shell_state := state_of(pid)) is None:
-                return True
-            if shell_state[0] != "S":
-                return False
-            if job is None:
-                return True
-            for entry in Path("/proc").iterdir():
-                fields = state_of(entry.name) if entry.name.isdigit() else None
-                if fields and int(fields[2]) == job and fields[0] in ("R", "D"):
-                    return False
-            return True
-
-        def read_until(marker, budget=5):
-            output = b""
-            idle_for = 0.0
-            mark = time.monotonic()
-            while marker not in output:
-                if select.select([terminal], [], [], .05)[0]:
-                    output += os.read(terminal, 4096)
-                    continue
-                now = time.monotonic()
-                if idle():
-                    idle_for += now - mark
-                mark = now
-                self.assertLess(idle_for, budget, f"shell did not report {marker!r}: {output!r}")
+        def read_until(marker):
+            ok, output = wait_for_report(terminal, marker, pid)
+            self.assertTrue(ok, f"shell did not report {marker!r}: {output!r}")
             return output
 
         job = None
