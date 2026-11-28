@@ -1965,6 +1965,50 @@ fn reattached_idle_codex_repaints_and_receives_its_ci_notice() -> TestResult {
     })
 }
 
+/// #1702: Yulius's own input that goes straight to the session (the goal typist, the intake's
+/// submit, the context-full compaction) repaints a reattached idle Codex screen it cannot read,
+/// then types.
+#[test]
+fn reattached_idle_codex_repaints_before_yuliuss_own_input() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (id, listener) = first.block_on(async {
+        let (_app, id, _, listener) = codex_with_pr_fixture(&data, full_screen()).await?;
+        Ok::<_, Error>((id, listener))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    runtime()?.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let app = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(ShiftedClock::new(0)),
+            ..Live::new(Some(&fake), full_screen())
+        }
+        .serve(&data, tokio::net::TcpListener::from_std(listener)?, |_| {})?;
+        app.reconcile().await?;
+        let rt = app.runtime(&id);
+        let (cols, rows) = rt.hub.size();
+        // A snapshot without redraw provenance: unreadable until the child repaints.
+        rt.hub.reset(
+            rt.hub.output_seq(),
+            CODEX_EMPTY_COMPOSER.as_bytes(),
+            cols,
+            rows,
+        );
+        app.type_automated_line_for_test(&id, b"Automated line after reattach")
+            .await?;
+        eventually(
+            "the automated line read by the reattached child",
+            Duration::from_secs(10),
+            || async { screen(&app, &id).contains("ECHO: Automated line after reattach") },
+        )
+        .await?;
+        assert_eq!(rt.hub.size(), (cols, rows));
+
+        stop(&app, &id).await
+    })
+}
+
 #[test]
 fn unreadable_codex_raises_the_undelivered_ci_notice_on_the_task() -> TestResult {
     use yulius_app::pr_watch::WatchBounds;
