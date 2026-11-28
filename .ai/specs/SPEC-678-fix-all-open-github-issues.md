@@ -173,6 +173,10 @@ reviewed and merged into `dev` by `delivery_merge`.
   consequence and the upgrade note in `docs/operations.md` state the owner's rule: two weeks
   after 2026-11-13, a session still running from before then only stops running commands until
   it is continued.
+- **RUN-1692** A run's reader that reattaches to its host after losing the connection takes the
+  task's writer back only while that run is still the task's: the live attempt, and the run the
+  writer belongs to (or none, while it was let go). A replaced run whose host still answers
+  takes nothing: input stays the replacement's, and the old reader ends.
 
 ## Plan
 
@@ -206,7 +210,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [x] #1544: egress warning-capture tests observe their own warning
 - [x] #1532: a branch fast-forwarded to a head with skipped jobs gets its own run
 - [ ] #1520: the Superagent deep-link panel test is deterministic
-- [ ] #1239: the old fingerprint format is removed and a version 1 file is rewritten as version 2
+- [x] #1239: the old fingerprint format is removed and a version 1 file is rewritten as version 2
 - [ ] Final report of every issue's outcome given
 
 ## Acceptance criteria
@@ -463,3 +467,13 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   and `cockpit::a_superagents_version_1_file_is_rewritten_as_version_2` fail on the old writer
   (3 of 96 `secrets_scopes::`/`cockpit::` tests) and pass with the change: 96 passed; with the
   `yulius-contracts` and `yulius-app` vault tests, 204 passed.
+
+### #1692 (a replaced run's reattach)
+
+- `parking::replaced_output::a_replaced_runs_reattach_leaves_the_tasks_writer_alone` (real
+  ptyhost and fake agent): the first run's reader is held and released as a lost connection
+  after that run parked and a replacement attached; the holding host answers its reattach with
+  a host that records input. Without the change the next message went to the old host (`input
+  went to the replaced run's host: "…Text after the old reader came back…"`); with it the
+  replacement answers and the old host got nothing. Unit test
+  `supervisor::watch::reattach_tests::only_the_current_run_takes_the_writer_back`.
