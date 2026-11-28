@@ -162,6 +162,9 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **GH-1751** A created repository the App's installation cannot reach says who must act: an
   owner of {owner} adds it to the installation, then someone with admin or maintain on it
   imports it (an owner of {owner} can, or can give the creator that role).
+  In a personal account (whose owner alone creates there, #1753) it says the owner adds it and
+  imports it, with no role to give. The personal-account refusal comes before anything is asked
+  of GitHub and names the owner or the superadmin as who can create.
 
 ## Plan
 
@@ -183,7 +186,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [x] #1775: the MCP probe test counts a zombie grandchild as gone
 - [x] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
 - [x] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
-- [ ] #1753 #1751: non-owner creators in a personal account or a narrowed App are told who acts
+- [x] #1753 #1751: non-owner creators in a personal account or a narrowed App are told who acts
 - [ ] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
 - [x] #1693: the Antigravity error-turn hook test is deterministic
@@ -439,3 +442,8 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   `projects::a_created_repository_out_of_the_installations_reach_is_explained` (moved to an
   organization owner, asserting the new advice) fail without the change (2 of 38 `projects::`
   tests) and pass with it: 38 passed.
+- Follow-up after the approving review of #1844 (its minors):
+  `projects::a_personal_accounts_unreachable_repository_is_the_owners_to_add` (the owner
+  creates in a personal account whose installation covers selected repositories) fails on
+  3f0f4c5b1 (the organization's "An owner of … admin or maintain" wording) and passes now; the
+  unit test covers both wordings; `projects::` and `creation_refusals`: 42 passed.

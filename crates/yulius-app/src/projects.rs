@@ -869,9 +869,8 @@ impl App {
                 template.id()
             )));
         }
-        let install_token = self.installation_token().await?;
-        let admin_token = if is_org {
-            install_token.clone()
+        let owner_user = if is_org {
+            None
         } else {
             let owner_user = store.user_by_login(&owner).await?.ok_or_else(|| {
                 AppError::Conflict(format!(
@@ -880,15 +879,21 @@ impl App {
             })?;
             // Only the account's owner is a repository's admin there, and a collaborator gets
             // write at most: another person would create a project they cannot open. Refused
-            // before anything is created; the superadmin holds every project (ACC-012, #1753).
+            // before anything is asked of GitHub; the superadmin holds every project (ACC-012,
+            // #1753).
             if owner_user.id != ctx.user.id && !ctx.user.is_superadmin {
                 return Err(AppError::Forbidden(format!(
                     "Only {owner} can create projects in their personal GitHub account: a \
                      repository made there is theirs alone, and a collaborator gets write at most. \
-                     Ask {owner} to create it, or move the instance to an organization."
+                     Ask {owner} (or the superadmin) to create it."
                 )));
             }
-            self.user_github_token(&owner_user).await?
+            Some(owner_user)
+        };
+        let install_token = self.installation_token().await?;
+        let admin_token = match &owner_user {
+            None => install_token.clone(),
+            Some(owner_user) => self.user_github_token(owner_user).await?,
         };
         let repo = match self
             .deps
