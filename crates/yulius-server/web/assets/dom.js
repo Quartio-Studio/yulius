@@ -412,9 +412,10 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
     const redrawn = returnKey
       ? [...document.querySelectorAll('[data-focus-key]')].find((el) => el.getAttribute('data-focus-key') === returnKey && !el.closest('dialog'))
       : null;
-    if (returnTo instanceof HTMLElement && returnTo.isConnected && returnTo !== document.body) returnTo.focus({ preventScroll: true });
-    else if (redrawn instanceof HTMLElement) redrawn.focus({ preventScroll: true });
-    else focusMainHeading();
+    const opener = returnTo instanceof HTMLElement && returnTo.isConnected && returnTo !== document.body ? returnTo : redrawn;
+    if (opener instanceof HTMLElement) opener.focus({ preventScroll: true });
+    // None, or one that cannot take the keyboard (disabled meanwhile): the main heading.
+    if (!(opener instanceof HTMLElement) || document.activeElement !== opener) focusMainHeading();
     if (onClose) onClose(value);
     resolve(value);
   }
@@ -470,12 +471,11 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
           button.disabled = false;
           button.classList.remove('busy');
         }
-        // The disabled button lost the keyboard: after a failure it goes to the field the
-        // action marked invalid, or back to this button, never to the page body (#1714).
-        if (failed && !closed && button.isConnected) {
-          const invalid = dialog.querySelector('[aria-invalid="true"]');
-          (invalid instanceof HTMLElement ? invalid : button).focus({ preventScroll: true });
-        }
+        // The disabled button lost the keyboard: after a failure it comes back to this button,
+        // never left on the page body (#1714). Focus still in the dialog (Enter in a field, a
+        // click into one while the action ran) stays where it is.
+        const lost = !document.activeElement || document.activeElement === document.body || !dialog.contains(document.activeElement);
+        if (failed && !closed && button.isConnected && lost) button.focus({ preventScroll: true });
       } }, action.label);
       if (action.ref) action.ref(button);
       if (action.kind === 'primary' || action.kind === 'danger' || (!primary && action.run)) primary = button;

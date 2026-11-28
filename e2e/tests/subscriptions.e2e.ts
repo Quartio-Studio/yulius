@@ -1544,3 +1544,18 @@ test('a dialog whose opener was drawn again gives the keyboard back to the same 
   });
   await expect.poll(focused).toBe('Paste a new token @ true');
 });
+
+test('a failed action leaves the keyboard where the person has it in the dialog (#1714)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0&failpost=/api/admin/accounts'));
+  await screen.getByRole('button', 'Add subscription').first().click();
+  const add = screen.getByRole('dialog', 'Add a Claude subscription');
+  const name = add.getByRole('textbox', /^Name/);
+  await name.fill('laptop Max');
+  // Enter in the field runs the action; its refusal keeps the field's keyboard.
+  await browser.keyboard.press('Enter');
+  await expect(browser.locator('dialog.modal[open] .modal-error')).toBeVisible();
+  await expect(name).toBeFocused();
+  await browser.keyboard.type(' 2');
+  await expect(name).toHaveValue('laptop Max 2');
+});
+

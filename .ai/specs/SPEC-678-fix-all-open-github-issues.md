@@ -147,11 +147,14 @@ reviewed and merged into `dev` by `delivery_merge`.
   walk stopped, not "0 of N could not be cleared".
 - **DLG-1758** A dialog gives the keyboard back, on close, to the control that had it when it
   opened; when the page drew that control again while the dialog was open, to the control with
-  the same `data-focus-key` outside any dialog (SPEC-463); else to the main heading, as before.
-  The Subscriptions page's "Paste a new token" and "Import auth.json" buttons carry a focus key.
-- **DLG-1714** After a dialog's action fails (the dialog stays open with its error), the keyboard
-  goes to the field the action marked `aria-invalid="true"`, or else back to the action's
-  button, never to the page body.
+  the same `data-focus-key` outside any dialog (SPEC-463); else, or when that control cannot
+  take the keyboard (disabled), to the main heading. The Subscriptions page's "Paste a new
+  token" and "Import auth.json" buttons carry a focus key.
+- **DLG-1714** After a dialog's action fails (the dialog stays open with its error), a keyboard
+  the disabled button lost (now on the page body or outside the dialog) comes back to the
+  action's button; a keyboard still in the dialog (Enter in a field, a click into one while the
+  action ran) stays where it is. No dialog marks a field invalid and then throws (each returns
+  `false` after `invalid()`, which focuses the field), so no field is chosen here.
 
 ## Plan
 
@@ -172,7 +175,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [x] #1795: a watch's write past its file bound is refused (EFBIG) on every host
 - [x] #1775: the MCP probe test counts a zombie grandchild as gone
 - [x] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
-- [ ] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
+- [x] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
 - [ ] #1753 #1751: non-owner creators in a personal account or a narrowed App are told who acts
 - [ ] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
@@ -415,3 +418,9 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   (`refuseFork`): both fail without the `dom.js`/`admin.js` change (`expect.poll(...).toBe(...)
   timed out after 5000 ms`) and pass with it; the two files: 58 passed. Whole suite with the
   change: 1,386 passed.
+- Review round 1 of #1843 (request changes at dea684ad4): focus moved to the button after every
+  failure, also from a field where Enter ran the action (typing went to the button), and the
+  `aria-invalid` branch could pick a hidden field. Fixed as above; e2e "a failed action leaves
+  the keyboard where the person has it in the dialog (#1714)" (Add subscription refused by
+  `failpost`, Enter in Name, then " 2" typed) fails on dea684ad4 (`expect.toBeFocused failed`)
+  and passes now; the two files: 59 passed.

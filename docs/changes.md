@@ -6,7 +6,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-28
 
-- A dialog closed after its page was redrawn gives the keyboard back to the same control, and a dialog whose action fails keeps the keyboard on its action or the field it marked, not the page body.
+- A dialog closed after its page was redrawn gives the keyboard back to the same control, and a dialog whose action fails keeps the keyboard where the person had it, or on its action, not on the page body.
 - The host check's memory stopgap line says when its walk stopped at its bound or could not read an entry, in a dry run too, instead of reading "ok" or "0 of N could not be cleared".
 
 ## 2026-11-27
