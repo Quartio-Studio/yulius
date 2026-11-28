@@ -81,6 +81,8 @@ struct Fake {
     immutable_stuck: Option<PathBuf>,
     /// The stopgap walk stops at its bound.
     stopgap_cut: bool,
+    /// An entry the stopgap walk cannot read (#1767).
+    stopgap_unread: Option<&'static str>,
 }
 
 /// A loaded AppArmor profile, as far as bwrap's start depends on it.
@@ -149,6 +151,7 @@ impl Fake {
             immutable: BTreeSet::new(),
             immutable_stuck: None,
             stopgap_cut: false,
+            stopgap_unread: None,
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
@@ -332,6 +335,8 @@ impl Host for Fake {
     fn memory_stopgap(&mut self, _data_dir: &Path, clear: bool) -> super::StopgapScan {
         let mut scan = super::StopgapScan {
             cut: self.stopgap_cut,
+            unread: usize::from(self.stopgap_unread.is_some()),
+            first_unread: self.stopgap_unread.map(str::to_owned),
             ..super::StopgapScan::default()
         };
         let flagged: Vec<PathBuf> = self
@@ -1994,4 +1999,51 @@ fn the_stopgaps_immutable_memory_folders_are_cleared() {
     cut.stopgap_cut = true;
     let lines = run(&mut cut, Mode::Check);
     assert_eq!(outcome(&lines, STOPGAP), HostOutcome::Failed, "{lines:?}");
+    // #1767: a cut with every flag it found cleared says so, not "0 of 4 could not be cleared".
+    let detail = &line(&lines, STOPGAP).detail;
+    assert!(
+        !detail.contains("could not be cleared") && detail.contains("the walk stopped after"),
+        "{detail}"
+    );
+    // A dry run of a cut walk says the walk was cut too.
+    let mut cut = seeded();
+    cut.stopgap_cut = true;
+    let lines = run(&mut cut, Mode::DryRun);
+    let detail = &line(&lines, STOPGAP).detail;
+    assert!(
+        detail.starts_with("would ") && detail.contains("the walk stopped after"),
+        "{detail}"
+    );
+    // An entry the walk could not read is named in every mode and never reads "ok" (#1767).
+    let odd = "/var/lib/yulius/sandboxes/s1/home/.claude/projects/-k/memory: a name that is not UTF-8 (bad-\u{fffd}.md)";
+    let mut unread = Fake::set_up();
+    unread.stopgap_unread = Some(odd);
+    let lines = run(&mut unread, Mode::Check);
+    assert_eq!(outcome(&lines, STOPGAP), HostOutcome::Failed, "{lines:?}");
+    let detail = &line(&lines, STOPGAP).detail;
+    assert!(
+        detail.contains("no immutable path found; 1 entry could not be read, first ")
+            && detail.contains(odd),
+        "{detail}"
+    );
+    let mut unread = seeded();
+    unread.stopgap_unread = Some(odd);
+    let lines = run(&mut unread, Mode::DryRun);
+    let detail = &line(&lines, STOPGAP).detail;
+    assert!(
+        detail.starts_with("would ") && detail.contains("1 entry could not be read"),
+        "{detail}"
+    );
+    let mut unread = seeded();
+    unread.stopgap_unread = Some(odd);
+    let lines = run(&mut unread, Mode::Check);
+    assert_eq!(outcome(&lines, STOPGAP), HostOutcome::Failed, "{lines:?}");
+    let detail = &line(&lines, STOPGAP).detail;
+    assert!(
+        detail.starts_with("cleared ")
+            && !detail.contains("could not be cleared")
+            && detail.contains("1 entry could not be read"),
+        "{detail}"
+    );
+    assert!(unread.immutable.is_empty(), "every flag found is cleared");
 }

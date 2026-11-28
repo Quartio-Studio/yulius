@@ -165,7 +165,8 @@ pub trait Host {
 /// The line of the stopgap's immutable memory folders (SPEC-652 MEM-009).
 pub const STOPGAP: &str = "memory stopgap";
 
-/// Most paths of memory folders the stopgap walk opens.
+/// Most entries the stopgap walk reads from listings (owners, project keys and everything in
+/// memory folders).
 pub const STOPGAP_MAX_PATHS: usize = 100_000;
 
 /// What the stopgap walk found and did ([`Host::memory_stopgap`]).
@@ -181,8 +182,13 @@ pub struct StopgapScan {
     pub failed: usize,
     /// The first failure, `<path>: <why>`.
     pub first_failure: Option<String>,
-    /// The walk stopped at [`STOPGAP_MAX_PATHS`]: folders beyond it were not looked at.
+    /// The walk stopped at [`STOPGAP_MAX_PATHS`] entries: those beyond were not looked at.
     pub cut: bool,
+    /// Entries the walk could not read (a name that is not UTF-8, a listing or an open that
+    /// failed).
+    pub unread: usize,
+    /// The first of them, `<folder>: <why>`.
+    pub first_unread: Option<String>,
 }
 
 /// Options of a run.
@@ -601,16 +607,31 @@ impl<'a> Run<'a> {
     fn memory_stopgap(&mut self) {
         let data_dir = self.opts.data_dir.clone();
         let scan = self.host.memory_stopgap(&data_dir, self.may(true));
-        let cut = scan.cut.then(|| {
-            format!(
-                "; the walk stopped after {STOPGAP_MAX_PATHS} paths, so memory folders beyond \
+        // A walk cut at its bound, or one that could not read an entry, may have missed flags:
+        // the line says so in every mode, and never reads "ok" (#1767).
+        let mut missed = String::new();
+        if scan.cut {
+            missed.push_str(&format!(
+                "; the walk stopped after {STOPGAP_MAX_PATHS} entries, so memory folders beyond \
                  them were not looked at"
-            )
-        });
+            ));
+        }
+        if scan.unread > 0 {
+            missed.push_str(&format!(
+                "; {} {} could not be read{}",
+                scan.unread,
+                if scan.unread == 1 { "entry" } else { "entries" },
+                scan.first_unread
+                    .as_deref()
+                    .map(|first| format!(", first {first}"))
+                    .unwrap_or_default()
+            ));
+        }
         if scan.flagged == 0 {
-            return match cut {
-                Some(cut) => self.failed(STOPGAP, format!("no immutable path found{cut}")),
-                None => self.ok(STOPGAP, "no harness memory folder is immutable"),
+            return if missed.is_empty() {
+                self.ok(STOPGAP, "no harness memory folder is immutable")
+            } else {
+                self.failed(STOPGAP, format!("no immutable path found{missed}"))
             };
         }
         let what = format!(
@@ -619,9 +640,9 @@ impl<'a> Run<'a> {
             scan.flagged, scan.folders
         );
         if !self.may(true) {
-            return self.changed(STOPGAP, "", &format!("clear {what}"));
+            return self.changed(STOPGAP, "", &format!("clear {what}{missed}"));
         }
-        if scan.failed > 0 || cut.is_some() {
+        if scan.failed > 0 {
             let first = scan
                 .first_failure
                 .map(|first| format!(", first {first}"))
@@ -629,13 +650,13 @@ impl<'a> Run<'a> {
             return self.failed(
                 STOPGAP,
                 format!(
-                    "cleared {} of {what}; {} of {} could not be cleared{first}{}",
-                    scan.cleared,
-                    scan.failed,
-                    scan.flagged,
-                    cut.unwrap_or_default()
+                    "cleared {} of {what}; {} of {} could not be cleared{first}{missed}",
+                    scan.cleared, scan.failed, scan.flagged,
                 ),
             );
+        }
+        if !missed.is_empty() {
+            return self.failed(STOPGAP, format!("cleared {what}{missed}"));
         }
         self.changed(STOPGAP, &format!("cleared {what}"), "");
     }

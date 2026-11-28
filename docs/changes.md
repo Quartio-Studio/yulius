@@ -4,6 +4,10 @@ What changed for the people and agents using Yulius in the last four weeks, newe
 each. A change nobody using Yulius would notice (a refactor, a test fix, this repository's own process)
 gets no line; the merged pull request is its record. Older entries: [archive](archive/changes-until-2026-11-26.md).
 
+## 2026-11-28
+
+- The host check's memory stopgap line says when its walk stopped at its bound or could not read an entry, in a dry run too, instead of reading "ok" or "0 of N could not be cleared".
+
 ## 2026-11-27
 
 - The Security scan card reads `.config/vidoc.toml` exactly as the scanner does: a file the scan refuses (a byte-order mark, a TOML 1.1 escape) shows as unreadable, not as on or off.
