@@ -473,10 +473,14 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 - `parking::replaced_output::a_replaced_runs_reattach_leaves_the_tasks_writer_alone` (real
   ptyhost and fake agent): the first run's reader is held and released as a lost connection
   after that run parked and a replacement attached; the holding host answers its reattach with
-  a host that records input. Without the change the next message went to the old host (`input
-  went to the replaced run's host: "…Text after the old reader came back…"`); with it the
-  replacement answers and the old host got nothing, and the old reader lets the host go
-  without reading it. A store that cannot say which attempt is live makes the reattach try
-  again (logged), never end the current run's reader. Review of #1847 (approve at 8fddfea38):
-  the writer-owner half of the first predicate was unreachable and dropped; the test now tells
-  "ended" from "kept reading".
+  a host that records input. Without the guard the first version of the test failed with `input
+  went to the replaced run's host: "…Text after the old reader came back…"`, and the final one
+  fails with "the replaced run's reader did not let its host go"; with the change the old
+  reader lets the host go without reading it, the replacement answers and the old host got
+  nothing. `task_message::a_reconnecting_host_restores_the_width_of_an_interrupted_codex_repaint`
+  covers the live run's own reattach (it fails with the comparison inverted).
+- By reading the code (no store double fails reads): a store that cannot say which attempt is
+  live makes the reattach try again (logged), so the bounded retry and
+  `resolve_lost_connection` still decide the run's end. Review of #1847: approve at 8fddfea38
+  with minors (the writer-owner half of the first predicate was unreachable and dropped; the
+  test now tells "ended" from "kept reading"), approve at ebb550c1f.

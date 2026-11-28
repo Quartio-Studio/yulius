@@ -457,7 +457,9 @@ fn a_replaced_runs_reattach_leaves_the_tasks_writer_alone() -> TestResult {
         lost.release.notify_one();
         tokio::time::timeout(Duration::from_secs(10), lingering.attached.notified()).await?;
         // The old reader ends: it lets the host go and never reads it.
-        tokio::time::timeout(Duration::from_secs(10), lingering.dropped.notified()).await?;
+        tokio::time::timeout(Duration::from_secs(10), lingering.dropped.notified())
+            .await
+            .map_err(|_| "the replaced run's reader did not let its host go")?;
         assert!(
             !lingering.polled.load(std::sync::atomic::Ordering::SeqCst),
             "the replaced run's reader kept reading its host"
