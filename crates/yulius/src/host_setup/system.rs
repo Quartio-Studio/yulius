@@ -66,7 +66,7 @@ impl Host for RealHost {
             use rustix::fs::IFlags;
             let mut scan = super::StopgapScan::default();
             let mut folders = std::collections::BTreeSet::new();
-            scan.cut = walk_memory(data_dir, super::STOPGAP_MAX_PATHS, &mut |path, fd| {
+            let end = walk_memory(data_dir, super::STOPGAP_MAX_PATHS, &mut |path, fd| {
                 let Ok(flags) = rustix::fs::ioctl_getflags(fd) else {
                     return;
                 };
@@ -91,6 +91,9 @@ impl Host for RealHost {
                 }
             });
             scan.folders = folders.len();
+            scan.cut = end.cut;
+            scan.unread = end.unread_count;
+            scan.first_unread = end.unread.into_iter().next();
             scan
         }
         #[cfg(not(target_os = "linux"))]
@@ -247,10 +250,16 @@ mod tests {
         std::os::unix::fs::symlink(&outside, data.join("sandboxes/s2/home/.claude/projects"))?;
         std::fs::create_dir_all(data.join("users/u1"))?;
         std::os::unix::fs::symlink(&outside, data.join("users/u1/home"))?;
+        // A regular file beside `memory` is no memory folder's (#1767).
+        std::fs::write(
+            data.join("sandboxes/s1/home/.claude/projects/-k/session.jsonl"),
+            "{}",
+        )?;
         let mut seen = Vec::new();
-        let cut = walk_memory(&data, 100, &mut |path, _| seen.push(path.to_path_buf()));
+        let end = walk_memory(&data, 100, &mut |path, _| seen.push(path.to_path_buf()));
         seen.sort();
-        assert!(!cut);
+        assert!(!end.cut);
+        assert!(end.unread.is_empty(), "{:?}", end.unread);
         assert_eq!(
             seen,
             [
@@ -262,10 +271,36 @@ mod tests {
         );
         let mut few = 0;
         assert!(
-            walk_memory(&data, 2, &mut |_, _| few += 1),
+            walk_memory(&data, 2, &mut |_, _| few += 1).cut,
             "cut at its bound"
         );
         assert!(few <= 2);
+        Ok(())
+    }
+
+    /// #1767: every entry the walk examines counts toward its bound, links and FIFOs too, so a
+    /// folder of many links cuts it; a name that is not UTF-8 is reported, not passed over.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_examined_entry_counts_and_an_unreadable_name_is_reported()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let root = tempfile::tempdir()?;
+        let data = root.path().join("data");
+        let memory = data.join("sandboxes/s1/home/.claude/projects/-k/memory");
+        std::fs::create_dir_all(&memory)?;
+        for n in 0..50 {
+            std::os::unix::fs::symlink("/nowhere", memory.join(format!("l{n}")))?;
+        }
+        let mut visited = 0;
+        let end = walk_memory(&data, 20, &mut |_, _| visited += 1);
+        assert!(end.cut, "50 links past a bound of 20");
+        let odd = memory.join(std::ffi::OsStr::from_bytes(b"bad-\xff.md"));
+        std::fs::write(&odd, "x")?;
+        let end = walk_memory(&data, 1_000, &mut |_, _| {});
+        assert!(!end.cut);
+        assert_eq!(end.unread.len(), 1, "{:?}", end.unread);
+        assert!(end.unread[0].contains("not UTF-8"), "{:?}", end.unread);
         Ok(())
     }
 
@@ -296,46 +331,69 @@ fn memory_folder_of(path: &Path) -> Option<std::path::PathBuf> {
 /// them), opening each component from its folder's descriptor with `O_NOFOLLOW`, so a link an
 /// agent put anywhere below the data directory is never entered (SPEC-652 MEM-009, review of part
 /// 2). `visit` gets each folder and regular file with an open descriptor of it, `O_RDONLY` (a
-/// FIFO or device is never opened for reading). Returns whether the walk stopped at `bound`
-/// opened paths.
+/// FIFO or device is never opened for reading). Every entry it examines counts toward `bound`,
+/// a link or FIFO it skips too (#1767); the walk stops there.
 #[cfg(target_os = "linux")]
 pub(crate) fn walk_memory(
     data_dir: &Path,
     bound: usize,
     visit: &mut dyn FnMut(&Path, &std::os::fd::OwnedFd),
-) -> bool {
+) -> WalkEnd {
     use rustix::fs::{Mode, OFlags};
     let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let open_dir = |dir: &std::os::fd::OwnedFd, name: &str| {
         rustix::fs::openat(dir, name, dir_flags, Mode::empty()).ok()
     };
-    let names = |dir: &std::os::fd::OwnedFd| -> Vec<String> {
-        // The folder the descriptor names, whatever its path became meanwhile.
-        std::fs::read_dir(format!(
-            "/proc/self/fd/{}",
-            std::os::fd::AsRawFd::as_raw_fd(dir)
-        ))
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter_map(|e| e.file_name().to_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut end = WalkEnd::default();
+    // The folder the descriptor names, read from the descriptor itself (no `/proc` needed),
+    // whatever its path became meanwhile; a name that is not UTF-8 or an entry that cannot be
+    // read is noted.
+    let names = |dir: &std::os::fd::OwnedFd, path: &Path, end: &mut WalkEnd| -> Vec<String> {
+        let mut found = Vec::new();
+        let listing = match rustix::fs::Dir::read_from(dir) {
+            Ok(listing) => listing,
+            Err(err) => {
+                end.note(format!("{}: {err}", path.display()));
+                return found;
+            }
+        };
+        for entry in listing {
+            match entry {
+                Ok(entry) => {
+                    let name = entry.file_name().to_bytes();
+                    if name == b"." || name == b".." {
+                        continue;
+                    }
+                    match std::str::from_utf8(name) {
+                        Ok(name) => found.push(name.to_owned()),
+                        Err(_) => end.note(format!(
+                            "{}: a name that is not UTF-8 ({})",
+                            path.display(),
+                            String::from_utf8_lossy(name)
+                        )),
+                    }
+                }
+                Err(err) => {
+                    end.note(format!("{}: {err}", path.display()));
+                    break;
+                }
+            }
+        }
+        found
     };
     let Ok(data) = rustix::fs::open(
         data_dir,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
     ) else {
-        return false;
+        return end;
     };
     let mut opened = 0_usize;
     for group in ["sandboxes", "users"] {
         let Some(group_fd) = open_dir(&data, group) else {
             continue;
         };
-        for owner in names(&group_fd) {
+        for owner in names(&group_fd, &data_dir.join(group), &mut end) {
             let mut dir = open_dir(&group_fd, &owner);
             for part in ["home", ".claude", "projects"] {
                 dir = dir.and_then(|d| open_dir(&d, part));
@@ -347,7 +405,7 @@ pub(crate) fn walk_memory(
                 .join(group)
                 .join(&owner)
                 .join("home/.claude/projects");
-            for key in names(&projects) {
+            for key in names(&projects, &base, &mut end) {
                 let Some(memory) = open_dir(&projects, &key).and_then(|d| open_dir(&d, "memory"))
                 else {
                     continue;
@@ -355,10 +413,16 @@ pub(crate) fn walk_memory(
                 let mut pending = vec![(base.join(&key).join("memory"), memory)];
                 while let Some((path, fd)) = pending.pop() {
                     if opened >= bound {
-                        return true;
+                        end.cut = true;
+                        return end;
                     }
                     opened += 1;
-                    for name in names(&fd) {
+                    for name in names(&fd, &path, &mut end) {
+                        if opened >= bound {
+                            end.cut = true;
+                            return end;
+                        }
+                        opened += 1;
                         if let Some(sub) = open_dir(&fd, &name) {
                             pending.push((path.join(&name), sub));
                             continue;
@@ -395,10 +459,6 @@ pub(crate) fn walk_memory(
                         if !same {
                             continue;
                         }
-                        if opened >= bound {
-                            return true;
-                        }
-                        opened += 1;
                         visit(&path.join(&name), &readable);
                     }
                     visit(&path, &fd);
@@ -406,5 +466,32 @@ pub(crate) fn walk_memory(
             }
         }
     }
-    false
+    end
+}
+
+/// How a [`walk_memory`] ended.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default)]
+pub(crate) struct WalkEnd {
+    /// It stopped at its bound: entries beyond it were not looked at.
+    pub(crate) cut: bool,
+    /// Entries it could not read (a name that is not UTF-8, a listing that failed): the first
+    /// [`UNREAD_KEPT`] of them.
+    pub(crate) unread: Vec<String>,
+    /// How many there were in all.
+    pub(crate) unread_count: usize,
+}
+
+/// The unread entries a walk keeps to name.
+#[cfg(target_os = "linux")]
+const UNREAD_KEPT: usize = 10;
+
+#[cfg(target_os = "linux")]
+impl WalkEnd {
+    fn note(&mut self, what: String) {
+        self.unread_count += 1;
+        if self.unread.len() < UNREAD_KEPT {
+            self.unread.push(what);
+        }
+    }
 }

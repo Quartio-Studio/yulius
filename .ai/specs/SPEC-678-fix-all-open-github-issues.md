@@ -135,38 +135,45 @@ reviewed and merged into `dev` by `delivery_merge`.
   The scanner reads a number past that limit as "cannot be read" (it raised `ValueError`).
   Named exceptions: from Python 3.15 `tomllib` reads TOML 1.1, which the card still refuses;
   an inline table holding a multi-line string reads unreadable (the safer side).
+- **MEM-1767** The host check's memory stopgap walk counts every entry it examines (links,
+  FIFOs and other skipped names too) toward `STOPGAP_MAX_PATHS`, and stops reading a folder
+  once the bound is reached. It lists each folder from its own descriptor
+  (`rustix::fs::Dir::read_from`, no `/proc`). A name that is not UTF-8 or a listing that fails
+  is counted as unread and named in the line (the first one). A walk that was cut or left an
+  entry unread never reads "ok": a dry run says "would clear … ; cut at …", and a cut without a
+  failed clear says "cut", not "0 of N could not be cleared".
 
 ## Plan
 
 - [x] #1547: the held-message test's cause shown fixed on dev by #1732; its quarantine ended
-- [ ] #1831 #1727: yulius wait follows the task's staging request
-- [ ] #1824: a disabled person's automations create no task
+- [x] #1831 #1727: yulius wait follows the task's staging request
+- [x] #1824: a disabled person's automations create no task
 - [ ] #1808: the parking candidate's later stall is reported deterministically
 - [ ] #1809: the cut-off reviewer's Opus note test waits on the note's trigger
-- [ ] #1807: the compile-cache Ctrl+Z test waits on the stopped job
-- [ ] #1769 #1761: chore tasks and the documents agree on specs; skill wording on dev-stage secrets
+- [x] #1807: the compile-cache Ctrl+Z test waits on the stopped job
+- [x] #1769 #1761: chore tasks and the documents agree on specs; skill wording on dev-stage secrets
 - [ ] #1765: privileged containers on Ubuntu 26.04 start or are skipped with the reason
 - [ ] #1133 #321 #1647: remaining queue analysis and host-only checks recorded on their issues
-- [ ] #1826 #1760: sweep and identity shim lib tests are deterministic
-- [ ] #1820: the Telegram reply test waits for the second run's notice
+- [x] #1826 #1760: sweep and identity shim lib tests are deterministic
+- [x] #1820: the Telegram reply test waits for the second run's notice
 - [ ] #1817: a test holds prove-on-dev's refusal when dev cannot be deployed
-- [ ] #1811: the security scan card reads vidoc.toml as the scanner does
-- [ ] #1800: the briefing's mandatory parts fit the budget in every docs layout
-- [ ] #1795: a watch's write past its file bound is refused (EFBIG) on every host
-- [ ] #1775: the MCP probe test counts a zombie grandchild as gone
+- [x] #1811: the security scan card reads vidoc.toml as the scanner does
+- [x] #1800: the briefing's mandatory parts fit the budget in every docs layout
+- [x] #1795: a watch's write past its file bound is refused (EFBIG) on every host
+- [x] #1775: the MCP probe test counts a zombie grandchild as gone
 - [ ] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
 - [ ] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
 - [ ] #1753 #1751: non-owner creators in a personal account or a narrowed App are told who acts
 - [ ] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
-- [ ] #1693: the Antigravity error-turn hook test is deterministic
+- [x] #1693: the Antigravity error-turn hook test is deterministic
 - [ ] #1692: a replaced run's reattach leaves the task's writer alone
 - [ ] #1691: a decided armed merge is consumed across a restart
 - [ ] #1688: a cancelled display start keeps its Xvfb in the slot
 - [ ] #1595: confined test fixtures share one temporary root
 - [ ] #1591: parked-list and CI watcher fixtures hold under shared CPUs
-- [ ] #1544: egress warning-capture tests observe their own warning
-- [ ] #1532: a branch fast-forwarded to a head with skipped jobs gets its own run
+- [x] #1544: egress warning-capture tests observe their own warning
+- [x] #1532: a branch fast-forwarded to a head with skipped jobs gets its own run
 - [ ] #1520: the Superagent deep-link panel test is deterministic
 - [ ] #1239: the old fingerprint format is removed and a version 1 file is rewritten as version 2
 - [ ] Final report of every issue's outcome given
@@ -367,3 +374,12 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   escaped quotes inside strings, a line-ending backslash, a quoted key, `line` forms (`0x`,
   `0o`, `0b`, `0x10`, `+1`, `-0`, `1_0`, 2^128, 4,301 digits); the test follows the
   interpreter's version. Without the quote-run rule it fails.
+
+### #1767 (the memory stopgap walk's bound and wording)
+
+- `host_setup::system` tests: `every_examined_entry_counts_and_an_unreadable_name_is_reported`
+  walks a real folder of many links (cut at the bound although none is visited) and a non-UTF-8
+  name (counted unread and named); the real-filesystem test gained
+  `projects/-k/session.jsonl` beside `memory`, never visited. `host_setup::tests` cover the
+  dry-run and cut wording. `scripts/cargo nextest run -p yulius --lib -E 'test(/host_setup/)'`:
+  103 passed.

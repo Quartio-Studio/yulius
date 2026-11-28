@@ -1994,4 +1994,19 @@ fn the_stopgaps_immutable_memory_folders_are_cleared() {
     cut.stopgap_cut = true;
     let lines = run(&mut cut, Mode::Check);
     assert_eq!(outcome(&lines, STOPGAP), HostOutcome::Failed, "{lines:?}");
+    // #1767: a cut with every flag it found cleared says so, not "0 of 4 could not be cleared".
+    let detail = &line(&lines, STOPGAP).detail;
+    assert!(
+        !detail.contains("could not be cleared") && detail.contains("the walk stopped after"),
+        "{detail}"
+    );
+    // A dry run of a cut walk says the walk was cut too.
+    let mut cut = seeded();
+    cut.stopgap_cut = true;
+    let lines = run(&mut cut, Mode::DryRun);
+    let detail = &line(&lines, STOPGAP).detail;
+    assert!(
+        detail.starts_with("would ") && detail.contains("the walk stopped after"),
+        "{detail}"
+    );
 }
