@@ -177,6 +177,15 @@ reviewed and merged into `dev` by `delivery_merge`.
   task's writer back only while that run is still the task's: the live attempt, and the run the
   writer belongs to (or none, while it was let go). A replaced run whose host still answers
   takes nothing: input stays the replacement's, and the old reader ends.
+- **BRW-1604** When the secret's field cannot be found after the page rule allowed the tab's
+  page, and the tab's document changed meanwhile (a navigation committed), typing a secret says
+  so as the page it went to: refused (`SecretPageRefused`) when the secret may not go there,
+  "the tab's page changed while its field was looked for…" within its sites. A field missing
+  from a page that stayed is still `ElementNotFound`. Nothing is typed either way, so the
+  opt-in real-Chrome test accepts only the leaving or refused results.
+- **BRW-1741** The opt-in live-display functional test waits for the page to take input
+  (`focus_page`: clicks and Shift until a capture-phase keydown counts one) before its first
+  click assertion, and forgets the events that recorded.
 
 ## Plan
 
@@ -199,7 +208,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [x] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
 - [x] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
 - [x] #1753 #1751: non-owner creators in a personal account or a narrowed App are told who acts
-- [ ] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
+- [x] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
 - [x] #1693: the Antigravity error-turn hook test is deterministic
 - [x] #1692: a replaced run's reattach leaves the task's writer alone
@@ -484,3 +493,23 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   `resolve_lost_connection` still decide the run's end. Review of #1847: approve at 8fddfea38
   with minors (the writer-owner half of the first predicate was unreachable and dropped; the
   test now tells "ended" from "kept reading"), approve at ebb550c1f.
+
+### #1604, #1741 (opt-in real-Chrome tests)
+
+- `instance::a_field_taken_away_by_a_navigation_is_said_as_the_page_it_went_to` (fake CDP: the
+  page moves to another site during the focus call) fails without the change
+  (`ElementNotFound`) and passes with it; `yulius-browser` with `fake`: 163 passed.
+- Real Chrome 158.0.8127.36 (`--no-sandbox` wrapper, as root):
+  `a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium` passed 10 runs of 10.
+  It also passed 10 of 10 without the change here, and a 2.5 s probe delay before the focus did
+  not bring the race back (this Chrome answers the look at the tab only after the navigation),
+  so the fake-CDP test is the deterministic proof. The review of #1848 forced the race on
+  Chrome 158 in a probe copy (the link navigating 300 ms after the click, a sleep between the
+  first look and the focus): without the change `ElementNotFound`, the #1604 symptom; with it
+  `SecretPageRefused("localhost")`, both with the commit before the focus and with the focus
+  asked while the navigation was pending.
+- `live_display::the_real_chrome_streams_takes_real_input_and_stays_out_of_containment` with
+  Chrome 158 on Xvfb and the host policy: the functional part (clicks, typing, popup, wheel)
+  passed 3 runs of 3 with the change (and 3 of 3 before it: the cold-window loss did not
+  happen here); its containment part cannot run in this sandbox (`bwrap: Creating new
+  namespace failed: Operation not permitted`).

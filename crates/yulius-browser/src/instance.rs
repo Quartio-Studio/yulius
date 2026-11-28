@@ -3332,8 +3332,9 @@ impl BrowserInstance {
     /// As [`Self::tool_type`]; [`BrowserError::SecretPageRefused`],
     /// [`BrowserError::SecretFrameRefused`] and [`BrowserError::SecretPageLeaving`] when
     /// `allowed` refuses, and [`BrowserError::InvalidInput`] when the text holds a tab or
-    /// another control character (line ends apart), the tab's page cannot be told or read or
-    /// the browser remembers too many secrets or documents already (nothing is typed in any of
+    /// another control character (line ends apart), the tab's page cannot be told or read, it
+    /// changed while its field was looked for or focused, or the browser remembers too many
+    /// secrets or documents already (nothing is typed in any of
     /// these); [`BrowserError::SecretAstray`] and
     /// [`BrowserError::SecretFrameAstray`] when the page or the focus moved to where it may not
     /// go while it was typed.
@@ -3418,7 +3419,23 @@ impl BrowserInstance {
         if !allowed(&before.address) {
             return Err(BrowserError::SecretPageRefused(shown_as(&before)));
         }
-        focus().await?;
+        if let Err(missing) = focus().await {
+            // A navigation that arrived meanwhile took the field away with its page: said as
+            // the page it went to, not as a missing field (#1604). Nothing was typed either way.
+            if let Some(now) = self.document(&session).await
+                && (now.loader != before.loader || now.frame != before.frame)
+            {
+                return Err(if allowed(&now.address) {
+                    BrowserError::InvalidInput(
+                        "the tab's page changed while its field was looked for, so the secret was not typed; try again"
+                            .into(),
+                    )
+                } else {
+                    BrowserError::SecretPageRefused(shown_as(&now))
+                });
+            }
+            return Err(missing);
+        }
         // The keys go to the element with the focus, which need not be in this page: where
         // the focus is, is read after the field was focused (SPEC-483 E8).
         let Some(look) = self.read_page(&session, &before.frame).await else {
