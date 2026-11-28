@@ -112,10 +112,11 @@ reviewed and merged into `dev` by `delivery_merge`.
   merge-first 8,367 against 8,361, Fix with merge-first 8,363 against 8,326. At the full budget
   the folder, Codex, `ByChange` worst case reaches 9,505 with merge-first, 9,554 with
   `[local]`, 10,107 with one foundations gap and 9,965 with a 200-byte branch and spec path.
-- **ISO-1693** The `hook_client` tests that need a server nobody answers use `refused_url()`:
-  a socket bound to its port that never listens, kept until the test ends. A port a test only
-  freed could be bound meanwhile by a test in another process, whose server then took this
-  test's request.
+- **ISO-1693** No `yulius-harness` test sends a request to a port it freed: a port freed could be
+  given meanwhile to a test in another process, whose server then took the request. A server
+  nobody answers is `127.0.0.1:1` (`refused_url()` in `hook_client`, `nobody()` in
+  `scrub_client`), which `bind(0)` never gives and every system refuses; the restart test holds
+  its port with a bound, non-listening socket while its server is down.
 - **ISO-1544** The egress proxy tests capture log lines through one global subscriber that
   writes each line into the capture of the thread that logged it, instead of a subscriber per
   test (`set_default`), with which another test's start or end in the same process could leave
@@ -308,12 +309,15 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 
 ### #1693, #1544 (tests that share a host or a process)
 
-- #1693: not reproduced by load (300 stressed runs passed). Cause found in the code: four tests
-  bound a port, dropped the listener and connected to it; a parallel test process can get that
-  port for its own `serve_once`, and its server then takes the stray request (a different
-  request line). `refused_url()` keeps the port bound without listening; the new test
-  `a_refused_url_keeps_its_port_and_refuses` shows no other socket can take it and a connection
-  is refused. `hook_client`: 26 passed.
+- #1693: not reproduced by load (300 stressed runs passed). Cause found in the code: tests that
+  free a port and then connect to it, and a parallel test process given that port for its own
+  `serve_once`, whose server takes the stray request. Review round 1 of #1839 reproduced it with
+  an `LD_PRELOAD` shim narrowing `bind(0)` to 8 ports: the named test failed 39 of 400 with
+  `left: "POST /internal/scrub/fingerprints …"` (from `scrub_client`'s `nobody()`), 4 of 30,000
+  from the restart test's 300 ms gap. Now port 1 for every refused URL and a held port in the
+  gap; `a_refused_url_refuses_at_once` asserts `ConnectionRefused` within 2 s (a bound,
+  non-listening socket was the first fix, but macOS drops a SYN to it instead of refusing).
+  `yulius-harness`: 275 passed.
 - #1544: the six `a_full_` tests in one process with two test threads: dev failed 16 of 600 runs
   (a warning not captured); with the global capture 0 of 600, and the whole `proxy` binary in
   one process 0 of 50 with 16 threads.

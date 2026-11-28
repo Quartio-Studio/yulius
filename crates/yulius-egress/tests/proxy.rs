@@ -974,8 +974,8 @@ async fn a_full_proxy_is_a_trouble_naming_the_sandboxes_until_it_has_room() -> T
     until_no_trouble(&setup.health).await
 }
 
-/// The proxy's log lines, written by a subscriber set on this thread (a `tokio::test` runtime
-/// runs the proxy's tasks on it).
+/// The proxy's log lines of one test: the binary's one subscriber writes each line into the
+/// capture of the thread that logged it (a `tokio::test` runtime runs the proxy's tasks on it).
 #[derive(Clone, Default)]
 struct Logs(Arc<Mutex<Vec<u8>>>);
 

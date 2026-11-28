@@ -100,43 +100,49 @@ fn join(handle: JoinHandle<io::Result<Request>>) -> io::Result<Request> {
         .map_err(|_| io::Error::other("server thread panicked"))?
 }
 
-/// A listener that must never receive a connection.
-/// A URL nothing answers on, whose port stays taken until the guard drops: a socket bound to it
-/// that never listens refuses every connection. A port a test only frees could be bound by a
-/// test running in parallel meanwhile, whose server would then take this test's request (#1693).
-fn refused_url() -> io::Result<(String, std::os::fd::OwnedFd)> {
+/// A URL nothing answers on: port 1, which `bind(0)` never hands a test and where every system
+/// refuses at once. A port a test frees could be given meanwhile to a test in another process,
+/// whose server would then take this test's request (#1693).
+fn refused_url() -> String {
+    "http://127.0.0.1:1".to_owned()
+}
+
+/// [`refused_url`] refuses at once.
+#[test]
+fn a_refused_url_refuses_at_once() -> TestResult {
+    let refused = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+        Duration::from_secs(2),
+    );
+    assert!(
+        matches!(&refused, Err(e) if e.kind() == io::ErrorKind::ConnectionRefused),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+/// Holds `port` without listening while a test's server is "down", so no test in another process
+/// is given it meanwhile (#1693); dropped just before the server binds it again.
+fn hold_port(port: u16) -> io::Result<std::os::fd::OwnedFd> {
     use nix::sys::socket::{
-        AddressFamily, SockFlag, SockType, SockaddrIn, bind, getsockname, socket,
+        AddressFamily, SockFlag, SockType, SockaddrIn, bind, setsockopt, socket, sockopt,
     };
     let socket = socket(
         AddressFamily::Inet,
         SockType::Stream,
-        // No close-on-exec flag on macOS; a child holding the reserved port changes nothing.
         SockFlag::empty(),
         None,
     )?;
+    // As std's listener does: the server's closed connections leave the port in TIME_WAIT.
+    setsockopt(&socket, sockopt::ReuseAddr, &true)?;
     bind(
         std::os::fd::AsRawFd::as_raw_fd(&socket),
-        &SockaddrIn::new(127, 0, 0, 1, 0),
+        &SockaddrIn::new(127, 0, 0, 1, port),
     )?;
-    let bound: SockaddrIn = getsockname(std::os::fd::AsRawFd::as_raw_fd(&socket))?;
-    Ok((format!("http://127.0.0.1:{}", bound.port()), socket))
+    Ok(socket)
 }
 
-/// The port of a [`refused_url`] stays taken while its guard lives, and refuses connections.
-#[test]
-fn a_refused_url_keeps_its_port_and_refuses() -> TestResult {
-    let (url, guard) = refused_url()?;
-    let port = url.rsplit(':').next().ok_or("port")?.parse::<u16>()?;
-    assert!(
-        TcpListener::bind(("127.0.0.1", port)).is_err(),
-        "no other socket gets the port"
-    );
-    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
-    drop(guard);
-    Ok(())
-}
-
+/// A listener that must never receive a connection.
 fn untouched_listener() -> io::Result<(String, TcpListener)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
@@ -253,7 +259,7 @@ fn non_200_and_unsupported_framing_print_nothing() -> TestResult {
 
 #[test]
 fn unreachable_server_is_fail_open() -> TestResult {
-    let (url, _refusing) = refused_url()?;
+    let url = refused_url();
     let mut output = Vec::new();
     let code = run_hook(
         "claude",
@@ -471,8 +477,10 @@ fn a_held_hook_survives_a_server_restart() -> TestResult {
         .join()
         .map_err(|_| io::Error::other("server thread panicked"))??;
     // The server is down for a while (connections refused), then comes back on the same port,
-    // first failing once, then answering.
+    // first failing once, then answering. The port stays held meanwhile (#1693).
+    let held = hold_port(port)?;
     thread::sleep(Duration::from_millis(300));
+    drop(held);
     let again = TcpListener::bind(("127.0.0.1", port))?;
     let after = serve_sequence(
         again,
@@ -577,7 +585,7 @@ fn a_held_hook_fails_open_on_refusal_or_after_its_bound() -> TestResult {
 /// Without a prior hold, an unreachable server still fails open at once (no retry loop).
 #[test]
 fn an_unheld_hook_does_not_retry() -> TestResult {
-    let (url, _refusing) = refused_url()?;
+    let url = refused_url();
     let started = Instant::now();
     let mut output = Vec::new();
     run_hook_with(
@@ -699,7 +707,7 @@ fn a_subagents_start_goes_to_yulius_and_its_answer_is_printed() -> TestResult {
             "tool_input": {"subagent_type": "yulius-reviewer", "prompt": "p", "description": "d",
                 "run_in_background": true}})
     );
-    let (gone, _refusing) = refused_url()?;
+    let gone = refused_url();
     let mut output = Vec::new();
     let code = run_hook(
         "claude",
@@ -718,7 +726,7 @@ fn a_subagents_start_goes_to_yulius_and_its_answer_is_printed() -> TestResult {
 #[test]
 fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
     let edit = br#"{"tool_name":"Write","tool_input":{"file_path":"/w/api.rs","content":"x"}}"#;
-    let (gone, _refusing) = refused_url()?;
+    let gone = refused_url();
     let mut output = Vec::new();
     let code = run_hook(
         "claude",
