@@ -48,7 +48,8 @@ printing it (ADR-0014, the 8-character minimum). The audit of task #465 found mo
   hold themselves, which still reach its runs; the sessions running at the join get their
   files rewritten then. A store that cannot say whether a guest joined gives no set (the
   wrapper then runs nothing), never an empty one.
-- **Sessions from before version 2 keep redacting from their file.** A contained session
+- **Sessions from before version 2 kept redacting from their file** (until #1239, below). A
+  contained session
   binds the `yulius` binary it started with, an update freezes and thaws sessions instead of
   restarting them, and that wrapper reads only the old format. It cannot read the endpoint's
   answer and falls back on its `scrub.json`. A file in the old format therefore stays in the
@@ -133,7 +134,12 @@ for 16 letters and digits falls from 2^62 to about 2^56; 20 stay near 2^80.
   secrets, 896 ms with 40, 923 ms with 200). Uncontained, it runs the new wrapper, which reads
   version 2 only: while the server cannot be reached its commands do not run, as without a
   file.
-- The old format's writer (`LegacyFingerprintSet`, `legacy_fingerprints_for`) is of use only
-  while a session launched before this change is alive; it goes with a later release (#1239).
+- The old format's writer (`LegacyFingerprintSet`, `legacy_fingerprints_for`) was of use only
+  while a session launched before this change was alive. It is gone since #1239 (SPEC-678,
+  2026-11-27), by the owner's rule: the two weeks after 2026-11-13 have passed, and a session
+  still running from before then on some instance only stops running commands until it is
+  continued. Every file is now written as version 2, a version 1 file met at a start or by a
+  request too; when the set cannot be made, a version 1 file is emptied to `{}`, with which no
+  wrapper redacts or runs.
 - When the workspace secret cannot be saved, the salt changes with each server start; the tags
   do not, so a new start still tells nothing more about a value.

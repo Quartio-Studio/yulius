@@ -1748,6 +1748,12 @@ Notes for upgrades that every host has already taken (and "The way back" for a h
 on systemd 258 or later without the sessions units) are in the
 [archived guide](archive/operations-until-2026-11-26.md#notes-for-specific-upgrades).
 
+- **Redaction fingerprints, version 1 gone (#1239, 2026-11-27).** A release with this change
+  writes every session's fingerprint file as version 2 only (ADR-0313). A session still running
+  from before 2026-11-13 (its wrapper reads version 1 only) then runs no command until it is
+  continued, which starts it on the current wrapper. The owner accepted that rule: two weeks after
+  2026-11-13 no such session is expected; continue any that is.
+
 ## 9. Security notes
 
 - The data directory is owner-only (0700); secrets are sealed with `master.key`
