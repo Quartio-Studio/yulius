@@ -155,6 +155,13 @@ reviewed and merged into `dev` by `delivery_merge`.
   action's button; a keyboard still in the dialog (Enter in a field, a click into one while the
   action ran) stays where it is. No dialog marks a field invalid and then throws (each returns
   `false` after `invalid()`, which focuses the field), so no field is chosen here.
+- **GH-1753** In an instance whose GitHub owner is a personal account, creating a project is
+  refused with 403 for anyone but that account's own person (or the superadmin) before anything
+  is created: "Only {owner} can create projects in their personal GitHub account…". GitHub
+  would create the repository under the owner's token, where the creator could not see it.
+- **GH-1751** A created repository the App's installation cannot reach says who must act: an
+  owner of {owner} adds it to the installation, then someone with admin or maintain on it
+  imports it (an owner of {owner} can, or can give the creator that role).
 
 ## Plan
 
@@ -424,3 +431,11 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   the keyboard where the person has it in the dialog (#1714)" (Add subscription refused by
   `failpost`, Enter in Name, then " 2" typed) fails on dea684ad4 (`expect.toBeFocused failed`)
   and passes now; the two files: 59 passed.
+
+### #1753, #1751 (who may create, and who acts on an unreachable repository)
+
+- `projects::create_in_a_user_account_uses_the_owner_token` (rewritten: the owner creates, a
+  non-owner gets 403 before any GitHub call) and
+  `projects::a_created_repository_out_of_the_installations_reach_is_explained` (moved to an
+  organization owner, asserting the new advice) fail without the change (2 of 38 `projects::`
+  tests) and pass with it: 38 passed.
