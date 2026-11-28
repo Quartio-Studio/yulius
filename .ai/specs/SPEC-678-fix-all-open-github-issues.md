@@ -193,6 +193,14 @@ reviewed and merged into `dev` by `delivery_merge`.
   staged revision's tree, so the proof is offered but the plain dev deploy is the staging
   target's to make), and dev moving between the proof and its deploy (a race point,
   `ProofRegistered`, keyed by the sandbox).
+- **CDX-1702** Yulius's own paste or Enter that goes straight to the session
+  (`send_session_input`: the goal typist, the intake's "send anyway", the context-full
+  compaction) repaints a Codex screen it cannot read (unrendered after a reattach) with the
+  bounded `repaint_codex_input` first, as typed messages do; the screen guard then decides, and
+  nothing is typed while the rate-limit picker is open. Where such input still cannot be typed:
+  the intake answers its person ("press Enter in the terminal…"), and an untaken typed goal is
+  flagged by the goal watch within its bound; the compaction settles the task to waiting
+  without a Needs you (left open on #1702).
 
 ## Plan
 
@@ -532,3 +540,12 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   hook pushes a commit to dev after the proof is registered; same assertions, with dev "moved
   since you looked". With the branch at `prove.rs` returning the dev error alone, or
   production's refusal alone, or keeping the wait, it fails (review mutations).
+
+### #1702 (Codex input repaint on the direct path)
+
+- `task_message::reattached_idle_codex_repaints_before_yuliuss_own_input` (real ptyhost and
+  fake Codex: a restarted server reattaches an idle Codex run whose snapshot has no redraw
+  provenance, then types an automated line through `send_session_input`) fails without the
+  change (`Conflict("Codex's terminal could not confirm a safe input screen")`) and passes with
+  it, the child's size restored. `task_message::`, `codex::`, `context_full::`, `intake::`:
+  154 passed, the picker tests among them.
