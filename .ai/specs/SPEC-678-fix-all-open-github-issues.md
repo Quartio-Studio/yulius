@@ -128,9 +128,13 @@ reviewed and merged into `dev` by `delivery_merge`.
   request targets keep reusing a partial verdict.
 - **VID-1811** The Security scan card reads every `.config/vidoc.toml` the scanner refuses as
   unreadable and every one it accepts as on or off: a byte-order mark and the TOML 1.1 escapes
-  `\e` and `\xHH` in a basic string are refused (TOML 1.0, as `tomllib`); blank is Python's
-  (`str.strip` also drops U+001C to U+001F); a `line` of any size from 1 is accepted, as Python
-  has no integer bound.
+  `\e` and `\xHH` in a basic string are refused (TOML 1.0, as `tomllib` up to Python 3.14),
+  with the one or two quotes a multi-line string may hold before its closing delimiter; blank
+  is Python's (`str.strip` also drops U+001C to U+001F); a `line` from 1 is accepted however
+  large, up to Python's limit of 4,300 decimal digits, and never an empty `0x`, `0o` or `0b`.
+  The scanner reads a number past that limit as "cannot be read" (it raised `ValueError`).
+  Named exceptions: from Python 3.15 `tomllib` reads TOML 1.1, which the card still refuses;
+  an inline table holding a multi-line string reads unreadable (the safer side).
 
 ## Plan
 
@@ -357,3 +361,9 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   byte-order mark (`left: true, right: false`) and passes with the change, for the mark, `\e`,
   `\xHH`, an escaped backslash before `e`, a literal string, separators only, a separator and a
   letter, a `line` past `u64::MAX`, 0 and 7. `ci::vidoc` tests: 10 passed.
+- Review round 1 of #1841 (request changes at 4a907cc; ~5.6 million fuzzed files against
+  `parse_config`): a quote run before a closing `"""`/`'''` desynced the scan, `line = 0x`
+  read on, and Python 3.15 reads TOML 1.1. Fixed and added to the test: the quote runs, `#` and
+  escaped quotes inside strings, a line-ending backslash, a quoted key, `line` forms (`0x`,
+  `0o`, `0b`, `0x10`, `+1`, `-0`, `1_0`, 2^128, 4,301 digits); the test follows the
+  interpreter's version. Without the quote-run rule it fails.
