@@ -338,6 +338,9 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   partial run, active or finished; not over a whole one; a pull request still reuses it).
 - `a_run_with_a_paths_or_after_merge_skip_is_partial` (store: `paths` and `after_merge` skips
   count, a job's own exit-78 skip and a whole run do not).
-- `local_ci::a_branch_fast_forwarded_to_a_partial_head_gets_its_own_run`: `dev` moved to the pull
-  request's head whose only job was skipped by `paths` gets a `branch/dev` run; it fails with
-  `partial` forced to false. `local_ci`, `merge_train`, `staging`, `ci_*`: 327 passed.
+- `local_ci::a_branch_fast_forwarded_to_a_partial_head_gets_its_own_run` (`paths`: the branch
+  run runs `web`, later rounds add no run; fails with `partial` forced to false),
+  `a_branch_fast_forwarded_past_an_after_merge_skip_runs_the_full_suite` (merge-first, the full
+  suite runs) and `a_branch_fast_forwarded_to_a_whole_verdict_reuses_it` (no extra run), from
+  the probes of #1840's review round 1; the domain test also holds that a branch's own partial
+  run never requeues it.

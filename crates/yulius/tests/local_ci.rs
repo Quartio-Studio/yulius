@@ -1586,33 +1586,105 @@ async fn a_run_of_skipped_jobs_passes_when_it_is_queued() -> TestResult {
     Ok(())
 }
 
-/// #1532: `dev` moved straight to a pull request head whose run skipped its `paths` jobs gets a
-/// run of its own at that commit: the pull request's partial verdict does not stand for the
-/// branch.
+/// The runs at `sha`, newest first.
+async fn runs_at(f: &Fixture, sha: &str) -> BoxResult<Vec<Value>> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    Ok(overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .filter(|r| r["sha"] == sha)
+        .cloned()
+        .collect())
+}
+
+async fn detail_of(f: &Fixture, run: &Value) -> BoxResult<Value> {
+    f.get(&format!(
+        "/api/sandboxes/s1/ci/runs/{}",
+        run["id"].as_str().ok_or("id")?
+    ))
+    .await
+}
+
+/// #1532: `dev` moved straight to a pull request head whose run skipped its `paths` job gets a
+/// run of its own at that commit, which runs the job; later rounds queue nothing more.
 #[tokio::test]
 async fn a_branch_fast_forwarded_to_a_partial_head_gets_its_own_run() -> TestResult {
     let f = fixture_with(false, |_| {
-        "[[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n"
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n\n\
+         [[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n"
             .to_owned()
     })
     .await?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
     let head = git(&f.origin, &["rev-parse", "feat/one"])?;
-    let (pr_run, _) = run_of(&f, &head).await?;
-    assert_eq!(pr_run["reference"], "pr/1", "{pr_run}");
+    assert_eq!(runs_at(&f, &head).await?.len(), 1);
     git(&f.origin, &["update-ref", "refs/heads/dev", &head])?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    let overview = f.get("/api/sandboxes/s1/ci").await?;
-    let at_head: Vec<&Value> = overview["runs"]
-        .as_array()
-        .ok_or("runs")?
+    f.settle().await?;
+    let after = runs_at(&f, &head).await?;
+    let branch = after
         .iter()
-        .filter(|r| r["sha"] == head.as_str())
-        .collect();
-    assert!(
-        at_head.iter().any(|r| r["reference"] == "branch/dev"),
-        "dev's own run at the pull request's head: {at_head:?}"
-    );
+        .find(|r| r["reference"] == "branch/dev")
+        .ok_or("dev's own run at the pull request's head")?;
+    let detail = detail_of(&f, branch).await?;
+    let web = job_named(&detail, "web")?;
+    assert_eq!(web["state"], "passed", "{detail}");
+    for _ in 0..3 {
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        f.settle().await?;
+    }
+    assert_eq!(runs_at(&f, &head).await?.len(), 2, "no run more");
+    Ok(())
+}
+
+/// #1532: the same with an `after_merge` job beside a merge-first target: the pull request's run
+/// skips the full suite, and `dev` moved straight to its head runs it.
+#[tokio::test]
+async fn a_branch_fast_forwarded_past_an_after_merge_skip_runs_the_full_suite() -> TestResult {
+    let f = fixture_with(false, |_| merge_first_toml(true)).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let before = runs_at(&f, &head).await?;
+    assert_eq!(before.len(), 1, "{before:?}");
+    let detail = detail_of(&f, &before[0]).await?;
+    assert_eq!(job_named(&detail, "full")?["state"], "skipped", "{detail}");
+    git(&f.origin, &["update-ref", "refs/heads/dev", &head])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let after = runs_at(&f, &head).await?;
+    let own = after
+        .iter()
+        .find(|r| r["reference"] != "pr/1")
+        .ok_or("no run of the merged revision")?;
+    let detail = detail_of(&f, own).await?;
+    assert_eq!(job_named(&detail, "full")?["state"], "passed", "{detail}");
+    for _ in 0..3 {
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        f.settle().await?;
+    }
+    assert_eq!(runs_at(&f, &head).await?.len(), 2, "no run more");
+    Ok(())
+}
+
+/// #1532: a pull request run that ran every job still stands for `dev` at its commit.
+#[tokio::test]
+async fn a_branch_fast_forwarded_to_a_whole_verdict_reuses_it() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n".to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    git(&f.origin, &["update-ref", "refs/heads/dev", &head])?;
+    for _ in 0..2 {
+        f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+        f.settle().await?;
+    }
+    assert_eq!(runs_at(&f, &head).await?.len(), 1, "no extra run");
     Ok(())
 }
 

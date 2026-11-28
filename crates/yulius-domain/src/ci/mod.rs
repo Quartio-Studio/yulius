@@ -1602,6 +1602,16 @@ mod tests {
         );
         let own = run("r2", CiRef::Branch("dev".into()), "abc", RunState::Running);
         assert!(plan(std::slice::from_ref(&dev), &[own]).queue.is_empty());
+        // The branch's own run counts even were it partial: never queued again every round.
+        let own_partial = RunFacts {
+            partial: true,
+            ..run("r3", CiRef::Branch("dev".into()), "abc", RunState::Passed)
+        };
+        assert!(
+            plan(std::slice::from_ref(&dev), &[own_partial])
+                .queue
+                .is_empty()
+        );
     }
 
     #[test]
