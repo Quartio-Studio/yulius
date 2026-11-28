@@ -201,6 +201,12 @@ reviewed and merged into `dev` by `delivery_merge`.
   compaction run for Claude Code only, and typed messages use their own path. Where the Enter
   still cannot be sent, the intake answers its person at once ("press Enter in the terminal"),
   so no Needs you is owed.
+- **ARM-1691** The ordinary merge queue records a decided armed merge's verdict span before it
+  clears the saved arm (`finish_armed`, used by the queue pass too), and a merge made at once
+  (`settle_armed` without a landing) records one before its clear unless the latest merge wait
+  is a singleton decision (its retirement and the restore read it). A refused clear or a crash
+  between the two writes then leaves a verdict the next start consumes the arm by; ADR-0452
+  states that only a span that cannot be written either leaves the arm to be decided again.
 
 ## Plan
 
@@ -557,3 +563,12 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   refused text never is (the PTY keeps order). From the round 2 review of #1850, whose
   mutants (bytes written under the picker; a repaint under the picker) the first version let
   pass.
+
+### #1691 (an ordinary verdict before the arm's clear)
+
+- `delivery::a_merge_at_once_consumes_its_saved_arm_when_the_clear_failed` (the arm file's
+  temporary path blocked by a folder, `delivery_merge` merges at once, a fresh server
+  restores): fails without the change (`the merged arm was armed again`) and passes with it.
+  `merge_train::a_merged_retry_retires_the_saved_replacement_before_clearing_it` kept passing
+  (the singleton decision stays the latest merge wait). `delivery::`, `merge_train::`,
+  `agent_wait::`, `restart::`, `pr_watch::` and the `yulius-app` agent_wait tests: 250 passed.
