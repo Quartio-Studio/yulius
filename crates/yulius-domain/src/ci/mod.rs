@@ -865,6 +865,9 @@ pub struct RunFacts {
     pub sha: String,
     /// State.
     pub state: RunState,
+    /// It skipped a job a branch run would run (a `paths` skip, an `after_merge` job): no
+    /// verdict for a branch at its commit (#1532).
+    pub partial: bool,
 }
 
 /// What the scheduler does with the current targets and runs.
@@ -882,16 +885,20 @@ pub struct Plan {
 /// - A target is queued unless some run of the same commit is active or finished with a
 ///   verdict (`passed`, `failed`, `error`): a commit is tested once, whichever reference
 ///   carries it. Cancelled runs do not count, so a head whose run was cancelled is retried
-///   only by "Run again".
+///   only by "Run again". For a branch, a run that skipped a job the branch runs (`partial`)
+///   counts neither: the branch's own run runs every job (#1532).
 /// - An active run whose reference now points to another commit, or that no longer exists
 ///   (pull request closed or merged), is superseded.
 #[must_use]
 pub fn plan(targets: &[Target], runs: &[RunFacts]) -> Plan {
     let mut out = Plan::default();
     for target in targets {
-        let tested = runs
-            .iter()
-            .any(|run| run.sha == target.sha && covers_shared_commit(run.state));
+        let branch = matches!(target.reference, CiRef::Branch(_));
+        let tested = runs.iter().any(|run| {
+            run.sha == target.sha
+                && covers_shared_commit(run.state)
+                && !(branch && run.partial && run.reference != target.reference)
+        });
         let cancelled_here = runs.iter().any(|run| {
             run.sha == target.sha
                 && run.reference == target.reference
@@ -1558,7 +1565,53 @@ mod tests {
             reference,
             sha: sha.to_owned(),
             state,
+            partial: false,
         }
+    }
+
+    /// #1532: a branch moved straight to a pull request head whose run skipped a job (`paths`
+    /// or an `after_merge` job) gets a run of its own, which runs every job; a head whose run
+    /// ran every job is still tested once; and pull requests keep reusing the partial verdict.
+    #[test]
+    fn a_partial_verdict_is_no_verdict_for_a_branch() {
+        let dev = target(CiRef::Branch("dev".into()), "abc");
+        let partial = RunFacts {
+            partial: true,
+            ..run("r1", CiRef::PullRequest(1), "abc", RunState::Passed)
+        };
+        assert_eq!(
+            plan(std::slice::from_ref(&dev), std::slice::from_ref(&partial)).queue,
+            std::slice::from_ref(&dev)
+        );
+        let whole = run("r1", CiRef::PullRequest(1), "abc", RunState::Passed);
+        assert!(plan(std::slice::from_ref(&dev), &[whole]).queue.is_empty());
+        let pr = target(CiRef::PullRequest(2), "abc");
+        assert!(
+            plan(std::slice::from_ref(&pr), std::slice::from_ref(&partial))
+                .queue
+                .is_empty()
+        );
+        // An active partial run does not stand for the branch either; the branch's own does.
+        let active = RunFacts {
+            state: RunState::Running,
+            ..partial
+        };
+        assert_eq!(
+            plan(std::slice::from_ref(&dev), &[active]).queue,
+            std::slice::from_ref(&dev)
+        );
+        let own = run("r2", CiRef::Branch("dev".into()), "abc", RunState::Running);
+        assert!(plan(std::slice::from_ref(&dev), &[own]).queue.is_empty());
+        // The branch's own run counts even were it partial: never queued again every round.
+        let own_partial = RunFacts {
+            partial: true,
+            ..run("r3", CiRef::Branch("dev".into()), "abc", RunState::Passed)
+        };
+        assert!(
+            plan(std::slice::from_ref(&dev), &[own_partial])
+                .queue
+                .is_empty()
+        );
     }
 
     #[test]

@@ -615,6 +615,12 @@ pub trait CiStore: Send + Sync {
         limit: u32,
         integration_head: Option<&yulius_domain::ci::Target>,
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Of `runs`, those that skipped a job by its `paths` or as an `after_merge` job: no
+    /// verdict for a branch at their commit (#1532).
+    async fn ci_partial_runs(
+        &self,
+        runs: &[String],
+    ) -> AppResult<std::collections::HashSet<String>>;
     /// Runs of a sandbox for one commit, newest first.
     async fn ci_runs_for_sha(
         &self,

@@ -586,6 +586,34 @@ impl CiStore for SqliteStore {
         .await
     }
 
+    async fn ci_partial_runs(
+        &self,
+        runs: &[String],
+    ) -> AppResult<std::collections::HashSet<String>> {
+        if runs.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        let ids = serde_json::to_string(runs).map_err(AppError::internal)?;
+        self.call(move |c| {
+            let mut statement = c.prepare(
+                "SELECT DISTINCT run_id FROM ci_jobs
+                  WHERE run_id IN (SELECT value FROM json_each(?1)) AND state = 'skipped'
+                    AND (instr(reason, ?2) = 1 OR instr(reason, ?3) = 1)",
+            )?;
+            Ok(statement
+                .query_map(
+                    params![
+                        ids,
+                        yulius_domain::ci::PATHS_SKIP_REASON,
+                        yulius_domain::ci::AFTER_MERGE_SKIP_REASON
+                    ],
+                    |row| row.get(0),
+                )?
+                .collect::<Result<_, _>>()?)
+        })
+        .await
+    }
+
     async fn ci_runs_for_sha(&self, sandbox: &SandboxId, sha: &str) -> AppResult<Vec<CiRunRecord>> {
         let (sandbox, sha) = (sandbox.as_str().to_owned(), sha.to_owned());
         self.call(move |c| {
@@ -1356,6 +1384,44 @@ mod tests {
             exclusive: false,
             waited_ms: None,
         }
+    }
+
+    /// #1532: a run counts as partial when a job of it was skipped by its `paths` or as an
+    /// `after_merge` job; a job's own skip (exit 78) or a run that ran everything does not.
+    #[tokio::test]
+    async fn a_run_with_a_paths_or_after_merge_skip_is_partial() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        for (id, reason) in [
+            (
+                "paths",
+                Some(format!(
+                    "{} (paths: web/**)",
+                    yulius_domain::ci::PATHS_SKIP_REASON
+                )),
+            ),
+            (
+                "merge",
+                Some(yulius_domain::ci::AFTER_MERGE_SKIP_REASON.to_owned()),
+            ),
+            ("own", Some("job exited with the CI skip code".to_owned())),
+            ("whole", None),
+        ] {
+            let mut skipped = job(&format!("{id}-j"), id, 0);
+            if let Some(reason) = reason {
+                skipped.state = RunState::Skipped;
+                skipped.reason = Some(reason);
+            }
+            store
+                .insert_ci_run(&run(id, &format!("sha-{id}"), 1)?, &[skipped])
+                .await?;
+        }
+        let ids = ["paths", "merge", "own", "whole", "missing"].map(str::to_owned);
+        let partial = store.ci_partial_runs(&ids).await?;
+        let mut partial: Vec<_> = partial.into_iter().collect();
+        partial.sort();
+        assert_eq!(partial, ["merge", "paths"]);
+        assert!(store.ci_partial_runs(&[]).await?.is_empty());
+        Ok(())
     }
 
     /// SPEC-504 review round 1: a run whose source a later release wrote reads as the
