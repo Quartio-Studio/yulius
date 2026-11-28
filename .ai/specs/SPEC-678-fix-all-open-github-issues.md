@@ -186,12 +186,13 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **BRW-1741** The opt-in live-display functional test waits for the page to take input
   (`focus_page`: clicks and Shift until a capture-phase keydown counts one) before its first
   click assertion, and forgets the events that recorded.
-- **CD-1817** A test holds prove-on-dev's refusal when the dev deploy that would prove
+- **CD-1817** Tests hold prove-on-dev's refusal when the dev deploy that would prove
   production's rollback cannot start: the answer is 409 naming production's refusal and "dev
   could not be deployed to prove it: …", production's rollback waits for nothing, and no CD run
-  is added. A merge-first `[cd.dev]` refuses production earlier ("staging verified nothing
-  yet"), so the test makes the dev deploy fail by moving dev between the proof and its deploy,
-  at a new race point (`ProofRegistered`, keyed by the sandbox).
+  is added. Two causes are held: a merge-first `[cd.dev]` (dev's head a new commit with the
+  staged revision's tree, so the proof is offered but the plain dev deploy is the staging
+  target's to make), and dev moving between the proof and its deploy (a race point,
+  `ProofRegistered`, keyed by the sandbox).
 
 ## Plan
 
@@ -522,8 +523,12 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 
 ### #1817 (prove-on-dev's refusal when dev cannot be deployed)
 
+- `staging::a_merge_first_dev_that_cannot_prove_production_names_both_refusals`: staging
+  verified r1, dev's last drill ran at another tree, dev's head is an empty commit on r1; the
+  answer is 409 starting with production's refusal and naming "[cd.dev] is the merge-first
+  staging target", `waiting` null, run count unchanged. Found by the review of #1849 (round 1
+  had said a merge-first dev refuses earlier, which holds only while staging verified nothing).
 - `cd_rollback::a_proving_dev_deploy_that_cannot_start_names_both_refusals`: the race point's
-  hook pushes a commit to dev after the proof is registered; the answer is 409 with both
-  refusals ("…; dev could not be deployed to prove it: nothing ran: dev moved since you
-  looked…"), `waiting` stays null and the run count is unchanged. With the branch at
-  `prove.rs` returning the dev error alone the test fails. `cd_rollback::`: 14 passed.
+  hook pushes a commit to dev after the proof is registered; same assertions, with dev "moved
+  since you looked". With the branch at `prove.rs` returning the dev error alone, or
+  production's refusal alone, or keeping the wait, it fails (review mutations).

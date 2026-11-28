@@ -592,7 +592,9 @@ async fn a_proving_dev_deploy_that_cannot_start_names_both_refusals() -> TestRes
         "{message}"
     );
     assert!(
-        message.contains("rollback"),
+        message.starts_with(
+            "nothing ran: rollback is not proven for this commit: the last rollback drill of dev ran at"
+        ),
         "production's own refusal: {message}"
     );
     assert_eq!(f.rollback_of("prod").await?["waiting"], Value::Null);
