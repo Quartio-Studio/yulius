@@ -23,7 +23,7 @@
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use tracing::{info, warn};
@@ -456,12 +456,52 @@ impl StrandedXvfb {
     }
 }
 
+/// Where a display start that was dropped (its request cancelled) leaves the X server it had
+/// started, with its cookie and runtime directory, for its sandbox's slot to stop before the next
+/// display (#1688).
+pub(crate) type CancelledStart = Arc<Mutex<Option<Box<StrandedXvfb>>>>;
+
+/// The X server of a display being started, owned from its spawn on: dropped before the start
+/// handed it on (the start's future was dropped, during readiness or a failed start's stop), it
+/// goes to the sandbox's [`CancelledStart`] instead of being killed and forgotten (#1688).
+struct StartGuard<'a> {
+    xvfb: Option<Box<StrandedXvfb>>,
+    sink: &'a CancelledStart,
+}
+
+impl StartGuard<'_> {
+    /// The X server, while the guard still owns it.
+    fn process(&self) -> Option<&Supervised> {
+        self.xvfb.as_ref().map(|xvfb| &xvfb.process)
+    }
+}
+
+impl Drop for StartGuard<'_> {
+    fn drop(&mut self) {
+        let Some(xvfb) = self.xvfb.take() else {
+            return;
+        };
+        let mut slot = lock(self.sink);
+        warn!(
+            display = xvfb.number,
+            pid = xvfb.process.pid(),
+            "a display start was cancelled; its X server is kept to be stopped"
+        );
+        // One start runs per slot at a time; an older server left there is kept first.
+        if slot.is_none() {
+            *slot = Some(xvfb);
+        }
+    }
+}
+
 /// Stops a display's X server (the one place a test can make it survive, [`stop_faults`]).
 async fn stop_xvfb(
     process: &Supervised,
     dir: &Path,
     timeouts: StopTimeouts,
 ) -> Result<(), NotReaped> {
+    #[cfg(test)]
+    stop_faults::entered(dir);
     #[cfg(test)]
     if stop_faults::held(dir) {
         return Err(NotReaped);
@@ -473,24 +513,22 @@ async fn stop_xvfb(
 
 /// Stops the X server of a display that failed to start with `error` and removes its cookie;
 /// keeps the server, cookie and directory when it survives (SPEC-616 XS-001, XS-004).
-async fn abandon(
-    process: Supervised,
-    number: u32,
-    dir: &Path,
-    xauthority: &Path,
-    error: BrowserError,
-) -> DisplayStartFailure {
-    if stop_xvfb(&process, dir, quick_stop()).await.is_ok() {
-        let _ = std::fs::remove_file(xauthority);
+async fn abandon(mut guard: StartGuard<'_>, error: BrowserError) -> DisplayStartFailure {
+    // The guard owns the server through the stop: a start dropped meanwhile keeps it (#1688).
+    let stopped = match guard.xvfb.as_deref() {
+        Some(xvfb) => stop_xvfb(&xvfb.process, &xvfb.dir, quick_stop())
+            .await
+            .is_ok(),
+        None => true,
+    };
+    let Some(mut stranded) = guard.xvfb.take() else {
+        return error.into();
+    };
+    if stopped {
+        let _ = std::fs::remove_file(&stranded.xauthority);
         return error.into();
     }
-    let stranded = Box::new(StrandedXvfb {
-        process,
-        number,
-        dir: dir.to_owned(),
-        xauthority: xauthority.to_owned(),
-        cause: error.to_string(),
-    });
+    stranded.cause = error.to_string();
     let error = stranded.error();
     warn!(%error, "a virtual display that failed to start could not be stopped");
     DisplayStartFailure {
@@ -529,8 +567,28 @@ pub(crate) mod stop_faults {
         held_dirs().iter().any(|held| held == dir)
     }
 
+    static ENTERED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    /// A stop of the display in `dir` began.
+    pub(super) fn entered(dir: &Path) {
+        ENTERED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(dir.to_owned());
+    }
+
+    /// Whether a stop of the display in `dir` began.
+    pub(crate) fn stop_began(dir: &Path) -> bool {
+        ENTERED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|entered| entered == dir)
+    }
+
     /// An `Xvfb` stand-in that records each start's pid in `starts` and acts as the `mode`
-    /// file says: `silent` never accepts connections, `no-xtest` runs the real Xvfb without
+    /// file says: `silent` never accepts connections (`stubborn` also ignores SIGTERM, so its stop
+    /// waits for the kill), `no-xtest` runs the real Xvfb without
     /// XTEST (the X controller's setup fails), `real` runs the real Xvfb.
     pub(crate) struct FakeXvfb {
         pub(crate) program: PathBuf,
@@ -545,7 +603,7 @@ pub(crate) mod stop_faults {
             let dir = dir.to_owned();
             let program = dir.join("Xvfb");
             let script = format!(
-                "#!/bin/sh\necho $$ >> '{d}/starts'\ncase \"$(cat '{d}/mode')\" in\n  silent) exec /bin/sleep 600 ;;\n  no-xtest) exec '{real}' \"$@\" -tst ;;\n  *) exec '{real}' \"$@\" ;;\nesac\n",
+                "#!/bin/sh\necho $$ >> '{d}/starts'\ncase \"$(cat '{d}/mode')\" in\n  silent) exec /bin/sleep 600 ;;\n  stubborn) trap '' TERM; exec /bin/sleep 600 ;;\n  no-xtest) exec '{real}' \"$@\" -tst ;;\n  *) exec '{real}' \"$@\" ;;\nesac\n",
                 d = dir.display()
             );
             std::fs::write(&program, script)?;
@@ -591,14 +649,28 @@ impl VirtualDisplay {
     /// does not come up or lacks XTest. A failed start leaves no process behind, except an X
     /// server that survived its stop: that one is returned in the failure, with
     /// [`BrowserError::DisplayNotStopped`], for the caller to stop again (SPEC-616).
+    #[cfg(test)]
     pub(crate) async fn start(
         mode: &DisplayMode,
         sandbox: &SandboxId,
         css: (u32, u32),
     ) -> Result<Option<Self>, DisplayStartFailure> {
+        Self::start_into(mode, sandbox, css, &CancelledStart::default()).await
+    }
+
+    /// As [`Self::start`]; a start dropped before it ended leaves its X server in `cancelled`
+    /// (#1688).
+    pub(crate) async fn start_into(
+        mode: &DisplayMode,
+        sandbox: &SandboxId,
+        css: (u32, u32),
+        cancelled: &CancelledStart,
+    ) -> Result<Option<Self>, DisplayStartFailure> {
         match mode {
             DisplayMode::Headless => Ok(None),
-            DisplayMode::Virtual(config) => Self::start_xvfb(config, sandbox, css).await.map(Some),
+            DisplayMode::Virtual(config) => Self::start_xvfb(config, sandbox, css, cancelled)
+                .await
+                .map(Some),
             #[cfg(feature = "fake")]
             DisplayMode::Fake(fake) => Ok(Some(Self::start_fake(fake, css))),
         }
@@ -623,6 +695,7 @@ impl VirtualDisplay {
         config: &DisplayConfig,
         sandbox: &SandboxId,
         css: (u32, u32),
+        cancelled: &CancelledStart,
     ) -> Result<Self, DisplayStartFailure> {
         use rand::RngExt as _;
         let xvfb = crate::discovery::resolve_executable(&config.xvfb)
@@ -658,7 +731,21 @@ impl VirtualDisplay {
             ];
             let process =
                 Supervised::spawn(&xvfb, &args, &passed_env()).map_err(BrowserError::Spawn)?;
-            match wait_ready(&process, number, &cookie, config.startup_timeout).await {
+            let mut guard = StartGuard {
+                xvfb: Some(Box::new(StrandedXvfb {
+                    process,
+                    number,
+                    dir: dir.clone(),
+                    xauthority: xauthority.clone(),
+                    cause: "its start was cancelled".into(),
+                })),
+                sink: cancelled,
+            };
+            let ready = match guard.process() {
+                Some(process) => wait_ready(process, number, &cookie, config.startup_timeout).await,
+                None => Ready::Failed(display_error("the X server was let go")),
+            };
+            match ready {
                 Ready::Up(conn) => {
                     let width = u16::try_from(size.0).unwrap_or(u16::MAX);
                     let height = u16::try_from(size.1).unwrap_or(u16::MAX);
@@ -672,9 +759,13 @@ impl VirtualDisplay {
                         Ok(x) => x,
                         Err(problem) => {
                             let error = display_error(problem);
-                            return Err(abandon(process, number, &dir, &xauthority, error).await);
+                            return Err(abandon(guard, error).await);
                         }
                     };
+                    let Some(owned) = guard.xvfb.take() else {
+                        return Err(display_error("the X server was let go").into());
+                    };
+                    let process = owned.process;
                     info!(sandbox = %sandbox, display = number, pid = process.pid(), "virtual display started");
                     let encoder = FfmpegStart {
                         program: config.ffmpeg.clone(),
@@ -695,10 +786,13 @@ impl VirtualDisplay {
                 Ready::Taken => {
                     // The server already exited and was reaped (that is how a taken number
                     // shows): this stop only clears its process group and cannot fail.
-                    let _ = process.terminate(quick_stop()).await;
+                    if let Some(process) = guard.process() {
+                        let _ = process.terminate(quick_stop()).await;
+                    }
+                    drop(guard.xvfb.take());
                 }
                 Ready::Failed(error) => {
-                    return Err(abandon(process, number, &dir, &xauthority, error).await);
+                    return Err(abandon(guard, error).await);
                 }
             }
         }
