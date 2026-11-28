@@ -1378,19 +1378,39 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
     assert_eq!(missing_owner.status, StatusCode::CONFLICT);
     assert!(text(&missing_owner.body["error"]["message"]).contains("must sign in"));
 
-    w.user(OWNER, false).await?;
+    // #1753: in a personal account only its owner is a repository's admin, and a collaborator
+    // gets write at most: another instance administrator is refused before anything is created.
+    let (_, owner) = w.user(OWNER, false).await?;
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(body.clone()),
+        &admin,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let why = text(&refused.body["error"]["message"]).to_owned();
+    assert!(
+        why.contains(&format!("Only {OWNER} can create projects in their personal GitHub account")),
+        "{why}"
+    );
+    assert!(w.github.created().is_empty(), "nothing was created");
+
+    w.h.store
+        .execute_for_tests(&format!(
+            "UPDATE users SET is_instance_admin = 1 WHERE github_login = '{OWNER}'"
+        ))
+        .await?;
     let created = call(
         &w.h.router,
         Method::POST,
         "/api/sandboxes",
         Some(body),
-        &admin,
+        &owner,
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
-    // In a personal account only its owner is a repository's admin: nothing is asked, and the
-    // page is told of no grant.
-    assert_eq!(created.body["access"], "none", "{:?}", created.body);
     assert!(
         created.body.get("admin_grant").is_none(),
         "{:?}",
@@ -1410,6 +1430,18 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
             .iter()
             .all(|(_, _, token)| token == &format!("token-{OWNER}"))
     );
+
+    // The superadmin may: they hold every project (ACC-012).
+    let superadmin = support::setup_superadmin_creds(&w.h).await?;
+    let by_superadmin = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "tool2", "template": "empty"})),
+        &superadmin,
+    )
+    .await?;
+    assert_eq!(by_superadmin.status, StatusCode::CREATED, "{:?}", by_superadmin.body);
     Ok(())
 }
 
@@ -2109,7 +2141,7 @@ async fn a_create_github_refuses_names_the_missing_app_permission() -> TestResul
 // and onboarding set the empty repository up.
 #[tokio::test]
 async fn a_created_repository_out_of_the_installations_reach_is_explained() -> TestResult {
-    let w = World::new("user").await?;
+    let w = World::new("org").await?;
     let (admin_user, admin) = w.user("alice", true).await?;
     let admin_browser = w.browser(&admin_user).await?;
     w.user(OWNER, false).await?;
@@ -2129,8 +2161,12 @@ async fn a_created_repository_out_of_the_installations_reach_is_explained() -> T
     for part in [
         "Quartio-Studio/tool was created on GitHub",
         "only selected repositories",
-        "https://github.com/settings/installations/7",
-        "Import repository",
+        "https://github.com/organizations/Quartio-Studio/settings/installations/7",
+        // #1751: Import needs admin or maintain, which its creator need not have: the
+        // message says who acts.
+        "An owner of Quartio-Studio adds tool under Repository access",
+        "then someone with admin or maintain on Quartio-Studio/tool adds it with Import \
+         repository (an owner of Quartio-Studio can, or can give you that role)",
     ] {
         assert!(message.contains(part), "{part:?} missing from {message}");
     }

@@ -13,6 +13,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 - The Security scan card reads `.config/vidoc.toml` as the scanner does: a file the scan refuses (a byte-order mark, a TOML 1.1 escape) shows as unreadable, not as on or off.
 - A branch moved straight to a pull request's head whose run skipped jobs (by their `paths`, or an after-merge full suite) gets a CI run of its own that runs every job.
+- In an instance whose GitHub owner is a personal account, only that owner (or the superadmin) can create a project; anyone else is told why before anything is created. A created repository the App cannot reach says who must add it and import it.
 - A watch's write past its file-size bound is refused ("File too large") instead of killing the writer, the same on every host.
 - An automation whose creator is disabled creates no task; each skipped run says why, and the automation runs again once the person is enabled.
 - `yulius wait` follows a merged task's staging request: it waits while the request is tested and deployed and ends with its verdict, instead of ending at once on the merge's old checks or saying there is no staging request.
