@@ -1380,7 +1380,7 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
 
     // #1753: in a personal account only its owner is a repository's admin, and a collaborator
     // gets write at most: another instance administrator is refused before anything is created.
-    let (_, owner) = w.user(OWNER, false).await?;
+    let (_, owner) = w.user(OWNER, true).await?;
     let refused = call(
         &w.h.router,
         Method::POST,
@@ -1399,11 +1399,6 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
     );
     assert!(w.github.created().is_empty(), "nothing was created");
 
-    w.h.store
-        .execute_for_tests(&format!(
-            "UPDATE users SET is_instance_admin = 1 WHERE github_login = '{OWNER}'"
-        ))
-        .await?;
     let created = call(
         &w.h.router,
         Method::POST,
@@ -2203,6 +2198,38 @@ async fn a_created_repository_out_of_the_installations_reach_is_explained() -> T
         imported.body
     );
     assert_eq!(remote_heads(&remote)?.trim(), "main");
+    Ok(())
+}
+
+/// #1753 review: in a personal account its owner is the one who created the repository, and
+/// there is no admin or maintain role to give: the owner is told to add it and import it.
+#[tokio::test]
+async fn a_personal_accounts_unreachable_repository_is_the_owners_to_add() -> TestResult {
+    let w = World::new("user").await?;
+    let (_, owner) = w.user(OWNER, true).await?;
+    w.github
+        .selected_only
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "tool", "template": "empty"})),
+        &owner,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let message = text(&refused.body["error"]["message"]);
+    for part in [
+        "Quartio-Studio/tool was created on GitHub",
+        "only selected repositories",
+        "Quartio-Studio adds tool under Repository access",
+        "then adds it with Import repository",
+    ] {
+        assert!(message.contains(part), "{part:?} missing from {message}");
+    }
+    assert!(!message.contains("admin or maintain"), "{message}");
+    assert!(!message.contains("An owner of"), "{message}");
     Ok(())
 }
 

@@ -914,8 +914,9 @@ integration", named on the Git page; unreadable checks never count as passed. **
 fails** with either "GitHub refused to create …: the Yulius
 GitHub App lacks the repository permission Administration: Read and write …" (add it as below;
 nothing was created) or "… was created on GitHub, but the Yulius GitHub App cannot reach it: its
-installation covers only selected repositories" (add the repository under the installation's
-Repository access, then Import repository). An empty repository can be imported as it is.
+installation covers only selected repositories" (an owner of the account adds the repository
+under the installation's Repository access; then someone with admin or maintain on it, or the
+personal account's owner, adds it with Import repository). An empty repository can be imported as it is.
 
 **Adding a permission to an existing App:** set it (e.g. Repository permissions → Commit statuses →
 Read-only) on `https://github.com/organizations/<org>/settings/apps/<app-slug>/permissions` (personal

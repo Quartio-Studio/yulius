@@ -115,13 +115,24 @@ fn missing_permission(owner: &str, name: &str, accepted: &str, pages: Option<&Ap
 }
 
 /// CRT-002: `owner/name` exists on GitHub, but the App's installation does not include it.
-fn unreachable(owner: &str, name: &str, pages: Option<&AppPages>) -> String {
+fn unreachable(owner: &str, name: &str, is_org: bool, pages: Option<&AppPages>) -> String {
     let place = pages
         .and_then(|pages| pages.installation.as_deref())
         .map_or_else(
             || format!("in {owner}'s GitHub settings, on the Yulius App's installation"),
             |url| format!("at {url}"),
         );
+    // In a personal account only its owner creates (or the superadmin, who needs no role):
+    // the owner adds it and imports it (#1753).
+    if !is_org {
+        return format!(
+            "{owner}/{name} was created on GitHub, but the Yulius GitHub App cannot reach it: its \
+             installation covers only selected repositories. {owner} adds {name} under \
+             Repository access {place} (or chooses All repositories), then adds it with Import \
+             repository. Yulius gives the empty repository its first commit when onboarding \
+             starts."
+        );
+    }
     // Import needs admin or maintain on the repository, which the person who created it need
     // not have (the grant of its admin role needs the App to reach it): say who acts (#1751).
     format!(
@@ -169,7 +180,8 @@ impl App {
         match self.deps.github.repo_access(&token, owner, name).await {
             Ok(RepoAccess::NoAccess) => {
                 let pages = self.app_pages().await;
-                AppError::Forbidden(unreachable(owner, name, pages.as_ref()))
+                let is_org = self.instance_owner().await.map_or(true, |(_, org)| org);
+                AppError::Forbidden(unreachable(owner, name, is_org, pages.as_ref()))
             }
             _ => err,
         }
@@ -225,11 +237,22 @@ mod tests {
         assert!(text.contains("https://github.com/settings/apps/yulius-pawel/permissions"));
         assert!(text.contains("https://github.com/settings/installations/9"));
         assert!(text.contains("Nothing was created"));
-        let text = unreachable("pawel", "shop", pages.as_ref());
+        let text = unreachable("pawel", "shop", false, pages.as_ref());
         assert!(text.contains("only selected repositories"), "{text}");
         assert!(text.contains("https://github.com/settings/installations/9"));
-        assert!(text.contains("Import repository"));
-        let text = unreachable("pawel", "shop", None);
+        // A personal account's owner acts alone: no role to give there (#1753).
+        assert!(
+            text.contains("pawel adds shop under Repository access")
+                && text.contains("then adds it with Import repository")
+                && !text.contains("admin or maintain"),
+            "{text}"
+        );
+        let text = unreachable("pawel", "shop", false, None);
         assert!(text.contains("pawel's GitHub settings"), "{text}");
+        let text = unreachable("Quartio-Studio", "shop", true, None);
+        assert!(
+            text.contains("An owner of Quartio-Studio adds shop"),
+            "{text}"
+        );
     }
 }
