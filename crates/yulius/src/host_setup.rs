@@ -165,7 +165,8 @@ pub trait Host {
 /// The line of the stopgap's immutable memory folders (SPEC-652 MEM-009).
 pub const STOPGAP: &str = "memory stopgap";
 
-/// Most paths of memory folders the stopgap walk opens.
+/// Most entries the stopgap walk reads from listings (owners, project keys and everything in
+/// memory folders).
 pub const STOPGAP_MAX_PATHS: usize = 100_000;
 
 /// What the stopgap walk found and did ([`Host::memory_stopgap`]).
@@ -181,9 +182,10 @@ pub struct StopgapScan {
     pub failed: usize,
     /// The first failure, `<path>: <why>`.
     pub first_failure: Option<String>,
-    /// The walk stopped at [`STOPGAP_MAX_PATHS`]: folders beyond it were not looked at.
+    /// The walk stopped at [`STOPGAP_MAX_PATHS`] entries: those beyond were not looked at.
     pub cut: bool,
-    /// Entries the walk could not read (a name that is not UTF-8, a listing that failed).
+    /// Entries the walk could not read (a name that is not UTF-8, a listing or an open that
+    /// failed).
     pub unread: usize,
     /// The first of them, `<folder>: <why>`.
     pub first_unread: Option<String>,
@@ -610,14 +612,15 @@ impl<'a> Run<'a> {
         let mut missed = String::new();
         if scan.cut {
             missed.push_str(&format!(
-                "; the walk stopped after {STOPGAP_MAX_PATHS} paths, so memory folders beyond \
+                "; the walk stopped after {STOPGAP_MAX_PATHS} entries, so memory folders beyond \
                  them were not looked at"
             ));
         }
         if scan.unread > 0 {
             missed.push_str(&format!(
-                "; {} entries could not be read{}",
+                "; {} {} could not be read{}",
                 scan.unread,
+                if scan.unread == 1 { "entry" } else { "entries" },
                 scan.first_unread
                     .as_deref()
                     .map(|first| format!(", first {first}"))

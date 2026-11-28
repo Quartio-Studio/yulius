@@ -135,13 +135,16 @@ reviewed and merged into `dev` by `delivery_merge`.
   The scanner reads a number past that limit as "cannot be read" (it raised `ValueError`).
   Named exceptions: from Python 3.15 `tomllib` reads TOML 1.1, which the card still refuses;
   an inline table holding a multi-line string reads unreadable (the safer side).
-- **MEM-1767** The host check's memory stopgap walk counts every entry it examines (links,
-  FIFOs and other skipped names too) toward `STOPGAP_MAX_PATHS`, and stops reading a folder
-  once the bound is reached. It lists each folder from its own descriptor
-  (`rustix::fs::Dir::read_from`, no `/proc`). A name that is not UTF-8 or a listing that fails
-  is counted as unread and named in the line (the first one). A walk that was cut or left an
-  entry unread never reads "ok": a dry run says "would clear … ; cut at …", and a cut without a
-  failed clear says "cut", not "0 of N could not be cleared".
+- **MEM-1767** The host check's memory stopgap walk counts every entry it reads from a listing
+  (owners, project keys without `memory`, and links, FIFOs and other skipped names in memory
+  folders) toward `STOPGAP_MAX_PATHS`, and stops reading a listing once the bound is reached,
+  so a folder of a million links is not read in full. It lists each folder from its own
+  descriptor (`rustix::fs::Dir::read_from`, no `/proc`). A name that is not UTF-8, a listing that
+  fails, or an open that fails other than for a missing name, a file or a link (out of
+  descriptors, say) is counted as unread and the first is named in the line. A walk that was cut
+  or left an entry unread never reads "ok": a dry run says "would clear …; the walk stopped
+  after …" or "…; 1 entry could not be read, first …", and a cut without a failed clear says the
+  walk stopped, not "0 of N could not be cleared".
 
 ## Plan
 
@@ -378,8 +381,15 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 ### #1767 (the memory stopgap walk's bound and wording)
 
 - `host_setup::system` tests: `every_examined_entry_counts_and_an_unreadable_name_is_reported`
-  walks a real folder of many links (cut at the bound although none is visited) and a non-UTF-8
-  name (counted unread and named); the real-filesystem test gained
-  `projects/-k/session.jsonl` beside `memory`, never visited. `host_setup::tests` cover the
-  dry-run and cut wording. `scripts/cargo nextest run -p yulius --lib -E 'test(/host_setup/)'`:
-  103 passed.
+  walks a real memory folder of 50 links with a bound of 20 (cut, 20 entries read, only the
+  folder itself visited), 50 project keys without `memory` (cut; not cut on d227e85c8, where
+  keys did not count) and a non-UTF-8 name (counted unread and named);
+  `the_real_scan_reports_an_unreadable_name` carries it through `RealHost::memory_stopgap`; the
+  real-filesystem test gained `projects/-k/session.jsonl` beside `memory`, never visited.
+  `host_setup::tests::the_stopgaps_immutable_memory_folders_are_cleared` covers the cut and the
+  unread wording in a check, a dry run and an apply whose flags all cleared.
+  `scripts/cargo nextest run -p yulius --lib -E 'test(/host_setup/)'`: 104 passed.
+- Review round 1 of #1842 (request changes at d227e85c8): the listing was read whole before the
+  bound was checked (1,000,000 links read for a bound of 20), owners and keys did not count, and
+  the unread wording had no test. Fixed as above; a failed open of a subfolder (out of
+  descriptors) is now noted instead of passed over (pre-existing, found by the same review).
