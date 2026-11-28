@@ -280,7 +280,8 @@ def parse_config(text, where):
     malformed config (exit 2)."""
     try:
         data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as err:
+    # A number past Python's conversion limit (4,300 decimal digits) raises ValueError.
+    except (tomllib.TOMLDecodeError, ValueError) as err:
         raise Usage(f"{where} cannot be read: {err}") from err
     unknown = set(data) - {"enabled", "exclude", "ignore"}
     if unknown:

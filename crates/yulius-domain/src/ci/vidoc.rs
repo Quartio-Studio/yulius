@@ -2,8 +2,12 @@
 //! reports it on a sandbox's Security scan card (SPEC-359 VSB-003). It reads the file as TOML,
 //! as the scanner's `parse_config` does (`tomllib`), and checks its shape in the scanner's order
 //! (the keys, `enabled`, `exclude`, each `[[ignore]]` entry), so a file the scanner refuses reads
-//! as unreadable, never as on or off. Known gaps where it reads more than the scanner: a
-//! byte-order mark, and the TOML 1.1 string escapes `\e` and `\xHH`.
+//! as unreadable, never as on or off; TOML 1.0's limits are checked where the `toml` crate reads
+//! 1.1 (a byte-order mark, the escapes `\e` and `\xHH`, multi-line inline tables), and blank and
+//! numbers as Python reads them. The scanner's `tomllib` is TOML 1.0 up to Python 3.14; from
+//! 3.15 it reads 1.1's escapes and inline tables, which the card still refuses. One case reads
+//! less than the scanner on every version: an inline table holding a multi-line string (the
+//! safer side).
 
 use toml::de::{DeTable, DeValue};
 
@@ -20,6 +24,10 @@ pub enum RepositoryVidoc {
     /// The scanner would stop "not run" on it: the problem, in words.
     Unreadable(String),
 }
+
+/// Python's conversion limit for a decimal integer's digits (`sys.int_info`): past it `tomllib`
+/// refuses the number.
+const PYTHON_MAX_DECIMAL_DIGITS: usize = 4300;
 
 /// The keys an `[[ignore]]` entry may set.
 const ENTRY_KEYS: [&str; 5] = ["path", "title", "reason", "function", "line"];
@@ -39,7 +47,7 @@ pub fn repository_vidoc(text: Option<&str>) -> RepositoryVidoc {
     let Some(text) = text else {
         return RepositoryVidoc::On;
     };
-    match read(text.strip_prefix('\u{feff}').unwrap_or(text)) {
+    match read(text) {
         Ok(true) => RepositoryVidoc::On,
         Ok(false) => RepositoryVidoc::Off,
         Err(problem) if problem.starts_with(':') => {
@@ -55,6 +63,17 @@ fn read(text: &str) -> Result<bool, String> {
         let before = &text.as_bytes()[..offset.min(text.len())];
         before.iter().filter(|&&b| b == b'\n').count() + 1
     };
+    // `tomllib` reads none of TOML 1.1's: a byte-order mark is no statement, `\e` and `\xHH`
+    // are no escapes.
+    if text.starts_with('\u{feff}') {
+        return Err("cannot be read: a byte-order mark starts it (line 1)".to_owned());
+    }
+    if let Some(offset) = toml_1_1_escape(text) {
+        return Err(format!(
+            "cannot be read: a string uses an escape of TOML 1.1 (line {})",
+            line(offset)
+        ));
+    }
     let root = DeTable::parse(text).map_err(|error| {
         let at = error.span().map_or(1, |span| line(span.start));
         let message = error
@@ -121,6 +140,75 @@ fn toml_1_0(source: &str) -> bool {
     !inline.contains(['\n', '\r']) && !inner.trim_end().ends_with(',')
 }
 
+/// Where a basic string of `text` uses `\e` or `\xHH`, escapes TOML 1.1 added: comments and
+/// literal strings (`'…'`, `'''…'''`) are skipped, and `\\` is an escaped backslash.
+fn toml_1_1_escape(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    // Past a string's closing quote at `at`: a multi-line string's `"""` or `'''` may be
+    // preceded by one or two more of its quote, which belong to the string (TOML 1.0).
+    let past_close = |at: usize, quote: &[u8]| {
+        let mut end = at + quote.len();
+        if quote.len() == 3 {
+            let mut extra = 0;
+            while extra < 2 && bytes.get(end) == Some(&quote[0]) {
+                end += 1;
+                extra += 1;
+            }
+        }
+        end
+    };
+    let mut at = 0;
+    while at < bytes.len() {
+        let rest = &bytes[at..];
+        if rest.starts_with(b"#") {
+            at += rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+        } else if rest.starts_with(b"'") {
+            let quote: &[u8] = if rest.starts_with(b"'''") {
+                b"'''"
+            } else {
+                b"'"
+            };
+            let body = at + quote.len();
+            at = bytes[body..]
+                .windows(quote.len())
+                .position(|w| w == quote)
+                .map_or(bytes.len(), |p| past_close(body + p, quote));
+        } else if rest.starts_with(b"\"") {
+            let quote: &[u8] = if rest.starts_with(b"\"\"\"") {
+                b"\"\"\""
+            } else {
+                b"\""
+            };
+            let mut i = at + quote.len();
+            while i < bytes.len() && !bytes[i..].starts_with(quote) {
+                if bytes[i] == b'\\' {
+                    if matches!(bytes.get(i + 1), Some(b'e' | b'x')) {
+                        return Some(i);
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            at = if i < bytes.len() {
+                past_close(i, quote)
+            } else {
+                bytes.len()
+            };
+        } else {
+            at += 1;
+        }
+    }
+    None
+}
+
+/// Blank as Python's `str.strip` sees it: Unicode white space and the separators U+001C to
+/// U+001F.
+fn python_blank(text: &str) -> bool {
+    text.chars()
+        .all(|c| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
+}
+
 /// An `[[ignore]]` entry the scanner keeps: path, title and reason, maybe function and line, the
 /// strings not blank and the line a number from 1.
 fn ignore_entry(entry: &DeValue<'_>) -> bool {
@@ -133,13 +221,20 @@ fn ignore_entry(entry: &DeValue<'_>) -> bool {
     named
         && entry.iter().all(
             |(key, value)| match (key.get_ref().as_ref(), value.get_ref()) {
+                // Python's integers have no bound: any number from 1, however large.
+                // Any number from 1, as Python reads it: no bound but its conversion limit of
+                // 4,300 decimal digits (`sys.int_info`), and never an empty `0x`.
                 ("line", DeValue::Integer(number)) => {
-                    u64::from_str_radix(number.as_str(), number.radix()).is_ok_and(|n| n >= 1)
+                    let digits = number.as_str().trim_start_matches('+');
+                    let radix = number.radix();
+                    !digits.is_empty()
+                        && !digits.starts_with('-')
+                        && !(radix == 10 && digits.len() > PYTHON_MAX_DECIMAL_DIGITS)
+                        && u128::from_str_radix(digits, radix)
+                            .map_or(digits.chars().all(|c| c.is_digit(radix)), |n| n >= 1)
                 }
                 ("line", _) => false,
-                (key, DeValue::String(text)) => {
-                    ENTRY_KEYS.contains(&key) && !text.trim().is_empty()
-                }
+                (key, DeValue::String(text)) => ENTRY_KEYS.contains(&key) && !python_blank(text),
                 _ => false,
             },
         )
@@ -151,6 +246,120 @@ mod tests {
 
     fn unreadable(text: &str) -> bool {
         matches!(repository_vidoc(Some(text)), RepositoryVidoc::Unreadable(_))
+    }
+
+    /// Whether the scanner's own `parse_config` (`scripts/vidoc_scan.py`, Python's `tomllib`)
+    /// accepts `text`, as it reads the committed file.
+    fn scanner_accepts(text: &str) -> bool {
+        use std::io::Write as _;
+        let scripts = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts");
+        let code = "import sys; sys.path.insert(0, sys.argv[1]); import vidoc_scan\n\
+                    try:\n    vidoc_scan.parse_config(sys.stdin.buffer.read().decode(), 'x')\n\
+                    except vidoc_scan.Usage:\n    sys.exit(3)";
+        let mut child = std::process::Command::new("python3")
+            .args(["-I", "-c", code, scripts])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| panic!("python3: {e}"));
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .unwrap_or_else(|e| panic!("stdin: {e}"));
+        }
+        let status = child.wait().unwrap_or_else(|e| panic!("wait: {e}"));
+        assert!(matches!(status.code(), Some(0 | 3)), "{status:?}");
+        status.success()
+    }
+
+    /// Whether this host's `python3` has a `tomllib` that reads TOML 1.1 (3.15 and later).
+    fn tomllib_reads_toml_1_1() -> bool {
+        std::process::Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                "import sys; sys.exit(0 if sys.version_info >= (3, 15) else 1)",
+            ])
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// #1811: the card reads each of these as the scanner does: a byte-order mark, the TOML 1.1
+    /// escapes `\e` and `\xHH`, a string of only the separators Python counts as blank, and a
+    /// line number past `u64::MAX`.
+    #[test]
+    fn the_card_and_the_scanner_agree_on_the_corner_cases() {
+        let entry = |title: &str, line: &str| {
+            format!("[[ignore]]\npath = \"a\"\ntitle = {title}\nreason = \"r\"\n{line}")
+        };
+        let reads_1_1 = tomllib_reads_toml_1_1();
+        // (file, a TOML 1.1 case the card refuses and Python 3.15's `tomllib` reads)
+        let mut cases = vec![
+            ("\u{feff}enabled = false\n".to_owned(), false),
+            ("\u{feff}# why\nenabled = true\n".to_owned(), false),
+            (entry("\"x\\e\"", ""), true),
+            (entry("\"\\x41\"", ""), true),
+            (entry("'\\e literal'", ""), false),
+            (entry("\"\\\\e escaped backslash\"", ""), false),
+            (entry("\"\\u001C\\u001F\"", ""), false),
+            (entry("\"\\u001Cx\"", ""), false),
+            (entry("\"t # not a comment\"", ""), false),
+            (entry("\"say \\\"\\\\x\\\" as is\"", ""), false),
+            // Quotes before a multi-line string's closing delimiter belong to it (#1841 review).
+            (
+                entry("\"\"\"Use of \"eval\"\"\"\"", "")
+                    + "[[ignore]]\npath = \"b\"\ntitle = \"t\"\nreason = \"see \\e[0m\"\n",
+                true,
+            ),
+            (
+                entry("\"\"\"Use of \"eval\"\"\"\"", "") + "# the \\x1b sequence \"as is\"\n",
+                false,
+            ),
+            (
+                entry("\'\'\'it's 'quoted''\'\'\'", "")
+                    + "[[ignore]]\npath = \"b\"\ntitle = \"t\"\nreason = \"\\x41\"\n",
+                true,
+            ),
+            (
+                entry("\"\"\"line one\\\n  line two\\\"\\\"\\\"\"\"\"", ""),
+                false,
+            ),
+            (
+                format!("\"quoted \\x key\" = 1\n{}", entry("\"t\"", "")),
+                true,
+            ),
+        ];
+        for line in [
+            "99999999999999999999999",
+            "0",
+            "7",
+            "0x10",
+            "0x",
+            "0o",
+            "0b",
+            "+1",
+            "-0",
+            "1_0",
+            "340282366920938463463374607431768211456",
+        ] {
+            cases.push((entry("\"t\"", &format!("line = {line}\n")), false));
+        }
+        cases.push((
+            entry("\"t\"", &format!("line = {}\n", "9".repeat(4301))),
+            false,
+        ));
+        for (text, toml_1_1) in cases {
+            let scanner = scanner_accepts(&text);
+            if toml_1_1 && reads_1_1 {
+                // Python 3.15's `tomllib` reads TOML 1.1: the card stays TOML 1.0 (module doc).
+                assert!(unreadable(&text), "{text:?}");
+                continue;
+            }
+            let card = !unreadable(&text);
+            assert_eq!(
+                card, scanner,
+                "{text:?} (python3 reads TOML 1.1: {reads_1_1})"
+            );
+        }
     }
 
     #[test]
@@ -170,7 +379,7 @@ mod tests {
             RepositoryVidoc::On
         );
         assert_eq!(
-            repository_vidoc(Some("\u{feff}# why\n  enabled=false   # quota\n")),
+            repository_vidoc(Some("# why\n  enabled=false   # quota\n")),
             RepositoryVidoc::Off
         );
     }
