@@ -393,3 +393,9 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   bound was checked (1,000,000 links read for a bound of 20), owners and keys did not count, and
   the unread wording had no test. Fixed as above; a failed open of a subfolder (out of
   descriptors) is now noted instead of passed over (pre-existing, found by the same review).
+- Review round 2 (approve at 4402a69d5), the walk copied into a probe under `strace -c`:
+  1,000,000 links with a bound of 20 cut after 6 `getdents64` calls (1,151 before), peak RSS
+  9 MB at the real bound (72 MB before); 200,000 keys without `memory` cut after 11 `openat`
+  (400,012 and not cut before); 3,000 subfolders under `RLIMIT_NOFILE` 1024 report 1,984 unread
+  entries, the first "Too many open files" (0 and "ok" before). The open-failure branches have
+  no unit test: their only trigger as root is a process-wide limit.
