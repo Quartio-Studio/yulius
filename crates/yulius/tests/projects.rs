@@ -1392,7 +1392,9 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
     let why = text(&refused.body["error"]["message"]).to_owned();
     assert!(
-        why.contains(&format!("Only {OWNER} can create projects in their personal GitHub account")),
+        why.contains(&format!(
+            "Only {OWNER} can create projects in their personal GitHub account"
+        )),
         "{why}"
     );
     assert!(w.github.created().is_empty(), "nothing was created");
@@ -1441,7 +1443,12 @@ async fn create_in_a_user_account_uses_the_owner_token() -> TestResult {
         &superadmin,
     )
     .await?;
-    assert_eq!(by_superadmin.status, StatusCode::CREATED, "{:?}", by_superadmin.body);
+    assert_eq!(
+        by_superadmin.status,
+        StatusCode::CREATED,
+        "{:?}",
+        by_superadmin.body
+    );
     Ok(())
 }
 
