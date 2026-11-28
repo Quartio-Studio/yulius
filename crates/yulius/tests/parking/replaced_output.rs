@@ -45,12 +45,13 @@ struct HoldingHost {
 }
 
 /// A run's host that still answers a reattach after its run was replaced (#1692): it records
-/// what is typed to it and says when it was attached and when its reader was asked for an event
-/// or let go (the reattach decided).
+/// what is typed to it, says when it was attached and when its reader was let go, and whether
+/// that reader was ever asked for an event.
 #[derive(Default)]
 struct Lingering {
     attached: Notify,
-    decided: Notify,
+    dropped: Notify,
+    polled: std::sync::atomic::AtomicBool,
     typed: Mutex<Vec<u8>>,
 }
 
@@ -60,14 +61,16 @@ struct LingeringReader(Arc<Lingering>);
 #[async_trait::async_trait]
 impl RunReader for LingeringReader {
     async fn next(&mut self) -> AppResult<Option<RunEvent>> {
-        self.0.decided.notify_one();
+        self.0
+            .polled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         std::future::pending().await
     }
 }
 
 impl Drop for LingeringReader {
     fn drop(&mut self) {
-        self.0.decided.notify_one();
+        self.0.dropped.notify_one();
     }
 }
 
@@ -453,7 +456,12 @@ fn a_replaced_runs_reattach_leaves_the_tasks_writer_alone() -> TestResult {
         let lingering = host.answer_reattach(Path::new(&old.run_dir))?;
         lost.release.notify_one();
         tokio::time::timeout(Duration::from_secs(10), lingering.attached.notified()).await?;
-        tokio::time::timeout(Duration::from_secs(10), lingering.decided.notified()).await?;
+        // The old reader ends: it lets the host go and never reads it.
+        tokio::time::timeout(Duration::from_secs(10), lingering.dropped.notified()).await?;
+        assert!(
+            !lingering.polled.load(std::sync::atomic::Ordering::SeqCst),
+            "the replaced run's reader kept reading its host"
+        );
 
         app.tool_task_message(
             &caller,

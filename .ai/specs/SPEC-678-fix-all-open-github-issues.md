@@ -202,7 +202,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [ ] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
 - [x] #1693: the Antigravity error-turn hook test is deterministic
-- [ ] #1692: a replaced run's reattach leaves the task's writer alone
+- [x] #1692: a replaced run's reattach leaves the task's writer alone
 - [ ] #1691: a decided armed merge is consumed across a restart
 - [ ] #1688: a cancelled display start keeps its Xvfb in the slot
 - [ ] #1595: confined test fixtures share one temporary root
@@ -475,5 +475,8 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   after that run parked and a replacement attached; the holding host answers its reattach with
   a host that records input. Without the change the next message went to the old host (`input
   went to the replaced run's host: "…Text after the old reader came back…"`); with it the
-  replacement answers and the old host got nothing. Unit test
-  `supervisor::watch::reattach_tests::only_the_current_run_takes_the_writer_back`.
+  replacement answers and the old host got nothing, and the old reader lets the host go
+  without reading it. A store that cannot say which attempt is live makes the reattach try
+  again (logged), never end the current run's reader. Review of #1847 (approve at 8fddfea38):
+  the writer-owner half of the first predicate was unreachable and dropped; the test now tells
+  "ended" from "kept reading".
