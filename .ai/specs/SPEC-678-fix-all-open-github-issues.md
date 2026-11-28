@@ -193,6 +193,14 @@ reviewed and merged into `dev` by `delivery_merge`.
   staged revision's tree, so the proof is offered but the plain dev deploy is the staging
   target's to make), and dev moving between the proof and its deploy (a race point,
   `ProofRegistered`, keyed by the sandbox).
+- **CDX-1702** Yulius's own paste or Enter that goes straight to the session
+  (`send_session_input`) repaints a Codex screen it cannot read (unrendered after a reattach)
+  with the bounded `repaint_codex_input` first, as typed messages do; the screen guard then
+  decides, and nothing is typed while the rate-limit picker is open. On a Codex run only the
+  intake's "send anyway" (Enter alone) takes this path: the goal typist and the context-full
+  compaction run for Claude Code only, and typed messages use their own path. Where the Enter
+  still cannot be sent, the intake answers its person at once ("press Enter in the terminal"),
+  so no Needs you is owed.
 
 ## Plan
 
@@ -532,3 +540,20 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   hook pushes a commit to dev after the proof is registered; same assertions, with dev "moved
   since you looked". With the branch at `prove.rs` returning the dev error alone, or
   production's refusal alone, or keeping the wait, it fails (review mutations).
+
+### #1702 (Codex input repaint on the direct path)
+
+- `task_message::reattached_idle_codex_repaints_before_yuliuss_own_input` (real ptyhost and
+  fake Codex: a restarted server reattaches an idle Codex run whose snapshot has no redraw
+  provenance, then types an automated line through `send_session_input`) fails without the
+  change (`Conflict("Codex's terminal could not confirm a safe input screen")`) and passes with
+  it, the hub's and the child's size restored.
+- `task_message::reattached_idle_codex_repaints_before_a_lone_enter`: the intake's lone Enter
+  after the same reattach repaints and sends the composer's text. With the repaint limited to a
+  paste it fails (review of #1850, round 1: the Submit arm had been unproven).
+- `task_message::yuliuss_own_input_types_nothing_on_the_picker_or_an_unreadable_screen`: the
+  picker refuses and records no repaint size; a screen that stays unreadable refuses after a
+  repaint with the size restored; in both, a marker line typed afterwards is echoed while the
+  refused text never is (the PTY keeps order). From the round 2 review of #1850, whose
+  mutants (bytes written under the picker; a repaint under the picker) the first version let
+  pass.

@@ -207,11 +207,51 @@ impl App {
         if matches!(input, SessionInput::Viewer(_)) {
             runtime.last_input_ms.store(now.0, Ordering::SeqCst);
         }
+        // Yulius's own paste or Enter into a Codex screen it cannot read (unrendered after a
+        // reattach) repaints it first, as a typed message does; the screen guard then decides
+        // (#1702).
+        if matches!(input, SessionInput::Paste(_) | SessionInput::Submit)
+            && let Some(attempt) = runtime.screen_attempt()
+            && runtime
+                .run
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|run| run.attempt_id == attempt && run.codex_input.is_some())
+            && let Err(err) = runtime.repaint_codex_input(&attempt).await
+        {
+            tracing::debug!(task = %task_id, error = %err, "Codex repaint before input failed");
+        }
         let mut run = runtime.run.lock().await;
         let run = run
             .as_mut()
             .ok_or_else(|| AppError::Conflict("the task is not running".into()))?;
         runtime.write_session_input(run, now, input).await
+    }
+
+    /// Types `line` as Yulius's own paste and then Enter, through the direct session input path
+    /// (on a Codex run only the intake's "send anyway" reaches it, with Enter alone), in tests.
+    ///
+    /// # Errors
+    /// As the session input's screen guard.
+    #[cfg(feature = "test-support")]
+    pub async fn type_automated_line_for_test(
+        &self,
+        task_id: &TaskId,
+        line: &[u8],
+    ) -> AppResult<()> {
+        self.send_session_input(task_id, SessionInput::Paste(line))
+            .await?;
+        self.send_session_input(task_id, SessionInput::Submit).await
+    }
+
+    /// Sends Enter alone as Yulius's own input, as the intake's "send anyway" does, in tests.
+    ///
+    /// # Errors
+    /// As the session input's screen guard.
+    #[cfg(feature = "test-support")]
+    pub async fn submit_for_test(&self, task_id: &TaskId) -> AppResult<()> {
+        self.send_session_input(task_id, SessionInput::Submit).await
     }
 
     /// Resizes the run's PTY.

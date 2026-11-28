@@ -1965,6 +1965,153 @@ fn reattached_idle_codex_repaints_and_receives_its_ci_notice() -> TestResult {
     })
 }
 
+/// #1702: Yulius's own paste that goes straight to the session repaints a reattached idle Codex
+/// screen it cannot read, then types (the goal typist and the compaction that use this path are
+/// Claude Code's; the lone Enter of the intake's "send anyway" is the test below).
+#[test]
+fn reattached_idle_codex_repaints_before_yuliuss_own_input() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (id, listener) = first.block_on(async {
+        let (_app, id, _, listener) = codex_with_pr_fixture(&data, full_screen()).await?;
+        Ok::<_, Error>((id, listener))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    runtime()?.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let app = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(ShiftedClock::new(0)),
+            ..Live::new(Some(&fake), full_screen())
+        }
+        .serve(&data, tokio::net::TcpListener::from_std(listener)?, |_| {})?;
+        app.reconcile().await?;
+        let rt = app.runtime(&id);
+        let (cols, rows) = rt.hub.size();
+        // A snapshot without redraw provenance: unreadable until the child repaints.
+        rt.hub.reset(
+            rt.hub.output_seq(),
+            CODEX_EMPTY_COMPOSER.as_bytes(),
+            cols,
+            rows,
+        );
+        app.type_automated_line_for_test(&id, b"Automated line after reattach")
+            .await?;
+        eventually(
+            "the automated line read by the reattached child",
+            Duration::from_secs(10),
+            || async { screen(&app, &id).contains("ECHO: Automated line after reattach") },
+        )
+        .await?;
+        assert_eq!(rt.hub.size(), (cols, rows));
+        assert!(
+            screen(&app, &id).contains(&format!("{cols}×{rows}")),
+            "the child's size"
+        );
+
+        stop(&app, &id).await
+    })
+}
+
+/// #1702 review: the intake's "send anyway" sends Enter alone; after a reattach to an unreadable
+/// idle Codex screen it repaints first, and the held text in the composer is sent.
+#[test]
+fn reattached_idle_codex_repaints_before_a_lone_enter() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (id, listener) = first.block_on(async {
+        let (_app, id, _, listener) = codex_with_pr_fixture(&data, full_screen()).await?;
+        Ok::<_, Error>((id, listener))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    runtime()?.block_on(async {
+        let fake = locate_fake_agent().ok_or("fake-agent is not built")?;
+        let app = Live {
+            usage: Arc::new(ScriptedUsage::default()),
+            clock: Arc::new(ShiftedClock::new(0)),
+            ..Live::new(Some(&fake), full_screen())
+        }
+        .serve(&data, tokio::net::TcpListener::from_std(listener)?, |_| {})?;
+        app.reconcile().await?;
+        let rt = app.runtime(&id);
+        // Text left in the composer, as a held prompt leaves it.
+        app.send_input(&id, b"Lone enter after reattach").await?;
+        eventually(
+            "the text in the composer",
+            Duration::from_secs(10),
+            || async { screen(&app, &id).contains("Lone enter after reattach") },
+        )
+        .await?;
+        let (cols, rows) = rt.hub.size();
+        rt.hub.reset(
+            rt.hub.output_seq(),
+            CODEX_EMPTY_COMPOSER.as_bytes(),
+            cols,
+            rows,
+        );
+        app.submit_for_test(&id).await?;
+        eventually(
+            "the lone Enter read by the reattached child",
+            Duration::from_secs(10),
+            || async { screen(&app, &id).contains("ECHO: Lone enter after reattach") },
+        )
+        .await?;
+        assert_eq!(rt.hub.size(), (cols, rows));
+        stop(&app, &id).await
+    })
+}
+
+/// #1702: Yulius's own paste or Enter types nothing while the rate-limit picker is open (no
+/// repaint, no write), and a screen that stays unreadable after the repaint is refused with
+/// the size restored.
+#[test]
+fn yuliuss_own_input_types_nothing_on_the_picker_or_an_unreadable_screen() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    runtime()?.block_on(async {
+        let (app, id, _, _) = codex_with_pr_news(&data).await?;
+        let rt = app.runtime(&id);
+        let size = rt.hub.size();
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let record = Path::new(&attempt.run_dir).join("codex-repaint-size");
+        paint_codex(&app, &id, CODEX_RATE_LIMIT_PICKER);
+        let line = app.type_automated_line_for_test(&id, b"Picker line").await;
+        let enter = app.submit_for_test(&id).await;
+        for refused in [&line, &enter] {
+            assert!(
+                matches!(refused, Err(AppError::Conflict(why)) if why.contains("rate-limit model picker")),
+                "{refused:?}"
+            );
+        }
+        assert!(!record.exists(), "no repaint: no size was recorded for one");
+        // The PTY keeps order: anything written before this line is read before it.
+        app.send_input(&id, b"marker one\r").await?;
+        eventually("the first marker", Duration::from_secs(10), || async {
+            screen(&app, &id).contains("ECHO: marker one")
+        })
+        .await?;
+        assert!(!screen(&app, &id).contains("Picker line"), "{}", screen(&app, &id));
+
+        paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+        let line = app.type_automated_line_for_test(&id, b"Unreadable line").await;
+        let enter = app.submit_for_test(&id).await;
+        for refused in [&line, &enter] {
+            assert!(
+                matches!(refused, Err(AppError::Conflict(why)) if why.contains("could not confirm a safe input screen")),
+                "{refused:?}"
+            );
+        }
+        assert!(record.exists(), "the repaint ran");
+        assert_eq!(rt.hub.size(), size, "the size is restored");
+        app.send_input(&id, b"marker two\r").await?;
+        eventually("the second marker", Duration::from_secs(10), || async {
+            screen(&app, &id).contains("ECHO: marker two")
+        })
+        .await?;
+        assert!(!screen(&app, &id).contains("Unreadable line"), "{}", screen(&app, &id));
+        stop(&app, &id).await
+    })
+}
+
 #[test]
 fn unreadable_codex_raises_the_undelivered_ci_notice_on_the_task() -> TestResult {
     use yulius_app::pr_watch::WatchBounds;

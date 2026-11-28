@@ -6,6 +6,7 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-28
 
+- "Send anyway" on a held prompt of a Codex task works after a server restart: Yulius repaints the terminal it cannot read before pressing Enter, as it does before typing a message.
 - Sessions' redaction fingerprint files are written as version 2 only: a session still running from before 2026-11-13 runs no command until it is continued (ADR-0313).
 - In an instance whose GitHub owner is a personal account, only that owner (or the superadmin) can create a project; anyone else is told why before anything is created. A created repository the App cannot reach says who must add it and import it.
 - A dialog closed after its page was redrawn gives the keyboard back to the same control, and a dialog whose action fails keeps the keyboard where the person had it, or on its action, not on the page body.

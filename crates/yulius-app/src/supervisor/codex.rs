@@ -131,7 +131,8 @@ impl CodexInput {
     }
 }
 
-/// Said on every path that found the screen unreadable; only Yulius's messages repaint first.
+/// Said on every path that found the screen unreadable; Yulius's own input (messages, the
+/// intake's "send anyway") repaints first (#1702), a person's keys never.
 pub(crate) const CODEX_UNREADABLE: &str = "Codex's terminal could not confirm a safe input screen";
 
 pub(crate) const CODEX_PICKER: &str = "Codex's rate-limit model picker is open. Choose Keep current model or dismiss the picker in the terminal.";
