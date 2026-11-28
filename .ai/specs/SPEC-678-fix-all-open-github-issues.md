@@ -121,6 +121,11 @@ reviewed and merged into `dev` by `delivery_merge`.
   writes each line into the capture of the thread that logged it, instead of a subscriber per
   test (`set_default`), with which another test's start or end in the same process could leave
   a warning unseen.
+- **CI-1532** A run that skipped a job by its `paths` or as an `after_merge` job (`partial`, read
+  from its jobs by `ci_partial_runs`) is no verdict for a branch target at its commit: a branch
+  moved straight to such a pull request head gets a run of its own, which runs every job. A
+  run that ran every job still stands for any reference at its commit (no extra run), and pull
+  request targets keep reusing a partial verdict.
 
 ## Plan
 
@@ -326,3 +331,13 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 - With them, two nits of #1837's last review in `scripts/test_compile_cache.py`: a just-forked
   shell counts as its session before its `setsid`, and a wait keeps only the last 64 KiB of
   output.
+
+### #1532 (a branch fast-forwarded to a partial head)
+
+- `ci::tests::a_partial_verdict_is_no_verdict_for_a_branch` (domain: branch queued over a
+  partial run, active or finished; not over a whole one; a pull request still reuses it).
+- `a_run_with_a_paths_or_after_merge_skip_is_partial` (store: `paths` and `after_merge` skips
+  count, a job's own exit-78 skip and a whole run do not).
+- `local_ci::a_branch_fast_forwarded_to_a_partial_head_gets_its_own_run`: `dev` moved to the pull
+  request's head whose only job was skipped by `paths` gets a `branch/dev` run; it fails with
+  `partial` forced to false. `local_ci`, `merge_train`, `staging`, `ci_*`: 327 passed.

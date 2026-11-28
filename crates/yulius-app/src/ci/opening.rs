@@ -1,6 +1,6 @@
 //! Queue a signed opening without asking GitHub to list or read pull requests (SPEC-606).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -188,7 +188,8 @@ impl App {
             .store
             .ci_planning_runs(&sandbox.id, PLAN_RUNS, None)
             .await?;
-        let facts = ordinary_run_facts(&runs, view.problem.is_none());
+        // A pull request's own plan: a partial run still stands for it (#1532 is the branch's).
+        let facts = ordinary_run_facts(&runs, view.problem.is_none(), &HashSet::new());
         crate::race::reached(crate::race::Point::CiSyncPlanned, &repo);
         if new_pr {
             admitted.push(opening.number);

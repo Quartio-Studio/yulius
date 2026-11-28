@@ -550,7 +550,11 @@ pub const CONFIG_JOB: &str = "yulius.toml";
 const LAST_VALID_BACK: usize = 100;
 
 /// The ordinary scheduler’s view of bounded run history, newest admission first.
-fn ordinary_run_facts(runs: &[CiRunRecord], dev_valid: bool) -> Vec<RunFacts> {
+fn ordinary_run_facts(
+    runs: &[CiRunRecord],
+    dev_valid: bool,
+    partial: &HashSet<String>,
+) -> Vec<RunFacts> {
     // A merge train's run is the train's own (SPEC-084), a playground task's its delivery's
     // (SPEC-163): they start and cancel them.
     // A head refused only because the integration branch's file was invalid is tested again
@@ -574,6 +578,7 @@ fn ordinary_run_facts(runs: &[CiRunRecord], dev_valid: bool) -> Vec<RunFacts> {
             reference: run.reference.clone(),
             sha: run.sha.clone(),
             state: run.state,
+            partial: partial.contains(&run.id),
         })
         .collect()
 }
@@ -1737,7 +1742,9 @@ impl App {
             .store
             .ci_planning_runs(&sandbox.id, PLAN_RUNS, integration_head)
             .await?;
-        let facts = ordinary_run_facts(&runs, view.problem.is_none());
+        let ids: Vec<String> = runs.iter().map(|run| run.id.clone()).collect();
+        let partial = self.deps.store.ci_partial_runs(&ids).await?;
+        let facts = ordinary_run_facts(&runs, view.problem.is_none(), &partial);
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
         let plan = dom::plan(&only_targets, &facts);
         crate::race::reached(
@@ -2778,7 +2785,7 @@ mod planning_tests {
             run(&sandbox, "other", "b", pr, RunState::Passed, None),
         ];
         let ids = |valid| {
-            ordinary_run_facts(&records, valid)
+            ordinary_run_facts(&records, valid, &HashSet::new())
                 .into_iter()
                 .map(|r| r.id)
                 .collect::<Vec<_>>()

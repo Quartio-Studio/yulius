@@ -1586,6 +1586,36 @@ async fn a_run_of_skipped_jobs_passes_when_it_is_queued() -> TestResult {
     Ok(())
 }
 
+/// #1532: `dev` moved straight to a pull request head whose run skipped its `paths` jobs gets a
+/// run of its own at that commit: the pull request's partial verdict does not stand for the
+/// branch.
+#[tokio::test]
+async fn a_branch_fast_forwarded_to_a_partial_head_gets_its_own_run() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n"
+            .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let (pr_run, _) = run_of(&f, &head).await?;
+    assert_eq!(pr_run["reference"], "pr/1", "{pr_run}");
+    git(&f.origin, &["update-ref", "refs/heads/dev", &head])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let at_head: Vec<&Value> = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .filter(|r| r["sha"] == head.as_str())
+        .collect();
+    assert!(
+        at_head.iter().any(|r| r["reference"] == "branch/dev"),
+        "dev's own run at the pull request's head: {at_head:?}"
+    );
+    Ok(())
+}
+
 /// A run queued again (a restart, the disk quota) keeps a job
 /// skipped for its `paths` skipped, with its reason; the other jobs go back to the queue.
 #[tokio::test]

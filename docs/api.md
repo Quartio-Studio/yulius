@@ -956,7 +956,9 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 ```
 
 - **Runs.** Every open pull request into the integration branch (same repository, at most 30) and
-  every new integration and production head is tested once per commit. The integration branch's
+  every new integration and production head is tested once per commit; a run that skipped a job
+  (by its `paths`, or an `after_merge` job) is no verdict for a branch, which gets a run of its
+  own at that commit (#1532). The integration branch's
   jobs judge every commit on its way there, and a commit's own changed or added jobs run beside
   them, named `<job> (this change)`, never instead (SPEC-504 CFG-001, ADR-0360). A commit whose
   `yulius.toml`, as read after the merge, is invalid fails at once with a job `yulius.toml`
