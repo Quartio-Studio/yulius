@@ -194,13 +194,13 @@ reviewed and merged into `dev` by `delivery_merge`.
   target's to make), and dev moving between the proof and its deploy (a race point,
   `ProofRegistered`, keyed by the sandbox).
 - **CDX-1702** Yulius's own paste or Enter that goes straight to the session
-  (`send_session_input`: the goal typist, the intake's "send anyway", the context-full
-  compaction) repaints a Codex screen it cannot read (unrendered after a reattach) with the
-  bounded `repaint_codex_input` first, as typed messages do; the screen guard then decides, and
-  nothing is typed while the rate-limit picker is open. Where such input still cannot be typed:
-  the intake answers its person ("press Enter in the terminal…"), and an untaken typed goal is
-  flagged by the goal watch within its bound; the compaction settles the task to waiting
-  without a Needs you (left open on #1702).
+  (`send_session_input`) repaints a Codex screen it cannot read (unrendered after a reattach)
+  with the bounded `repaint_codex_input` first, as typed messages do; the screen guard then
+  decides, and nothing is typed while the rate-limit picker is open. On a Codex run only the
+  intake's "send anyway" (Enter alone) takes this path: the goal typist and the context-full
+  compaction run for Claude Code only, and typed messages use their own path. Where the Enter
+  still cannot be sent, the intake answers its person at once ("press Enter in the terminal"),
+  so no Needs you is owed.
 
 ## Plan
 
@@ -547,5 +547,10 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   fake Codex: a restarted server reattaches an idle Codex run whose snapshot has no redraw
   provenance, then types an automated line through `send_session_input`) fails without the
   change (`Conflict("Codex's terminal could not confirm a safe input screen")`) and passes with
-  it, the child's size restored. `task_message::`, `codex::`, `context_full::`, `intake::`:
-  154 passed, the picker tests among them.
+  it, the hub's and the child's size restored.
+- `task_message::reattached_idle_codex_repaints_before_a_lone_enter`: the intake's lone Enter
+  after the same reattach repaints and sends the composer's text. With the repaint limited to a
+  paste it fails (review of #1850, round 1: the Submit arm had been unproven).
+- `task_message::yuliuss_own_input_types_nothing_on_the_picker_or_an_unreadable_screen`: the
+  picker refuses with no repaint and no output; a screen that stays unreadable refuses with
+  the size restored.

@@ -229,8 +229,8 @@ impl App {
         runtime.write_session_input(run, now, input).await
     }
 
-    /// Types `line` as Yulius's own paste and then Enter, through the path the goal typist,
-    /// the intake and the context-full compaction use, in tests.
+    /// Types `line` as Yulius's own paste and then Enter, through the direct session input path
+    /// (on a Codex run only the intake's "send anyway" reaches it, with Enter alone), in tests.
     ///
     /// # Errors
     /// As the session input's screen guard.
@@ -242,6 +242,15 @@ impl App {
     ) -> AppResult<()> {
         self.send_session_input(task_id, SessionInput::Paste(line))
             .await?;
+        self.send_session_input(task_id, SessionInput::Submit).await
+    }
+
+    /// Sends Enter alone as Yulius's own input, as the intake's "send anyway" does, in tests.
+    ///
+    /// # Errors
+    /// As the session input's screen guard.
+    #[cfg(feature = "test-support")]
+    pub async fn submit_for_test(&self, task_id: &TaskId) -> AppResult<()> {
         self.send_session_input(task_id, SessionInput::Submit).await
     }
 
