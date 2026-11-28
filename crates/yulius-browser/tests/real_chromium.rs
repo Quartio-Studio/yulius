@@ -905,9 +905,11 @@ async fn a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium() -
             y: None,
         })
         .await?;
-    // Chrome 157 answers nothing about the page while the navigation is pending (the look at
-    // the tab waits for the new document, which the page rule then refuses); a browser that
-    // answers meanwhile is refused by where the tab is going. Either way nothing is typed.
+    // Chrome 157 answered nothing about the page while the navigation was pending (the look at
+    // the tab waited for the new document, which the page rule then refuses); a browser that
+    // answers meanwhile is refused by where the tab is going; Chrome 158 can commit the new page
+    // between the look and the field's focus, which is said as the page it went to (#1604).
+    // Either way nothing is typed.
     let refused = browser.tool_type_secret(&secret, &start_only).await;
     assert!(
         matches!(

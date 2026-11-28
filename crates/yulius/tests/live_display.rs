@@ -959,6 +959,10 @@ async fn functional(live: &Live) -> TestResult {
     );
 
     let (tab, cdp, url) = open_page(live, &mut viewer, "/").await?;
+    // A cold window loses its first input until Chrome made it active (#1741): the page takes
+    // keys first, on an empty spot, and what that recorded is forgotten.
+    focus_page(&mut viewer, &tab, &cdp, &url, 900.0, 600.0).await?;
+    eval(&cdp, &url, "events = [], true").await?;
     // Real input: a click on the button is a trusted event at its position…
     click(&mut viewer, &tab, 400.0, 80.0).await?;
     until(&cdp, &url, "a trusted click", "events.some(e => e.type === 'click' && e.trusted && Math.abs(e.x - 400) < 2 && Math.abs(e.y - 80) < 2)").await?;

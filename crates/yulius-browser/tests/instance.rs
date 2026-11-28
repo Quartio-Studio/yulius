@@ -2060,6 +2060,66 @@ async fn a_secret_typed_while_the_page_moves_on_is_reported() -> TestResult {
     Ok(())
 }
 
+/// #1604: a navigation that commits while the secret's field is looked for takes the field away
+/// with its page. That is said as the page the tab went to (refused, or "try again" within the
+/// secret's sites), not as a missing field; a field missing from a page that stayed still is.
+#[tokio::test]
+async fn a_field_taken_away_by_a_navigation_is_said_as_the_page_it_went_to() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    let bank_only = |address: &str| address.starts_with("https://bank.example/");
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    let keys = fake.calls_for("Input.dispatchKeyEvent").len();
+    let looks = fake.calls_for("Runtime.callFunctionOn").len();
+    fake.navigate_to_during_nth(
+        "Runtime.callFunctionOn",
+        looks + 1,
+        "https://evil.example/collect",
+    );
+    let refused = instance
+        .tool_type_secret(&fill(&tab, "#missing", "pw-secret-1604"), &bank_only)
+        .await;
+    assert!(
+        matches!(&refused, Err(BrowserError::SecretPageRefused(host)) if host == "evil.example"),
+        "{refused:?}"
+    );
+
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    let looks = fake.calls_for("Runtime.callFunctionOn").len();
+    fake.navigate_to_during_nth(
+        "Runtime.callFunctionOn",
+        looks + 1,
+        "https://bank.example/welcome",
+    );
+    let again = instance
+        .tool_type_secret(&fill(&tab, "#missing", "pw-secret-1604"), &bank_only)
+        .await;
+    assert!(
+        matches!(&again, Err(BrowserError::InvalidInput(text)) if text.contains("page changed while its field was looked for")),
+        "{again:?}"
+    );
+
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    let missing = instance
+        .tool_type_secret(&fill(&tab, "#missing", "pw-secret-1604"), &bank_only)
+        .await;
+    assert!(
+        matches!(&missing, Err(BrowserError::ElementNotFound)),
+        "{missing:?}"
+    );
+    assert_eq!(
+        fake.calls_for("Input.dispatchKeyEvent").len(),
+        keys,
+        "nothing typed"
+    );
+    Ok(())
+}
+
 /// SPEC-648 FSK-001, FSK-004: a page that reads only keys (and xterm.js while a key is held)
 /// drops `Input.insertText`. A secret, a user name and a code typed by `browser_fill_secret`
 /// reach a page that takes only keys, and nothing is inserted. A secret in a password field

@@ -3418,7 +3418,23 @@ impl BrowserInstance {
         if !allowed(&before.address) {
             return Err(BrowserError::SecretPageRefused(shown_as(&before)));
         }
-        focus().await?;
+        if let Err(missing) = focus().await {
+            // A navigation that arrived meanwhile took the field away with its page: said as
+            // the page it went to, not as a missing field (#1604). Nothing was typed either way.
+            if let Some(now) = self.document(&session).await
+                && (now.loader != before.loader || now.frame != before.frame)
+            {
+                return Err(if allowed(&now.address) {
+                    BrowserError::InvalidInput(
+                        "the tab's page changed while its field was looked for, so the secret was not typed; try again"
+                            .into(),
+                    )
+                } else {
+                    BrowserError::SecretPageRefused(shown_as(&now))
+                });
+            }
+            return Err(missing);
+        }
         // The keys go to the element with the focus, which need not be in this page: where
         // the focus is, is read after the field was focused (SPEC-483 E8).
         let Some(look) = self.read_page(&session, &before.frame).await else {
