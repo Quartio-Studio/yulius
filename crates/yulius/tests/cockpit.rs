@@ -2312,12 +2312,11 @@ async fn a_superagent_screen_shows_no_output_while_a_secret_cannot_be_opened() -
     Ok(())
 }
 
-/// A Superagent that was running across the update keeps its old wrapper, which reads
-/// only the fingerprint file format from before version 2. A starting server rewrites its file
-/// in that format without what told too much, and the old wrapper's request (it cannot read the
-/// answer) brings the file up to date, so a secret added since is redacted there too.
+/// A Superagent running across an update from before fingerprint version 2 holds a file in the
+/// old format. A starting server rewrites it as version 2 (#1239: the old format is written no
+/// more), and a request without a version brings it up to date with a secret added since.
 #[tokio::test]
-async fn a_superagent_from_before_version_2_keeps_redacting_from_its_file() -> TestResult {
+async fn a_superagents_version_1_file_is_rewritten_as_version_2() -> TestResult {
     let f = fixture().await?;
     let served = serve(f.h.router.clone()).await?;
     add_apify_key(&f).await?;
@@ -2347,16 +2346,10 @@ async fn a_superagent_from_before_version_2_keeps_redacting_from_its_file() -> T
 
     f.h.app.refresh_fingerprint_files().await;
 
-    let rewritten = std::fs::read(&file)?;
-    let legacy: Value = serde_json::from_slice(&rewritten)?;
-    assert_eq!(
-        (&legacy["version"], &legacy["base"]),
-        (&json!(1), &json!(0))
-    );
-    assert_eq!(
-        support::old_wrapper_redacts(&rewritten, &format!("key {SECRET_VALUE}")).as_deref(),
-        Some("key [secret:APIFY_KEY]")
-    );
+    let rewritten: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert_eq!(rewritten["version"], 2);
+    assert_eq!(rewritten["names"], json!(["APIFY_KEY"]));
+    assert!(rewritten.get("base").is_none(), "{rewritten}");
 
     let resp = call(
         &f.h.router,
@@ -2370,11 +2363,8 @@ async fn a_superagent_from_before_version_2_keeps_redacting_from_its_file() -> T
     let answered = scrub(&f, &workspace, "fingerprints", json!({})).await?;
     assert_eq!(answered.status, StatusCode::OK, "{:?}", answered.body);
     assert_eq!(answered.body["version"], 2);
-    assert_eq!(
-        support::old_wrapper_redacts(&std::fs::read(&file)?, "later-synthetic-5Hq2Wm8Zc1 x")
-            .as_deref(),
-        Some("[secret:LATER_KEY] x")
-    );
+    let updated: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert_eq!(updated["names"], json!(["APIFY_KEY", "LATER_KEY"]));
     Ok(())
 }
 

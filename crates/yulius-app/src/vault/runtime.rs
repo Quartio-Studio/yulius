@@ -11,10 +11,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::browser::{TabId, TypeParams};
-use yulius_contracts::scrub::{
-    FINGERPRINT_VERSION, Fingerprint, FingerprintSet, LEGACY_FINGERPRINT_VERSION,
-    LegacyFingerprint, LegacyFingerprintSet, RedactionReport,
-};
+use yulius_contracts::scrub::{FINGERPRINT_VERSION, Fingerprint, FingerprintSet, RedactionReport};
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, needle_tag};
@@ -383,35 +380,6 @@ impl App {
         })
     }
 
-    /// [`Self::scrub_fingerprints_for`] in the format a wrapper from before version 2 reads, for
-    /// the fingerprint file of a session an older Yulius launched (ADR-0313): the old rolling
-    /// hash at base 0, which is a needle's last byte plus one.
-    async fn legacy_fingerprints_for(
-        &self,
-        sandbox: &SandboxId,
-        holder: super::Holder<'_>,
-    ) -> AppResult<LegacyFingerprintSet> {
-        let matcher = self.matcher_for(sandbox, Some(holder)).await?;
-        let salt = self.scrub_salt(sandbox)?;
-        Ok(LegacyFingerprintSet {
-            version: LEGACY_FINGERPRINT_VERSION,
-            base: 0,
-            salt: crate::auth::hex_token(&salt),
-            names: matcher.names().to_vec(),
-            needles: matcher
-                .needles()
-                .filter_map(|(needle, secret)| {
-                    Some(LegacyFingerprint {
-                        secret,
-                        len: needle.len(),
-                        rolling: u64::from(*needle.last()?) + 1,
-                        digest: self.salted_digest(&salt, needle),
-                    })
-                })
-                .collect(),
-        })
-    }
-
     fn salted_digest(&self, salt: &[u8], needle: &[u8]) -> String {
         let mut salted = Vec::with_capacity(salt.len() + needle.len());
         salted.extend_from_slice(salt);
@@ -461,7 +429,8 @@ impl App {
     /// `POST /internal/scrub/fingerprints`: the caller's run's fingerprints, or those of a
     /// person's workspace (SPEC-147 SAM-003). `wrapper` is the format the asking wrapper reads:
     /// one from before this server's (a session an older Yulius launched, ADR-0313) cannot read
-    /// the answer and falls back on its fingerprint file, which is brought up to date first.
+    /// the answer, and its fingerprint file is rewritten as version 2, which it cannot read
+    /// either: it runs nothing until the session is continued (#1239).
     ///
     /// # Errors
     /// `Unauthenticated` for unknown or ended runs and for people who may no longer work in the
@@ -604,12 +573,10 @@ impl App {
     }
 
     /// Writes `holder`'s fingerprints of `sandbox` into the fingerprint file of `run_dir`, in
-    /// place and only when they differ; a run directory without one is left alone. A file in the
-    /// format from before version 2 belongs to a session an older Yulius launched, whose wrapper
-    /// reads only that format: it is written in it (ADR-0313). When its fingerprints cannot be
-    /// made, a file this server wrote stays as it is, and one an older server wrote, which says
-    /// too much about a value, becomes a bare `{"version":1}`: that wrapper runs nothing with
-    /// it, and the next rewrite still knows the format.
+    /// place and only when they differ, always as version 2; a run directory without one is left
+    /// alone. When its fingerprints cannot be made, a version 2 file stays as it is, and one from
+    /// before version 2 (an older server wrote it, and it says too much about a value) is emptied
+    /// to `{}`, with which no wrapper redacts or runs (ADR-0313, #1239).
     async fn rewrite_fingerprint_file(
         &self,
         run_dir: &Path,
@@ -619,11 +586,10 @@ impl App {
         use nix::fcntl::OFlag;
         use std::io::{Read as _, Seek as _, Write as _};
         use std::os::unix::fs::OpenOptionsExt as _;
-        /// What tells the formats apart; `base` is 0 in an old-format file this server wrote.
+        /// The file's format: below version 2 it is an older server's (#1239).
         #[derive(serde::Deserialize)]
         struct Format {
             version: u32,
-            base: Option<u64>,
         }
         /// More than any set: 200 secrets of 16 KiB in every form stay far below.
         const MAX_FILE_BYTES: u64 = 256 << 20;
@@ -648,28 +614,26 @@ impl App {
             .read_to_end(&mut current)
             .map_err(AppError::internal)?;
         let format = serde_json::from_slice::<Format>(&current).ok();
-        let legacy = format
+        // A file in the format before version 2 (an older server's, #1239) is rewritten as
+        // version 2 like any other: its session's wrapper cannot read it and runs nothing until
+        // the session is continued, which the owner accepted.
+        let older = format
             .as_ref()
-            .is_some_and(|format| format.version == LEGACY_FINGERPRINT_VERSION);
-        let of_an_older_server = legacy && format.is_some_and(|format| format.base != Some(0));
-        let made = if legacy {
-            self.legacy_fingerprints_for(sandbox, holder)
-                .await
-                .and_then(|set| serde_json::to_vec(&set).map_err(AppError::internal))
-        } else {
-            self.scrub_fingerprints_for(sandbox, holder)
-                .await
-                .and_then(|set| serde_json::to_vec(&set).map_err(AppError::internal))
-        };
+            .is_some_and(|format| format.version < FINGERPRINT_VERSION);
+        let made = self
+            .scrub_fingerprints_for(sandbox, holder)
+            .await
+            .and_then(|set| serde_json::to_vec(&set).map_err(AppError::internal));
         let bytes = match made {
             Ok(bytes) => bytes,
             Err(err) => {
-                if of_an_older_server {
-                    let marker = format!("{{\"version\":{LEGACY_FINGERPRINT_VERSION}}}");
+                // An older server's file says too much about a value: emptied, no wrapper
+                // redacts or runs with it.
+                if older {
                     let _ = file
                         .set_len(0)
                         .and_then(|()| file.rewind())
-                        .and_then(|()| file.write_all(marker.as_bytes()));
+                        .and_then(|()| file.write_all(b"{}"));
                 }
                 return Err(err);
             }

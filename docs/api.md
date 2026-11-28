@@ -2375,7 +2375,8 @@ task; other hooks answer as usual.
   bits of a hash of the needle's first 8 bytes and `digest` is `SHA-256(salt || needle)`
   (ADR-0313). A playground a guest joined gets only its MCP servers' own values. A request that
   does not name version 2 comes from the wrapper of a session an older Yulius launched: its
-  fingerprint file is brought up to date in the format it reads before the answer.
+  fingerprint file is rewritten as version 2 before the answer, which that wrapper cannot read,
+  so the session runs nothing until it is continued (ADR-0313, #1239).
 - `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
   once per run, secret and channel (`vault.agent.redacted`).
 - Egress proxy (SPEC-627): a request that would use a secret with `rules` (its placeholder, its

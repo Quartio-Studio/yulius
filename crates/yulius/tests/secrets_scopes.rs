@@ -889,12 +889,11 @@ fn file_of_an_older_yulius(name: &str, value: &str) -> Value {
     })
 }
 
-/// A session that was live across the update keeps the wrapper it started with (a
-/// contained session binds the binary), and that wrapper reads only the old format. A starting
-/// server rewrites every live run's file in place: an old one in the old format without what
-/// told too much (base 0, so the "rolling hash" is a needle's last byte plus one), which the old
-/// wrapper still redacts with; one of this server's as this server makes it. A file that cannot
-/// be rewritten does not stop the others.
+/// A session that was live across an update from before fingerprint version 2 keeps the wrapper
+/// it started with, which reads only the old format. A starting server rewrites every live run's
+/// file in place as this server makes it, an old one too: the old format is written no more
+/// (#1239, the owner's decision of 2026-11-27), so such a session runs nothing until it is
+/// continued. A file that cannot be rewritten does not stop the others.
 #[tokio::test]
 async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> TestResult {
     use std::os::unix::fs::MetadataExt as _;
@@ -948,20 +947,14 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
 
     w.h.app.refresh_fingerprint_files().await;
 
-    let rewritten = std::fs::read(&old_file)?;
-    let legacy: Value = serde_json::from_slice(&rewritten)?;
-    assert_eq!(legacy["version"], 1, "the old wrapper reads version 1 only");
-    assert_eq!(legacy["base"], 0);
-    assert_eq!(legacy["names"], json!(["MY_TOKEN"]));
-    assert_eq!(legacy["needles"][0]["len"], MINE.len());
+    let rewritten: yulius_contracts::scrub::FingerprintSet =
+        serde_json::from_slice(&std::fs::read(&old_file)?)?;
     assert_eq!(
-        legacy["needles"][0]["rolling"],
-        u64::from(*MINE.as_bytes().last().ok_or("value")?) + 1,
-        "all the old hash says at base 0 is the last byte"
-    );
-    assert_eq!(
-        support::old_wrapper_redacts(&rewritten, &format!("TOKEN={MINE}\n")).as_deref(),
-        Some("TOKEN=[secret:MY_TOKEN]\n")
+        rewritten,
+        w.h.app
+            .scrub_fingerprints_for(&s1, Holder::Person(&alice_id))
+            .await?,
+        "a version 1 file is rewritten as version 2"
     );
     assert_eq!(std::fs::metadata(&old_file)?.ino(), inode, "in place");
 
@@ -979,8 +972,8 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
     assert_eq!(out, "TOKEN=[secret:MY_TOKEN]\n");
     assert_eq!(std::fs::read(&elsewhere)?, b"not a fingerprint file");
 
-    // The old wrapper cannot read the endpoint's answer and reads its file: asking brings the
-    // file up to date first, so a secret added since is redacted in that session too.
+    // A wrapper that asks without a version (an old one) brings its run's file up to date first,
+    // in the one format there is.
     add(
         &w,
         &w.alice,
@@ -1006,20 +999,19 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
     .await?;
     assert_eq!(asked.status, StatusCode::OK);
     assert_eq!(asked.body["version"], 2, "the endpoint answers one format");
-    assert_eq!(
-        support::old_wrapper_redacts(&std::fs::read(&old_file)?, "x second-personal-token-77aa y")
-            .as_deref(),
-        Some("x [secret:SECOND] y")
-    );
+    let updated: Value = serde_json::from_slice(&std::fs::read(&old_file)?)?;
+    assert_eq!(updated["version"], 2);
+    assert_eq!(updated["names"], json!(["MY_TOKEN", "SECOND"]));
     Ok(())
 }
 
-/// When the fingerprints of a session from before version 2 cannot be made, the file
-/// an older server wrote (which says too much about a value) becomes a bare version 1, with
-/// which the old wrapper runs nothing; the next rewrite still knows the format and the wrapper
-/// redacts again; and a file this server already wrote stays as it is through a later failure.
+/// When the fingerprints cannot be made, a version 1 file an older server wrote (which says too
+/// much about a value) is emptied to `{}`, with which no wrapper redacts or runs; the next rewrite
+/// makes it version 2; and a file this server already wrote stays as it is through a later
+/// failure (#1239).
 #[tokio::test]
-async fn an_old_fingerprint_file_survives_a_failed_rewrite_in_its_format() -> TestResult {
+async fn a_version_1_file_is_emptied_by_a_failed_rewrite_and_rewritten_as_version_2() -> TestResult
+{
     let w = world().await?;
     add(
         &w,
@@ -1042,7 +1034,6 @@ async fn an_old_fingerprint_file_survives_a_failed_rewrite_in_its_format() -> Te
         &file,
         serde_json::to_vec(&file_of_an_older_yulius("MY_TOKEN", MINE))?,
     )?;
-    let text = format!("TOKEN={MINE}");
     let breaks = "ALTER TABLE playground_guests RENAME TO playground_guests_away";
     let heals = "ALTER TABLE playground_guests_away RENAME TO playground_guests";
 
@@ -1056,19 +1047,14 @@ async fn an_old_fingerprint_file_survives_a_failed_rewrite_in_its_format() -> Te
         "no answer about guests is no empty set"
     );
     w.h.app.refresh_fingerprint_files().await;
-    assert_eq!(std::fs::read(&file)?, br#"{"version":1}"#);
-    assert_eq!(
-        support::old_wrapper_redacts(&std::fs::read(&file)?, &text),
-        None
-    );
+    assert_eq!(std::fs::read(&file)?, b"{}");
 
     w.h.store.execute_for_tests(heals).await?;
     w.h.app.refresh_fingerprint_files().await;
     let written = std::fs::read(&file)?;
-    assert_eq!(
-        support::old_wrapper_redacts(&written, &text).as_deref(),
-        Some("TOKEN=[secret:MY_TOKEN]")
-    );
+    let current: Value = serde_json::from_slice(&written)?;
+    assert_eq!(current["version"], 2);
+    assert_eq!(current["names"], json!(["MY_TOKEN"]));
 
     // A secret changes while the store fails: the file this server wrote stays.
     add(
