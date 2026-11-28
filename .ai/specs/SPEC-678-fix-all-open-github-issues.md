@@ -204,9 +204,11 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **ARM-1691** The ordinary merge queue records a decided armed merge's verdict span before it
   clears the saved arm (`finish_armed`, used by the queue pass too), and a merge made at once
   (`settle_armed` without a landing) records one before its clear unless the latest merge wait
-  is a singleton decision (its retirement and the restore read it). A refused clear or a crash
-  between the two writes then leaves a verdict the next start consumes the arm by; ADR-0452
-  states that only a span that cannot be written either leaves the arm to be decided again.
+  is a singleton decision still to be retired (its retirement and the restore read it; a
+  retired one is history). A refused clear or a crash between the two writes then leaves a
+  verdict the next start consumes the arm by; ADR-0452 names what still leaves the arm to be
+  decided again (a span that cannot be written either, or a merge at once while a singleton
+  decision waits for its retirement).
 
 ## Plan
 
@@ -569,6 +571,13 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
 - `delivery::a_merge_at_once_consumes_its_saved_arm_when_the_clear_failed` (the arm file's
   temporary path blocked by a folder, `delivery_merge` merges at once, a fresh server
   restores): fails without the change (`the merged arm was armed again`) and passes with it.
-  `merge_train::a_merged_retry_retires_the_saved_replacement_before_clearing_it` kept passing
-  (the singleton decision stays the latest merge wait). `delivery::`, `merge_train::`,
-  `agent_wait::`, `restart::`, `pr_watch::` and the `yulius-app` agent_wait tests: 250 passed.
+- `delivery::a_decided_arm_is_consumed_by_its_verdict_before_the_clear`: the queue pass is held
+  at a race point (`ArmedVerdictRecorded`) between the verdict and the refused clear, and a
+  fresh server restores meanwhile: not armed. With the old order (clear, then verdict) it
+  fails (`its verdict came after the clear`).
+- `merge_train::a_merged_retry_with_a_refused_clear_is_not_armed_again`: a train of one dropped
+  the arm, the re-arm retired that decision, the PR merged and `delivery_merge` answered
+  merged with the clear refused; after a restart it is not armed. With the guard skipping
+  retired decisions too (round 1 of #1851) it fails. The merge-train test that read the
+  decision as the latest merge wait now finds it by its key.
+- `delivery::`, `merge_train::`, `agent_wait::`, `restart::`, `pr_watch::` and the `yulius-app` agent_wait tests: 252 passed.

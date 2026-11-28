@@ -6636,6 +6636,62 @@ async fn a_merge_at_once_consumes_its_saved_arm_when_the_clear_failed() -> TestR
     Ok(())
 }
 
+/// #1691 review: the ordinary queue records its verdict before it clears the saved arm. Held
+/// between the two writes (the clear refused as well), a fresh server consumes the arm by that
+/// verdict instead of arming it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decided_arm_is_consumed_by_its_verdict_before_the_clear() -> TestResult {
+    let t = ArmedTask::new().await?;
+    t.arm().await?;
+    let path =
+        t.f.h
+            .app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let blocker = path.with_extension("json.tmp");
+    std::fs::create_dir(&blocker)?;
+    commit_file(&t.wt, "landing.txt", "v2", "Later work")?;
+    let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (signal, gate) = (
+        std::sync::Arc::clone(&entered),
+        std::sync::Arc::clone(&release),
+    );
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        yulius_app::race::Point::ArmedVerdictRecorded,
+        Path::new("t1"),
+        move || {
+            signal.notify_one();
+            let _ = tokio::task::block_in_place(|| {
+                handle.block_on(tokio::time::timeout(
+                    Duration::from_secs(30),
+                    gate.notified(),
+                ))
+            });
+        },
+    );
+    let app = std::sync::Arc::clone(&t.f.h.app);
+    let pass = tokio::spawn(async move {
+        app.merge_armed(&SandboxId::parse("s1")?).await;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    });
+    tokio::time::timeout(Duration::from_secs(30), entered.notified()).await?;
+    // Between the verdict and the clear: what a crash there leaves.
+    let fresh = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+    fresh.restore_armed_merges().await;
+    let state = fresh.agent_wait_state("tok-agent", Some(&t.head)).await?;
+    release.notify_one();
+    let _ = tokio::time::timeout(Duration::from_secs(30), pass).await?;
+    std::fs::remove_dir(&blocker)?;
+    assert!(
+        !state.merge_armed,
+        "the decided arm was armed again: its verdict came after the clear"
+    );
+    Ok(())
+}
+
 fn saved_arms(path: &Path) -> BoxResult<Value> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }

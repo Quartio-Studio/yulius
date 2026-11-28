@@ -632,11 +632,11 @@ impl App {
             return;
         }
         // Its verdict is recorded before the saved arm is cleared: a clear that fails is then
-        // consumed at the next start, never armed again (#1691). A singleton decision stays the
-        // latest merge wait: its retirement and the restore read it (SPEC-615).
+        // consumed at the next start, never armed again (#1691). A singleton decision still to be
+        // retired stays the latest merge wait: its retirement and the restore read it (SPEC-615).
         let armed = lock_slot(&runtime).merge.clone();
         if let Some(armed) = &armed
-            && !self.singleton_decision_latest(&task.id).await
+            && !self.singleton_decision_pending(&task.id).await
         {
             self.armed_wait_ended(&task.id, armed).await;
         }
@@ -1051,6 +1051,10 @@ impl App {
         if matches!(verdict, Verdict::Decided(_)) {
             self.armed_wait_ended(task, &deciding.merge).await;
         }
+        crate::race::reached(
+            crate::race::Point::ArmedVerdictRecorded,
+            std::path::Path::new(task.as_str()),
+        );
         let runtime = self.runtime(task);
         let mut slot = lock_slot(&runtime);
         if slot.finish(deciding, verdict) {
@@ -1133,13 +1137,18 @@ impl App {
         .await;
     }
 
-    /// Whether `task`'s latest merge wait is a singleton decision, retired or not (or cannot be
-    /// read, which is kept as one): its retirement and the restore read it (SPEC-615).
-    async fn singleton_decision_latest(&self, task: &TaskId) -> bool {
+    /// Whether `task`'s latest merge wait is a singleton decision still to be retired (or cannot
+    /// be read, which is kept as one): its retirement and the restore read it (SPEC-615). A
+    /// retired one is history, which a later verdict may follow.
+    async fn singleton_decision_pending(&self, task: &TaskId) -> bool {
         match self.deps.store.latest_merge_wait(task).await {
             Ok(Some(span)) => !matches!(
                 crate::merge_train::SingletonDecision::from_span(&span),
                 Ok(None)
+                    | Ok(Some(crate::merge_train::SingletonDecision {
+                        superseded_at: Some(_),
+                        ..
+                    }))
             ),
             Ok(None) => false,
             Err(_) => true,

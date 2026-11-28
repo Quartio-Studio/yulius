@@ -36,10 +36,11 @@ release, which SPEC-558 keeps recoverable.
 Once recorded, the verdict span is the durable record of a decided activation for both
 queues. Since #1691 the ordinary queue records it before the file clear (`finish_armed`, which
 the queue pass uses too), and a merge made at once (`settle_armed` without a landing) records
-one before its clear unless the latest merge wait is a singleton decision, whose retirement and
-restore read it. A crash between the two writes, or a refused clear, then leaves a verdict the
+one before its clear unless the latest merge wait is a singleton decision still to be retired,
+whose retirement and the restore read it (a retired one is history a later verdict follows). A crash between the two writes, or a refused clear, then leaves a verdict the
 next start consumes the arm by. Only when the span cannot be written either (the task cannot be
-read, the insert fails: a full data disk) is the arm restored and decided again.
+read, the insert fails: a full data disk), or when a merge at once comes while a singleton
+decision of the task still waits for its retirement, is the arm restored and decided again.
 A saved entry
 from before activation stamps were recorded (`armed_at` 0) is consumed by any recorded merge
 wait of its task; such entries predate SPEC-084.
