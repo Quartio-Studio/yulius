@@ -639,10 +639,10 @@ mod tests {
         Ok(url)
     }
 
-    /// A URL nothing listens on.
+    /// A URL nothing answers on: port 1, which no test is given (a freed port could be given
+    /// to a test in another process, whose server would then take these requests; #1693).
     fn nobody() -> Result<String, Box<dyn std::error::Error>> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        Ok(format!("http://{}", listener.local_addr()?))
+        Ok("http://127.0.0.1:1".to_owned())
     }
 
     fn run_env(url: String, file: Option<String>) -> impl Fn(&str) -> Option<String> {

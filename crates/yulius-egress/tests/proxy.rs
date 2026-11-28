@@ -974,8 +974,8 @@ async fn a_full_proxy_is_a_trouble_naming_the_sandboxes_until_it_has_room() -> T
     until_no_trouble(&setup.health).await
 }
 
-/// The proxy's log lines, written by a subscriber set on this thread (a `tokio::test` runtime
-/// runs the proxy's tasks on it).
+/// The proxy's log lines of one test: the binary's one subscriber writes each line into the
+/// capture of the thread that logged it (a `tokio::test` runtime runs the proxy's tasks on it).
 #[derive(Clone, Default)]
 struct Logs(Arc<Mutex<Vec<u8>>>);
 
@@ -1008,19 +1008,59 @@ impl Logs {
     }
 }
 
+thread_local! {
+    /// The capture of this thread's test, while it runs.
+    static CAPTURE: std::cell::RefCell<Option<Logs>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Writes a log line into the capture of the thread that logged it.
+struct ThreadCapture;
+
+impl std::io::Write for ThreadCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        CAPTURE.with(|capture| {
+            if let Some(logs) = capture.borrow_mut().as_mut() {
+                let _ = std::io::Write::write_all(logs, buf);
+            }
+        });
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Ends a thread's capture.
+struct CaptureGuard;
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        CAPTURE.with(|capture| capture.borrow_mut().take());
+    }
+}
+
 impl Logs {
-    /// Captures this thread's log lines until the guard drops.
-    fn capture() -> (Self, tracing::subscriber::DefaultGuard) {
-        let logs = Self::default();
-        let writer = logs.clone();
-        let guard = tracing::subscriber::set_default(
-            tracing_subscriber::fmt()
+    /// Captures this thread's log lines until the guard drops. One subscriber serves the whole
+    /// test binary and writes each line into the capture of the thread that logged it: a
+    /// subscriber set per test (`set_default`) let another test's start or end recompute a
+    /// callsite's interest meanwhile, and its warning went unseen (#1544).
+    fn capture() -> (Self, CaptureGuard) {
+        static INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        INSTALLED.get_or_init(|| {
+            let subscriber = tracing_subscriber::fmt()
                 .with_max_level(tracing::Level::DEBUG)
                 .with_ansi(false)
-                .with_writer(move || writer.clone())
-                .finish(),
-        );
-        (logs, guard)
+                .with_writer(|| ThreadCapture)
+                .finish();
+            assert!(
+                tracing::subscriber::set_global_default(subscriber).is_ok(),
+                "no other subscriber in this test binary"
+            );
+        });
+        let logs = Self::default();
+        CAPTURE.with(|capture| *capture.borrow_mut() = Some(logs.clone()));
+        (logs, CaptureGuard)
     }
 }
 
