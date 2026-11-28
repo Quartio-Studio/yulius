@@ -224,6 +224,24 @@ impl App {
                                         .await;
                                     let rt = app.runtime(&tid);
                                     let mut run = rt.run.lock().await;
+                                    // A run replaced meanwhile whose host still answers takes
+                                    // nothing of the task's: input stays the current run's, and
+                                    // this reader ends (#1692).
+                                    let live = app
+                                        .deps
+                                        .store
+                                        .live_attempt(&tid)
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .map(|live| live.id);
+                                    if !reattach_may_take_the_writer(
+                                        run.as_ref().map(|run| &run.attempt_id),
+                                        live.as_ref(),
+                                        &aid,
+                                    ) {
+                                        return;
+                                    }
                                     // The host may have disconnected at the temporary
                                     // repaint width. The writer lock covers the whole probe,
                                     // so the hub now holds its restored (or latest viewer) size.
@@ -1091,5 +1109,36 @@ mod tests {
             scope: LimitScope::Model(None),
             at,
         }));
+    }
+}
+
+/// Whether a reader of attempt `mine` that reattached to its host may take the task's writer:
+/// only while `mine` is still the task's run, the live attempt (`live`) and the one the task's
+/// writer belongs to (`current`, none while it was let go), never a replaced run whose host
+/// still answers (#1692).
+fn reattach_may_take_the_writer(
+    current: Option<&yulius_domain::ids::AttemptId>,
+    live: Option<&yulius_domain::ids::AttemptId>,
+    mine: &yulius_domain::ids::AttemptId,
+) -> bool {
+    live == Some(mine) && current.is_none_or(|current| current == mine)
+}
+
+#[cfg(test)]
+mod reattach_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_current_run_takes_the_writer_back() -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_domain::ids::AttemptId;
+        let (old, new) = (AttemptId::parse("a-old")?, AttemptId::parse("a-new")?);
+        assert!(reattach_may_take_the_writer(Some(&old), Some(&old), &old));
+        assert!(reattach_may_take_the_writer(None, Some(&old), &old));
+        // A replacement attached meanwhile: its writer stays.
+        assert!(!reattach_may_take_the_writer(Some(&new), Some(&new), &old));
+        // The replaced attempt ended and nothing attached yet: still not the old host's.
+        assert!(!reattach_may_take_the_writer(None, Some(&new), &old));
+        assert!(!reattach_may_take_the_writer(None, None, &old));
+        Ok(())
     }
 }
