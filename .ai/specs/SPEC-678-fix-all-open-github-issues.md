@@ -208,7 +208,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [x] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
 - [x] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
 - [x] #1753 #1751: non-owner creators in a personal account or a narrowed App are told who acts
-- [ ] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
+- [x] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
 - [x] #1693: the Antigravity error-turn hook test is deterministic
 - [x] #1692: a replaced run's reattach leaves the task's writer alone
@@ -503,7 +503,11 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   `a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium` passed 10 runs of 10.
   It also passed 10 of 10 without the change here, and a 2.5 s probe delay before the focus did
   not bring the race back (this Chrome answers the look at the tab only after the navigation),
-  so the real-browser failure (1 in 4 for task #577) is covered by the fake-CDP test.
+  so the fake-CDP test is the deterministic proof. The review of #1848 forced the race on
+  Chrome 158 in a probe copy (the link navigating 300 ms after the click, a sleep between the
+  first look and the focus): without the change `ElementNotFound`, the #1604 symptom; with it
+  `SecretPageRefused("localhost")`, both with the commit before the focus and with the focus
+  asked while the navigation was pending.
 - `live_display::the_real_chrome_streams_takes_real_input_and_stays_out_of_containment` with
   Chrome 158 on Xvfb and the host policy: the functional part (clicks, typing, popup, wheel)
   passed 3 runs of 3 with the change (and 3 of 3 before it: the cold-window loss did not

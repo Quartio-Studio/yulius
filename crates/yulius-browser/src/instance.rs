@@ -3332,8 +3332,9 @@ impl BrowserInstance {
     /// As [`Self::tool_type`]; [`BrowserError::SecretPageRefused`],
     /// [`BrowserError::SecretFrameRefused`] and [`BrowserError::SecretPageLeaving`] when
     /// `allowed` refuses, and [`BrowserError::InvalidInput`] when the text holds a tab or
-    /// another control character (line ends apart), the tab's page cannot be told or read or
-    /// the browser remembers too many secrets or documents already (nothing is typed in any of
+    /// another control character (line ends apart), the tab's page cannot be told or read, it
+    /// changed while its field was looked for or focused, or the browser remembers too many
+    /// secrets or documents already (nothing is typed in any of
     /// these); [`BrowserError::SecretAstray`] and
     /// [`BrowserError::SecretFrameAstray`] when the page or the focus moved to where it may not
     /// go while it was typed.
