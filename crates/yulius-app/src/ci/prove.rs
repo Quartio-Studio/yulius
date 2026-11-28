@@ -197,6 +197,10 @@ impl App {
             }
             waits.push(wait);
         }
+        crate::race::reached(
+            crate::race::Point::ProofRegistered,
+            std::path::Path::new(sandbox.id.as_str()),
+        );
         let started = self
             .cd_begin(
                 sandbox,
