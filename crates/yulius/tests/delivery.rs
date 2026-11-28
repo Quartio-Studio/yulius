@@ -6609,6 +6609,33 @@ async fn decided_with_a_refused_clear(t: &ArmedTask) -> BoxResult<(PathBuf, Vec<
     Ok((path, saved))
 }
 
+/// #1691: `delivery_merge` that merges at once ends the arm before it (`settle_armed` without a
+/// landing). With the clear of its saved entry refused, a fresh server must not arm it again:
+/// the merge's verdict was recorded first, and the restore consumes the entry.
+#[tokio::test]
+async fn a_merge_at_once_consumes_its_saved_arm_when_the_clear_failed() -> TestResult {
+    let t = ArmedTask::new().await?;
+    t.arm().await?;
+    let path =
+        t.f.h
+            .app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let blocker = path.with_extension("json.tmp");
+    std::fs::create_dir(&blocker)?;
+    t.f.h.github.set_checks(&t.head, ChecksState::Success);
+    let merged = t.merge().await?;
+    assert_eq!(merged["isError"], false, "{merged}");
+    std::fs::remove_dir(&blocker)?;
+    assert_ne!(saved_arms(&path)?, json!([]), "the clear was refused");
+    let fresh = yulius_app::context::App::new(t.f.h.app.config.clone(), t.f.h.app.deps.clone());
+    fresh.restore_armed_merges().await;
+    let state = fresh.agent_wait_state("tok-agent", Some(&t.head)).await?;
+    assert!(!state.merge_armed, "the merged arm was armed again");
+    Ok(())
+}
+
 fn saved_arms(path: &Path) -> BoxResult<Value> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
