@@ -2071,8 +2071,9 @@ fn yuliuss_own_input_types_nothing_on_the_picker_or_an_unreadable_screen() -> Te
         let (app, id, _, _) = codex_with_pr_news(&data).await?;
         let rt = app.runtime(&id);
         let size = rt.hub.size();
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("attempt")?;
+        let record = Path::new(&attempt.run_dir).join("codex-repaint-size");
         paint_codex(&app, &id, CODEX_RATE_LIMIT_PICKER);
-        let seq = rt.hub.output_seq();
         let line = app.type_automated_line_for_test(&id, b"Picker line").await;
         let enter = app.submit_for_test(&id).await;
         for refused in [&line, &enter] {
@@ -2081,8 +2082,14 @@ fn yuliuss_own_input_types_nothing_on_the_picker_or_an_unreadable_screen() -> Te
                 "{refused:?}"
             );
         }
-        assert_eq!(rt.hub.size(), size, "no repaint");
-        assert_eq!(rt.hub.output_seq(), seq, "nothing reached the child");
+        assert!(!record.exists(), "no repaint: no size was recorded for one");
+        // The PTY keeps order: anything written before this line is read before it.
+        app.send_input(&id, b"marker one\r").await?;
+        eventually("the first marker", Duration::from_secs(10), || async {
+            screen(&app, &id).contains("ECHO: marker one")
+        })
+        .await?;
+        assert!(!screen(&app, &id).contains("Picker line"), "{}", screen(&app, &id));
 
         paint_codex(&app, &id, "\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
         let line = app.type_automated_line_for_test(&id, b"Unreadable line").await;
@@ -2093,8 +2100,14 @@ fn yuliuss_own_input_types_nothing_on_the_picker_or_an_unreadable_screen() -> Te
                 "{refused:?}"
             );
         }
-        assert!(!screen(&app, &id).contains("ECHO: Unreadable line"));
+        assert!(record.exists(), "the repaint ran");
         assert_eq!(rt.hub.size(), size, "the size is restored");
+        app.send_input(&id, b"marker two\r").await?;
+        eventually("the second marker", Duration::from_secs(10), || async {
+            screen(&app, &id).contains("ECHO: marker two")
+        })
+        .await?;
+        assert!(!screen(&app, &id).contains("Unreadable line"), "{}", screen(&app, &id));
         stop(&app, &id).await
     })
 }

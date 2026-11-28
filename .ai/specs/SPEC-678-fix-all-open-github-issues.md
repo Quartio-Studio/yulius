@@ -552,5 +552,8 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   after the same reattach repaints and sends the composer's text. With the repaint limited to a
   paste it fails (review of #1850, round 1: the Submit arm had been unproven).
 - `task_message::yuliuss_own_input_types_nothing_on_the_picker_or_an_unreadable_screen`: the
-  picker refuses with no repaint and no output; a screen that stays unreadable refuses with
-  the size restored.
+  picker refuses and records no repaint size; a screen that stays unreadable refuses after a
+  repaint with the size restored; in both, a marker line typed afterwards is echoed while the
+  refused text never is (the PTY keeps order). From the round 2 review of #1850, whose
+  mutants (bytes written under the picker; a repaint under the picker) the first version let
+  pass.
