@@ -1580,14 +1580,14 @@ mod tests {
             ..run("r1", CiRef::PullRequest(1), "abc", RunState::Passed)
         };
         assert_eq!(
-            plan(std::slice::from_ref(&dev), &[partial.clone()]).queue,
-            [dev.clone()]
+            plan(std::slice::from_ref(&dev), std::slice::from_ref(&partial)).queue,
+            std::slice::from_ref(&dev)
         );
         let whole = run("r1", CiRef::PullRequest(1), "abc", RunState::Passed);
         assert!(plan(std::slice::from_ref(&dev), &[whole]).queue.is_empty());
         let pr = target(CiRef::PullRequest(2), "abc");
         assert!(
-            plan(std::slice::from_ref(&pr), &[partial.clone()])
+            plan(std::slice::from_ref(&pr), std::slice::from_ref(&partial))
                 .queue
                 .is_empty()
         );
@@ -1598,7 +1598,7 @@ mod tests {
         };
         assert_eq!(
             plan(std::slice::from_ref(&dev), &[active]).queue,
-            [dev.clone()]
+            std::slice::from_ref(&dev)
         );
         let own = run("r2", CiRef::Branch("dev".into()), "abc", RunState::Running);
         assert!(plan(std::slice::from_ref(&dev), &[own]).queue.is_empty());
