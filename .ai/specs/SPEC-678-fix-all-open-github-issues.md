@@ -209,6 +209,12 @@ reviewed and merged into `dev` by `delivery_merge`.
   verdict the next start consumes the arm by; ADR-0452 names what still leaves the arm to be
   decided again (a span that cannot be written either, or a merge at once while a singleton
   decision waits for its retirement).
+- **DSP-1688** A display's X server is owned from its spawn on by its start: when the start's
+  future is dropped (its request cancelled) during readiness or during a failed start's stop,
+  the server, its cookie and runtime directory go to the sandbox's slot instead of being killed
+  and forgotten. The slot stops it, as a stranded server (SPEC-616), before anything else starts
+  for the sandbox; while that stop fails no second X server starts, and the cookie is removed
+  only once the server is reaped.
 
 ## Plan
 
@@ -235,7 +241,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
 - [x] #1693: the Antigravity error-turn hook test is deterministic
 - [x] #1692: a replaced run's reattach leaves the task's writer alone
-- [ ] #1691: a decided armed merge is consumed across a restart
+- [x] #1691: a decided armed merge is consumed across a restart
 - [ ] #1688: a cancelled display start keeps its Xvfb in the slot
 - [ ] #1595: confined test fixtures share one temporary root
 - [ ] #1591: parked-list and CI watcher fixtures hold under shared CPUs
@@ -581,3 +587,13 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   retired decisions too (round 1 of #1851) it fails. The merge-train test that read the
   decision as the latest merge wait now finds it by its key.
 - `delivery::`, `merge_train::`, `agent_wait::`, `restart::`, `pr_watch::` and the `yulius-app` agent_wait tests: 252 passed.
+
+### #1688 (a cancelled display start)
+
+- `manager::tests::a_cancelled_display_start_keeps_its_xvfb_in_the_slot` drops `ensure` while
+  its display waits for a server that never answers, and while a failed start stops a server
+  that ignores SIGTERM; the server keeps running with its cookie, `ensure` with the stop held by
+  `display::stop_faults` refuses (`DisplayNotStopped`) and starts nothing, and once released the
+  kept server is stopped before the next. With the guard's hand-off removed it fails
+  (`no second X server started`: a second server started); `yulius-browser` with `fake`: 164
+  passed.

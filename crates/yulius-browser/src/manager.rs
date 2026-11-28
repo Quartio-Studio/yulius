@@ -14,7 +14,7 @@ use yulius_domain::ids::SandboxId;
 
 use crate::cdp::{CdpClient, CdpConfig};
 use crate::discovery::resolve_executable;
-use crate::display::{DisplayMode, StrandedXvfb, VirtualDisplay};
+use crate::display::{CancelledStart, DisplayMode, StrandedXvfb, VirtualDisplay};
 use crate::error::{BrowserError, CdpError};
 use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig, SecretMemory};
 use crate::network::BrowserNetwork;
@@ -181,6 +181,9 @@ enum BrowserState {
 #[derive(Debug, Default)]
 struct BrowserSlot {
     state: BrowserState,
+    /// The X server of a display start whose request was cancelled (#1688): stopped before
+    /// anything else starts for the sandbox, as a stranded one is.
+    cancelled: CancelledStart,
     // Kept across a failed replacement launch, until it succeeds or the sandbox is stopped.
     reopen: Vec<yulius_contracts::browser::TabInfo>,
 }
@@ -194,6 +197,15 @@ impl BrowserSlot {
     }
 
     async fn stop(&mut self, timeouts: StopTimeouts) -> Result<bool, BrowserError> {
+        let left = lock(&self.cancelled).take();
+        if let Some(xvfb) = left {
+            if matches!(self.state, BrowserState::Stopped) {
+                self.state = BrowserState::Stranded(xvfb);
+            } else if let Err(error) = xvfb.stop(timeouts).await {
+                *lock(&self.cancelled) = Some(xvfb);
+                return Err(error);
+            }
+        }
         if let BrowserState::Ready(instance) = &self.state {
             self.state = BrowserState::Unpublished(Arc::clone(instance));
         }
@@ -367,7 +379,10 @@ impl BrowserManager {
         profile_dir: &Path,
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         slot.stop(self.config.stop).await?;
-        let instance = match self.launch(&mut slot.state, sandbox, profile_dir).await {
+        let instance = match self
+            .launch(&mut slot.state, &slot.cancelled, sandbox, profile_dir)
+            .await
+        {
             Ok(instance) => instance,
             Err(error) => {
                 slot.stop(StopTimeouts {
@@ -411,17 +426,20 @@ impl BrowserManager {
     async fn launch(
         &self,
         state: &mut BrowserState,
+        cancelled: &CancelledStart,
         sandbox: &SandboxId,
         profile_dir: &Path,
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         let exe = resolve_executable(&self.config.chromium_exe)?;
         let held = prepare_profile(profile_dir).await?;
-        self.start(state, sandbox, profile_dir, &exe, held).await
+        self.start(state, cancelled, sandbox, profile_dir, &exe, held)
+            .await
     }
 
     async fn start(
         &self,
         state: &mut BrowserState,
+        cancelled: &CancelledStart,
         sandbox: &SandboxId,
         profile_dir: &Path,
         exe: &Path,
@@ -437,10 +455,11 @@ impl BrowserManager {
             .config
             .chromium_args(profile_dir, network.as_ref().map(|lease| lease.proxy));
         // Own each resource before the next fallible or cancellable startup operation.
-        let display = match VirtualDisplay::start(
+        let display = match VirtualDisplay::start_into(
             &self.config.display,
             sandbox,
             self.config.default_viewport,
+            cancelled,
         )
         .await
         {
@@ -692,6 +711,101 @@ mod tests {
             "the failed start cleaned up"
         );
         assert!(!manager.shutdown(&sandbox).await?, "nothing left to stop");
+        Ok(())
+    }
+
+    /// #1688: an `ensure` dropped while its display waits for the X server, or while a failed
+    /// start stops it (here a server that ignores SIGTERM, so the stop waits for the kill),
+    /// leaves the server in the sandbox's slot: it keeps running, nothing else starts for the
+    /// sandbox while its stop fails, and it is stopped (its cookie removed) before the next display.
+    #[tokio::test]
+    async fn a_cancelled_display_start_keeps_its_xvfb_in_the_slot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::display::stop_faults::{self, FakeXvfb};
+        use std::os::unix::fs::PermissionsExt as _;
+        for (case, mode, startup) in [
+            ("readiness", "silent", Duration::from_secs(30)),
+            (
+                "failed start's stop",
+                "stubborn",
+                Duration::from_millis(300),
+            ),
+        ] {
+            let root = tempfile::tempdir()?;
+            let fake = FakeXvfb::new(root.path(), None, mode)?;
+            let chromium = root.path().join("chromium");
+            std::fs::write(&chromium, "#!/bin/sh\nexit 3\n")?;
+            std::fs::set_permissions(&chromium, std::fs::Permissions::from_mode(0o755))?;
+            let mut display = crate::DisplayConfig::new(root.path().join("displays"));
+            stop_faults::private_displays(&mut display, 2);
+            display.xvfb = fake.program.clone();
+            display.max_size = (320, 240);
+            display.startup_timeout = startup;
+            let mut config = BrowserConfig::new(chromium, root.path().join("profiles"));
+            config.display = DisplayMode::Virtual(display);
+            config.default_viewport = (320, 240);
+            config.startup_timeout = Duration::from_secs(10);
+            config.stop = StopTimeouts {
+                graceful: Duration::ZERO,
+                term: Duration::from_secs(2),
+                kill: Duration::from_secs(5),
+            };
+            let manager = BrowserManager::new(config);
+            let sandbox = SandboxId::parse("cancelled")?;
+            let profile = manager.default_profile_dir(&sandbox);
+            let dir = root.path().join("displays").join(sandbox.as_str());
+            let cookie = dir.join(crate::display::XAUTHORITY_FILE);
+
+            // The request goes away at the point under test.
+            let reached = async {
+                loop {
+                    let there = if mode == "silent" {
+                        fake.starts().len() == 1
+                    } else {
+                        stop_faults::stop_began(&dir)
+                    };
+                    if there {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            };
+            tokio::select! {
+                result = manager.ensure(&sandbox, &profile) => {
+                    return Err(format!("{case}: the start ended first: {result:?}").into());
+                }
+                () = reached => {}
+            }
+            let first = fake.starts();
+            assert_eq!(first.len(), 1, "{case}: {first:?}");
+            assert!(
+                stop_faults::running(first[0]),
+                "{case}: the Xvfb was let go"
+            );
+            assert!(cookie.exists(), "{case}: the cookie outlived nothing");
+
+            stop_faults::hold(&dir);
+            let refused = manager.ensure(&sandbox, &profile).await;
+            assert!(
+                matches!(refused, Err(BrowserError::DisplayNotStopped { .. })),
+                "{case}: {refused:?}"
+            );
+            assert_eq!(fake.starts(), first, "{case}: no second X server started");
+            assert!(stop_faults::running(first[0]));
+            stop_faults::release(&dir);
+
+            // Once the kept server is reaped, the sandbox gets its next display.
+            fake.set_mode("silent")?;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(20), manager.ensure(&sandbox, &profile))
+                    .await;
+            assert!(
+                !stop_faults::running(first[0]),
+                "{case}: the kept Xvfb was stopped first"
+            );
+            assert!(fake.starts().len() >= 2, "{case}: {:?}", fake.starts());
+            let _ = manager.shutdown(&sandbox).await;
+        }
         Ok(())
     }
 
