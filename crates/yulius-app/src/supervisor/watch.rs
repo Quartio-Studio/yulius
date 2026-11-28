@@ -224,6 +224,21 @@ impl App {
                                         .await;
                                     let rt = app.runtime(&tid);
                                     let mut run = rt.run.lock().await;
+                                    // A run replaced meanwhile whose host still answers takes
+                                    // nothing of the task's: input stays the current run's, and
+                                    // this reader ends (#1692). A store that cannot say is no
+                                    // answer: the reattach is tried again.
+                                    let live = match app.deps.store.live_attempt(&tid).await {
+                                        Ok(live) => live.map(|live| live.id),
+                                        Err(err) => {
+                                            tracing::warn!(attempt = %aid, error = %err, "could not read the live attempt on reattach");
+                                            continue;
+                                        }
+                                    };
+                                    if live.as_ref() != Some(&aid) {
+                                        tracing::debug!(attempt = %aid, live = ?live, "a replaced run's reader ends");
+                                        return;
+                                    }
                                     // The host may have disconnected at the temporary
                                     // repaint width. The writer lock covers the whole probe,
                                     // so the hub now holds its restored (or latest viewer) size.

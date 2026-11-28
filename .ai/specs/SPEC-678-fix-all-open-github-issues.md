@@ -173,6 +173,10 @@ reviewed and merged into `dev` by `delivery_merge`.
   consequence and the upgrade note in `docs/operations.md` state the owner's rule: two weeks
   after 2026-11-13, a session still running from before then only stops running commands until
   it is continued.
+- **RUN-1692** A run's reader that reattaches to its host after losing the connection takes the
+  task's writer back only while that run is still the task's: the live attempt, and the run the
+  writer belongs to (or none, while it was let go). A replaced run whose host still answers
+  takes nothing: input stays the replacement's, and the old reader ends.
 
 ## Plan
 
@@ -198,7 +202,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [ ] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
 - [x] #1693: the Antigravity error-turn hook test is deterministic
-- [ ] #1692: a replaced run's reattach leaves the task's writer alone
+- [x] #1692: a replaced run's reattach leaves the task's writer alone
 - [ ] #1691: a decided armed merge is consumed across a restart
 - [ ] #1688: a cancelled display start keeps its Xvfb in the slot
 - [ ] #1595: confined test fixtures share one temporary root
@@ -206,7 +210,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [x] #1544: egress warning-capture tests observe their own warning
 - [x] #1532: a branch fast-forwarded to a head with skipped jobs gets its own run
 - [ ] #1520: the Superagent deep-link panel test is deterministic
-- [ ] #1239: the old fingerprint format is removed and a version 1 file is rewritten as version 2
+- [x] #1239: the old fingerprint format is removed and a version 1 file is rewritten as version 2
 - [ ] Final report of every issue's outcome given
 
 ## Acceptance criteria
@@ -463,3 +467,20 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   and `cockpit::a_superagents_version_1_file_is_rewritten_as_version_2` fail on the old writer
   (3 of 96 `secrets_scopes::`/`cockpit::` tests) and pass with the change: 96 passed; with the
   `yulius-contracts` and `yulius-app` vault tests, 204 passed.
+
+### #1692 (a replaced run's reattach)
+
+- `parking::replaced_output::a_replaced_runs_reattach_leaves_the_tasks_writer_alone` (real
+  ptyhost and fake agent): the first run's reader is held and released as a lost connection
+  after that run parked and a replacement attached; the holding host answers its reattach with
+  a host that records input. Without the guard the first version of the test failed with `input
+  went to the replaced run's host: "…Text after the old reader came back…"`, and the final one
+  fails with "the replaced run's reader did not let its host go"; with the change the old
+  reader lets the host go without reading it, the replacement answers and the old host got
+  nothing. `task_message::a_reconnecting_host_restores_the_width_of_an_interrupted_codex_repaint`
+  covers the live run's own reattach (it fails with the comparison inverted).
+- By reading the code (no store double fails reads): a store that cannot say which attempt is
+  live makes the reattach try again (logged), so the bounded retry and
+  `resolve_lost_connection` still decide the run's end. Review of #1847: approve at 8fddfea38
+  with minors (the writer-owner half of the first predicate was unreachable and dropped; the
+  test now tells "ended" from "kept reading"), approve at ebb550c1f.

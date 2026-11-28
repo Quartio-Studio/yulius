@@ -17,7 +17,8 @@ use yulius_app::context::App;
 use yulius_app::error::AppResult;
 use yulius_app::hub::HubFrame;
 use yulius_app::ports::session::{
-    AttachedRun, LaunchPlan, RunEvent, RunInspection, RunReader, SessionHost, SpawnedRun,
+    AttachedRun, LaunchPlan, RunEvent, RunInspection, RunReader, RunSignal, RunWelcome, RunWriter,
+    SessionHost, SpawnedRun,
 };
 use yulius_contracts::api::secrets::AgentSecretInput;
 use yulius_domain::ids::{TaskId, UserId};
@@ -40,6 +41,59 @@ struct Held {
 struct HoldingHost {
     inner: PtySessionHost,
     readers: Mutex<HashMap<PathBuf, mpsc::UnboundedSender<Held>>>,
+    lingering: Mutex<HashMap<PathBuf, Arc<Lingering>>>,
+}
+
+/// A run's host that still answers a reattach after its run was replaced (#1692): it records
+/// what is typed to it, says when it was attached and when its reader was let go, and whether
+/// that reader was ever asked for an event.
+#[derive(Default)]
+struct Lingering {
+    attached: Notify,
+    dropped: Notify,
+    polled: std::sync::atomic::AtomicBool,
+    typed: Mutex<Vec<u8>>,
+}
+
+/// The reader of a [`Lingering`] host: nothing ever comes.
+struct LingeringReader(Arc<Lingering>);
+
+#[async_trait::async_trait]
+impl RunReader for LingeringReader {
+    async fn next(&mut self) -> AppResult<Option<RunEvent>> {
+        self.0
+            .polled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        std::future::pending().await
+    }
+}
+
+impl Drop for LingeringReader {
+    fn drop(&mut self) {
+        self.0.dropped.notify_one();
+    }
+}
+
+/// The writer of a [`Lingering`] host: input is recorded, the rest accepted.
+struct LingeringWriter(Arc<Lingering>);
+
+#[async_trait::async_trait]
+impl RunWriter for LingeringWriter {
+    async fn input(&mut self, bytes: &[u8]) -> AppResult<()> {
+        if let Ok(mut typed) = self.0.typed.lock() {
+            typed.extend_from_slice(bytes);
+        }
+        Ok(())
+    }
+    async fn resize(&mut self, _cols: u16, _rows: u16) -> AppResult<()> {
+        Ok(())
+    }
+    async fn signal(&mut self, _signal: RunSignal) -> AppResult<()> {
+        Ok(())
+    }
+    async fn shutdown(&mut self, _grace_ms: u32) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 /// Signals of one held injection: the reader took it, the test releases it, and the reader
@@ -55,7 +109,18 @@ impl HoldingHost {
         Self {
             inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
             readers: Mutex::new(HashMap::new()),
+            lingering: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// From now on a reattach to the run in `run_dir` is answered by a [`Lingering`] host.
+    fn answer_reattach(&self, run_dir: &Path) -> Result<Arc<Lingering>, Error> {
+        let lingering = Arc::new(Lingering::default());
+        self.lingering
+            .lock()
+            .map_err(|_| "lingering")?
+            .insert(run_dir.to_path_buf(), Arc::clone(&lingering));
+        Ok(lingering)
     }
 
     /// Makes the reader of the run in `run_dir` stop at its next event, wait for the release and
@@ -131,6 +196,26 @@ impl SessionHost for HoldingHost {
     }
 
     async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
+        let lingering = self
+            .lingering
+            .lock()
+            .ok()
+            .and_then(|hosts| hosts.get(run_dir).cloned());
+        if let Some(lingering) = lingering {
+            lingering.attached.notify_one();
+            return Ok(AttachedRun {
+                welcome: RunWelcome {
+                    child_pid: 0,
+                    seq: 0,
+                    cols: 100,
+                    rows: 30,
+                    rendered: false,
+                    snapshot: None,
+                },
+                reader: Box::new(LingeringReader(Arc::clone(&lingering))),
+                writer: Box::new(LingeringWriter(lingering)),
+            });
+        }
         let attached = self.inner.attach(run_dir, token).await?;
         let mut inner = attached.reader;
         let (to_reader, host) = mpsc::unbounded_channel();
@@ -322,6 +407,82 @@ fn held_event_of_an_old_run(held: fn(u64) -> RunEvent) -> TestResult {
             seen.contains("Later text of the replacement") && !seen.contains(HELD),
             "{seen:?}"
         );
+        app.stop_task_now(&id).await?;
+        Ok::<_, Error>(())
+    });
+    rt.shutdown_timeout(Duration::from_secs(5));
+    result
+}
+
+/// #1692: the first run's reader loses its connection while that run is
+/// parked and a replacement attaches; its host still answers the reattach. The old reader takes
+/// nothing of the task's: typed input reaches the replacement, none the old host.
+#[test]
+fn a_replaced_runs_reattach_leaves_the_tasks_writer_alone() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    let result = rt.block_on(async {
+        let host = Arc::new(HoldingHost::new());
+        let app = app_on(&data, Arc::clone(&host)).await?;
+        let (id, caller) = answered(&app, &data).await?;
+        let old = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("the first run")?;
+        // Released with nothing to hand on: the reader's connection is lost.
+        let lost = host.hold(Path::new(&old.run_dir), Vec::new())?;
+        tokio::time::timeout(Duration::from_secs(10), lost.entered.notified()).await?;
+        let mut frames = app.runtime(&id).hub.watch();
+        request_one_park(&app).await?;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if matches!(frames.recv().await?, HubFrame::Exit { .. }) {
+                    return Ok::<_, tokio::sync::broadcast::error::RecvError>(());
+                }
+            }
+        })
+        .await??;
+        resume_in_replacement(&app, &id, &caller).await?;
+        let replacement = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("the replacement run")?;
+        assert_ne!(replacement.id, old.id);
+
+        let lingering = host.answer_reattach(Path::new(&old.run_dir))?;
+        lost.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), lingering.attached.notified()).await?;
+        // The old reader ends: it lets the host go and never reads it.
+        tokio::time::timeout(Duration::from_secs(10), lingering.dropped.notified())
+            .await
+            .map_err(|_| "the replaced run's reader did not let its host go")?;
+        assert!(
+            !lingering.polled.load(std::sync::atomic::Ordering::SeqCst),
+            "the replaced run's reader kept reading its host"
+        );
+
+        app.tool_task_message(
+            &caller,
+            &json!({"number": 1, "text": "Text after the old reader came back"}),
+        )
+        .await?;
+        let reached = eventually(
+            "the replacement's answer after the old reattach",
+            Duration::from_secs(30),
+            || async { screen(&app, &id).contains("Text after the old reader came back") },
+        )
+        .await;
+        let typed = lingering.typed.lock().map_err(|_| "typed")?.clone();
+        assert!(
+            typed.is_empty(),
+            "input went to the replaced run's host: {:?}",
+            String::from_utf8_lossy(&typed)
+        );
+        reached?;
         app.stop_task_now(&id).await?;
         Ok::<_, Error>(())
     });
