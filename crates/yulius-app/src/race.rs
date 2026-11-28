@@ -10,6 +10,9 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
+    /// A refused production deploy's proof on its drill environment is registered, before that
+    /// environment's deploy starts (#1817); keyed by the sandbox id.
+    ProofRegistered,
     /// An owner requested continuation of an ended task.
     OwnerContinueRequested,
     /// The owner continuation has committed, before the supervisor prepares its launch.

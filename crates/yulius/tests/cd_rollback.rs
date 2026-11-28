@@ -543,6 +543,71 @@ async fn a_production_deploy_proves_its_rollback_on_dev_first() -> TestResult {
     Ok(())
 }
 
+/// #1817: production's deploy is refused only for its unproven commit, and the dev deploy that
+/// would prove it cannot start (here dev moved between the proof and its deploy, so the dev
+/// deploy is refused as "moved since you looked"). The answer names both refusals, production's
+/// rollback waits for nothing, and no CD run is added.
+#[tokio::test]
+async fn a_proving_dev_deploy_that_cannot_start_names_both_refusals() -> TestResult {
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    f.deployed(&f.alice, "dev", None).await?;
+    assert_eq!(f.drill(1).await?["state"], "passed");
+    push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
+    let runs_before = f.get("/api/sandboxes/s1/cd").await?["runs"]
+        .as_array()
+        .map_or(0, Vec::len);
+
+    // Between the proof and its dev deploy, dev moves on.
+    let work = f.work.clone();
+    let moved = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&moved);
+    yulius_app::race::on(
+        yulius_app::race::Point::ProofRegistered,
+        std::path::Path::new("s1"),
+        move || {
+            let _ = std::fs::write(work.join("version"), "4\n");
+            let moved_on = crate::support::git(&work, &["commit", "-qam", "moved"])
+                .and_then(|_| crate::support::git(&work, &["push", "-q", "origin", "HEAD:dev"]));
+            seen.store(moved_on.is_ok(), std::sync::atomic::Ordering::SeqCst);
+        },
+    );
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(
+        moved.load(std::sync::atomic::Ordering::SeqCst),
+        "dev was moved: {} {}",
+        refused.status,
+        refused.body
+    );
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let message = refused.body["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains(
+            "dev could not be deployed to prove it: nothing ran: dev moved since you looked"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.starts_with(
+            "nothing ran: rollback is not proven for this commit: the last rollback drill of dev ran at"
+        ),
+        "production's own refusal: {message}"
+    );
+    assert_eq!(f.rollback_of("prod").await?["waiting"], Value::Null);
+    assert_eq!(
+        f.get("/api/sandboxes/s1/cd").await?["runs"]
+            .as_array()
+            .map_or(0, Vec::len),
+        runs_before,
+        "no CD run was added"
+    );
+    Ok(())
+}
+
 /// The drill production waited for fails, so production
 /// does not deploy and its run says why; a failed drill at the same tree is then refused as before.
 #[tokio::test]

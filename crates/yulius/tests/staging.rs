@@ -78,6 +78,11 @@ async fn request(f: &Fixture, id: &str) -> BoxResult<StagingRequestRecord> {
 
 /// Rounds of the queue until no run of `[cd.staging]` runs and no request deploys.
 async fn settle(f: &Fixture) -> TestResult {
+    settle_env(f, "staging").await
+}
+
+/// Rounds of `env`'s queue until none of its runs runs and no request deploys.
+async fn settle_env(f: &Fixture, env: &str) -> TestResult {
     let sandbox =
         f.h.store
             .sandbox(&SandboxId::parse("s1")?)
@@ -85,16 +90,16 @@ async fn settle(f: &Fixture) -> TestResult {
             .ok_or("s1")?;
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
-        f.h.app.staging_advance(&sandbox, "staging").await?;
+        f.h.app.staging_advance(&sandbox, env).await?;
         let running =
             f.h.store
                 .running_cd_runs()
                 .await?
                 .into_iter()
-                .any(|run| run.environment == "staging");
+                .any(|run| run.environment == env);
         let deploying =
             f.h.store
-                .pending_staging_requests(&sandbox.id, "staging")
+                .pending_staging_requests(&sandbox.id, env)
                 .await?
                 .iter()
                 .any(|r| matches!(r.state, StagingState::Deploying | StagingState::Ready));
@@ -129,6 +134,97 @@ async fn deployed(f: &Fixture) -> BoxResult<Vec<String>> {
         .collect();
     runs.reverse();
     Ok(runs.into_iter().map(|run| run.sha).collect())
+}
+
+/// #1817: production's deploy is refused only for its unproven commit (dev's last drill ran at
+/// another tree), and the dev deploy that would prove it cannot start because `[cd.dev]` is the
+/// merge-first staging target: dev's head is a new commit with the staged revision's tree. The
+/// answer names both refusals, production waits for nothing, and no CD run is added.
+#[tokio::test]
+async fn a_merge_first_dev_that_cannot_prove_production_names_both_refusals() -> TestResult {
+    let toml = [
+        "[[ci.jobs]]",
+        "name = \"quick\"",
+        "command = \"true\"",
+        "",
+        "[[ci.jobs]]",
+        "name = \"full\"",
+        "command = \"true\"",
+        "after_merge = true",
+        "",
+        "[cd.dev]",
+        "merge_first = true",
+        "deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"",
+        "verify = \"MARKS={marks} sh scripts/cd/verify.sh\"",
+        "rollback = \"true\"",
+        "migrations = \"none: the test app keeps no data\"",
+        "",
+        "[cd.prod]",
+        "promote = true",
+        "deploy = \"true\"",
+        "rollback = \"true\"",
+        "migrations = \"none: no data\"",
+        "",
+    ]
+    .join("\n");
+    let f = fixture(&toml).await?;
+    agent(&f, "t1").await?;
+    let r1 = land(&f, "t1", "one.txt").await?;
+    gate(&f, &r1, RunState::Passed).await?;
+    let asked = support::mcp_tool(
+        &f.h,
+        &token("t1"),
+        "cd_deploy",
+        json!({"environment": "dev"}),
+    )
+    .await?;
+    assert_eq!(asked["isError"], false, "{asked}");
+    settle_env(&f, "dev").await?;
+    // A passed drill of dev at another tree (the first commit).
+    f.prove("main").await?;
+    // dev's head: a new commit with the staged revision's tree.
+    support::git(&f.work, &["checkout", "-q", "-B", "dev", "origin/dev"])?;
+    support::git(
+        &f.work,
+        &["commit", "-q", "--allow-empty", "-m", "same tree"],
+    )?;
+    support::git(&f.work, &["push", "-q", "origin", "HEAD:dev"])?;
+    let runs = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            f.get("/api/sandboxes/s1/cd").await?["runs"]
+                .as_array()
+                .map_or(0, Vec::len),
+        )
+    };
+    let before = runs().await?;
+
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(refused.status.as_u16(), 409, "{}", refused.body);
+    let message = refused.body["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.starts_with(
+            "nothing ran: rollback is not proven for this commit: the last rollback drill of dev ran at"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.contains(
+            "; dev could not be deployed to prove it: nothing ran: [cd.dev] is the merge-first staging target"
+        ),
+        "{message}"
+    );
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    let prod = overview["environments"]
+        .as_array()
+        .ok_or("environments")?
+        .iter()
+        .find(|e| e["name"] == "prod")
+        .ok_or("prod")?;
+    assert_eq!(prod["rollback"]["waiting"], Value::Null, "{prod}");
+    assert_eq!(runs().await?, before, "no CD run was added");
+    Ok(())
 }
 
 /// A gate run with the same retained test blocks the CI executor records.
