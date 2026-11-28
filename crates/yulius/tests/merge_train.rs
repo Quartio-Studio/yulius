@@ -1683,6 +1683,13 @@ async fn a_merged_retry_retires_the_saved_replacement_before_clearing_it() -> Te
     Box::pin(reused_singleton(SingletonChange::MergedRetry)).await
 }
 
+/// #1691 review: a merged retry whose saved replacement cannot be cleared (the arm file's write
+/// refused) is not armed again after a restart: its verdict follows the retired decision.
+#[tokio::test]
+async fn a_merged_retry_with_a_refused_clear_is_not_armed_again() -> TestResult {
+    Box::pin(reused_singleton(SingletonChange::MergedRetryRefusedClear)).await
+}
+
 #[tokio::test]
 async fn a_merged_retry_keeps_the_replacement_until_its_retirement_is_writable() -> TestResult {
     Box::pin(reused_singleton(SingletonChange::MergedRetryOffline)).await
@@ -1898,6 +1905,7 @@ enum SingletonChange {
     ReplayedWrite,
     MergedRetryOffline,
     MergedRetry,
+    MergedRetryRefusedClear,
     StaleSavedHead,
     DamagedReceipt,
     PrunedReceipt,
@@ -1991,7 +1999,9 @@ async fn check_recovered_singleton_arm(
     assert!(stamp > latest.started_at.0);
     let restart_during_rearm = matches!(
         change,
-        SingletonChange::HistoryRead | SingletonChange::MergedRetry
+        SingletonChange::HistoryRead
+            | SingletonChange::MergedRetry
+            | SingletonChange::MergedRetryRefusedClear
     );
     let live = if restart_during_rearm {
         restart(&recovered).await
@@ -2008,7 +2018,9 @@ async fn check_recovered_singleton_arm(
     }
     if matches!(
         change,
-        SingletonChange::MergedRetry | SingletonChange::MergedRetryOffline
+        SingletonChange::MergedRetry
+            | SingletonChange::MergedRetryOffline
+            | SingletonChange::MergedRetryRefusedClear
     ) {
         let landed =
             BareRemote(f.origin.clone()).merge(f.integration, head, "squash", "external merge")?;
@@ -2036,9 +2048,29 @@ async fn check_recovered_singleton_arm(
                 )
                 .await?
         );
+        let refused_clear = live
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE)
+            .with_extension("json.tmp");
+        let refusing = matches!(change, SingletonChange::MergedRetryRefusedClear);
+        if refusing {
+            std::fs::create_dir(&refused_clear)?;
+        }
         let retry_ctx = live.agent_context("tok-t1").await?;
         let response = Box::pin(live.tool_delivery_merge(&retry_ctx, &args)).await?;
         assert_eq!(response["merged"], true, "{response}");
+        if refusing {
+            std::fs::remove_dir(&refused_clear)?;
+            assert!(saved_armed(&live, 1)?.is_some(), "the clear was refused");
+            let fresh = restart(&live).await;
+            let state = fresh.agent_wait_state("tok-t1", Some(head)).await?;
+            assert!(
+                !state.merge_armed,
+                "the merged replacement was armed again after a refused clear"
+            );
+            return Ok(());
+        }
         if offline {
             assert_eq!(
                 saved_armed(&live, 1)?,
@@ -2050,11 +2082,19 @@ async fn check_recovered_singleton_arm(
                 .await?;
         }
         if !offline {
+            // The decision itself, by its key: the merge's own verdict may follow it.
             let decision = live
                 .deps
                 .store
-                .latest_merge_wait(&owner)
+                .subject_spans(
+                    &f.sandbox,
+                    yulius_domain::stages::SubjectKind::Task,
+                    "t1",
+                    100,
+                )
                 .await?
+                .into_iter()
+                .find(|span| span.key == latest.key)
                 .ok_or("decision after retry")?;
             let detail: Value = serde_json::from_str(decision.detail.as_deref().ok_or("receipt")?)?;
             assert!(
@@ -2067,11 +2107,19 @@ async fn check_recovered_singleton_arm(
             );
         }
         let next = restart(&live).await;
+        // The decision by its key: the merge's own verdict (a later merge wait) follows it.
         let decision = next
             .deps
             .store
-            .latest_merge_wait(&owner)
+            .subject_spans(
+                &f.sandbox,
+                yulius_domain::stages::SubjectKind::Task,
+                "t1",
+                100,
+            )
             .await?
+            .into_iter()
+            .find(|span| span.key == latest.key)
             .ok_or("accepted decision")?;
         let detail: Value =
             serde_json::from_str(decision.detail.as_deref().ok_or("owner receipt")?)?;
@@ -2439,6 +2487,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             | SingletonChange::WritableRearm
             | SingletonChange::MergedRetryOffline
             | SingletonChange::MergedRetry
+            | SingletonChange::MergedRetryRefusedClear
             | SingletonChange::StaleSavedHead
     ) {
         return Box::pin(check_singleton_history(
@@ -2849,6 +2898,7 @@ async fn reused_singleton(change: SingletonChange) -> TestResult {
             | SingletonChange::WritableRearm
             | SingletonChange::MergedRetryOffline
             | SingletonChange::MergedRetry
+            | SingletonChange::MergedRetryRefusedClear
             | SingletonChange::StaleSavedHead
             | SingletonChange::Rearmed
             | SingletonChange::Pruned

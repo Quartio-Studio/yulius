@@ -631,6 +631,15 @@ impl App {
             }
             return;
         }
+        // Its verdict is recorded before the saved arm is cleared: a clear that fails is then
+        // consumed at the next start, never armed again (#1691). A singleton decision still to be
+        // retired stays the latest merge wait: its retirement and the restore read it (SPEC-615).
+        let armed = lock_slot(&runtime).merge.clone();
+        if let Some(armed) = &armed
+            && !self.singleton_decision_pending(&task.id).await
+        {
+            self.armed_wait_ended(&task.id, armed).await;
+        }
         let mut slot = lock_slot(&runtime);
         slot.clear();
         self.save_armed(&task.id, None);
@@ -1036,17 +1045,20 @@ impl App {
     }
 
     /// Ends a decision of [`App::take_armed`] in one step, as [`App::merge_armed`] does.
+    /// A decided verdict is recorded before the saved arm is cleared (#1691): a crash or a failed
+    /// clear between the two leaves a verdict the next start consumes the arm by.
     pub(crate) async fn finish_armed(&self, task: &TaskId, deciding: &Deciding, verdict: Verdict) {
-        let decided = matches!(verdict, Verdict::Decided(_));
-        {
-            let runtime = self.runtime(task);
-            let mut slot = lock_slot(&runtime);
-            if slot.finish(deciding, verdict) {
-                self.save_armed(task, slot.merge.as_ref());
-            }
-        }
-        if decided {
+        if matches!(verdict, Verdict::Decided(_)) {
             self.armed_wait_ended(task, &deciding.merge).await;
+        }
+        crate::race::reached(
+            crate::race::Point::ArmedVerdictRecorded,
+            std::path::Path::new(task.as_str()),
+        );
+        let runtime = self.runtime(task);
+        let mut slot = lock_slot(&runtime);
+        if slot.finish(deciding, verdict) {
+            self.save_armed(task, slot.merge.as_ref());
         }
     }
 
@@ -1125,6 +1137,24 @@ impl App {
         .await;
     }
 
+    /// Whether `task`'s latest merge wait is a singleton decision still to be retired (or cannot
+    /// be read, which is kept as one): its retirement and the restore read it (SPEC-615). A
+    /// retired one is history, which a later verdict may follow.
+    async fn singleton_decision_pending(&self, task: &TaskId) -> bool {
+        match self.deps.store.latest_merge_wait(task).await {
+            Ok(Some(span)) => !matches!(
+                crate::merge_train::SingletonDecision::from_span(&span),
+                Ok(None)
+                    | Ok(Some(crate::merge_train::SingletonDecision {
+                        superseded_at: Some(_),
+                        ..
+                    }))
+            ),
+            Ok(None) => false,
+            Err(_) => true,
+        }
+    }
+
     /// Records how long an armed merge waited for its checks, from arming to its decision
     /// (SPEC-137 STG-104): `merged` when the task's pull request is merged now, else `dropped`.
     async fn armed_wait_ended(&self, task: &TaskId, armed: &ArmedMerge) {
@@ -1195,16 +1225,7 @@ impl App {
                 std::path::Path::new(task.id.as_str()),
             );
             let verdict = self.merge_armed_task(&task, deciding.merge.clone()).await;
-            let decided = matches!(verdict, Verdict::Decided(_));
-            {
-                let mut slot = lock_slot(&runtime);
-                if slot.finish(&deciding, verdict) {
-                    self.save_armed(&task.id, slot.merge.as_ref());
-                }
-            }
-            if decided {
-                self.armed_wait_ended(&task.id, &deciding.merge).await;
-            }
+            self.finish_armed(&task.id, &deciding, verdict).await;
         }
     }
 
