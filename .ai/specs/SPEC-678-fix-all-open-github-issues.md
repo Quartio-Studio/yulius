@@ -145,6 +145,16 @@ reviewed and merged into `dev` by `delivery_merge`.
   or left an entry unread never reads "ok": a dry run says "would clear …; the walk stopped
   after …" or "…; 1 entry could not be read, first …", and a cut without a failed clear says the
   walk stopped, not "0 of N could not be cleared".
+- **DLG-1758** A dialog gives the keyboard back, on close, to the control that had it when it
+  opened; when the page drew that control again while the dialog was open, to the control with
+  the same `data-focus-key` outside any dialog (SPEC-463); else, or when that control cannot
+  take the keyboard (disabled), to the main heading. The Subscriptions page's "Paste a new
+  token" and "Import auth.json" buttons carry a focus key.
+- **DLG-1714** After a dialog's action fails (the dialog stays open with its error), a keyboard
+  the disabled button lost (now on the page body or outside the dialog) comes back to the
+  action's button; a keyboard still in the dialog (Enter in a field, a click into one while the
+  action ran) stays where it is. No dialog marks a field invalid and then throws (each returns
+  `false` after `invalid()`, which focuses the field), so no field is chosen here.
 
 ## Plan
 
@@ -164,8 +174,8 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [x] #1800: the briefing's mandatory parts fit the budget in every docs layout
 - [x] #1795: a watch's write past its file bound is refused (EFBIG) on every host
 - [x] #1775: the MCP probe test counts a zombie grandchild as gone
-- [ ] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
-- [ ] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
+- [x] #1767: the memory stopgap walk counts every entry and reads folders by descriptor
+- [x] #1758 #1714: dialogs give the keyboard back to the redrawn opener or the failed action
 - [ ] #1753 #1751: non-owner creators in a personal account or a narrowed App are told who acts
 - [ ] #1741 #1604: opt-in real-Chrome tests wait for input and accept the decided results
 - [ ] #1702: Codex goal, intake and context-full input repaint an unreadable screen
@@ -399,3 +409,18 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   (400,012 and not cut before); 3,000 subfolders under `RLIMIT_NOFILE` 1024 report 1,984 unread
   entries, the first "Too many open files" (0 and "ok" before). The open-failure branches have
   no unit test: their only trigger as root is a process-wide limit.
+
+### #1758, #1714 (dialogs give the keyboard back)
+
+- e2e `subscriptions.e2e.ts` "a dialog whose opener was drawn again gives the keyboard back to
+  the same control (#1758)" (a redraw by `connectCodex()` while "Paste a new token" is open) and
+  the focus and axe checks added to `fork.e2e.ts` "a refused fork says why in the dialog…"
+  (`refuseFork`): both fail without the `dom.js`/`admin.js` change (`expect.poll(...).toBe(...)
+  timed out after 5000 ms`) and pass with it; the two files: 58 passed. Whole suite with the
+  change: 1,386 passed.
+- Review round 1 of #1843 (request changes at dea684ad4): focus moved to the button after every
+  failure, also from a field where Enter ran the action (typing went to the button), and the
+  `aria-invalid` branch could pick a hidden field. Fixed as above; e2e "a failed action leaves
+  the keyboard where the person has it in the dialog (#1714)" (Add subscription refused by
+  `failpost`, Enter in Name, then " 2" typed) fails on dea684ad4 (`expect.toBeFocused failed`)
+  and passes now; the two files: 59 passed.

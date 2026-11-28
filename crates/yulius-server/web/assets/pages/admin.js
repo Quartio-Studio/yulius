@@ -834,9 +834,9 @@ export function mountAccountsPage(ctx, route) {
           // An Antigravity subscription signs in again with Google or takes a new key: neither
           // is pasted here (SPEC-505).
           account.provider === 'openai'
-            ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => importInto(account) }, 'Import auth.json')
+            ? h('button', { type: 'button', class: 'btn btn-sm', dataset: { focusKey: `account:${account.id}:import` }, onClick: () => importInto(account) }, 'Import auth.json')
             : account.provider === 'anthropic'
-              ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => pasteNewToken(ctx, account, reload) }, 'Paste a new token')
+              ? h('button', { type: 'button', class: 'btn btn-sm', dataset: { focusKey: `account:${account.id}:token` }, onClick: () => pasteNewToken(ctx, account, reload) }, 'Paste a new token')
               : null,
           // Removal always works: the tasks on it move to another subscription (SPEC-447 MOV-003).
           h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', dataset: { focusKey: `account:${account.id}:remove` }, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {

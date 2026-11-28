@@ -6,11 +6,12 @@ gets no line; the merged pull request is its record. Older entries: [archive](ar
 
 ## 2026-11-28
 
+- A dialog closed after its page was redrawn gives the keyboard back to the same control, and a dialog whose action fails keeps the keyboard where the person had it, or on its action, not on the page body.
 - The host check's memory stopgap line says when its walk stopped at its bound or could not read an entry, in a dry run too, instead of reading "ok" or "0 of N could not be cleared".
 
 ## 2026-11-27
 
-- The Security scan card reads `.config/vidoc.toml` exactly as the scanner does: a file the scan refuses (a byte-order mark, a TOML 1.1 escape) shows as unreadable, not as on or off.
+- The Security scan card reads `.config/vidoc.toml` as the scanner does: a file the scan refuses (a byte-order mark, a TOML 1.1 escape) shows as unreadable, not as on or off.
 - A branch moved straight to a pull request's head whose run skipped jobs (by their `paths`, or an after-merge full suite) gets a CI run of its own that runs every job.
 - A watch's write past its file-size bound is refused ("File too large") instead of killing the writer, the same on every host.
 - An automation whose creator is disabled creates no task; each skipped run says why, and the automation runs again once the person is enabled.

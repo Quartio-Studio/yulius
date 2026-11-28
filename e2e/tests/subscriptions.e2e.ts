@@ -1526,3 +1526,36 @@ test('a new token’s toast names no email a person typed (SPEC-502 TKP-009, SPE
   // The typed email stays on the card.
   await expect(browser.locator('main .grid-2 > .card:has-text("Claude #3"):has-text("team@example.com")')).toBeVisible();
 });
+
+test('a dialog whose opener was drawn again gives the keyboard back to the same control (#1758)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  const card = browser.locator('main .grid-2 > .card:has-text("Claude #3")');
+  await card.getByRole('button', 'Paste a new token').click();
+  const dialog = screen.getByRole('dialog', 'Paste a new token · Claude #3');
+  await expect(dialog).toBeVisible();
+  // Meanwhile another subscription changes elsewhere, and the list is drawn again.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { connectCodex: () => void } }).__yuliusMock.connectCodex(); });
+  await expect(browser.locator('main .grid-2 > .card:has-text("Codex")').first()).toBeVisible();
+  await dialog.getByRole('button', 'Cancel').click();
+  await expect(dialog).toBeHidden();
+  const focused = () => browser.evaluate(() => {
+    const el = document.activeElement;
+    return `${(el?.textContent ?? '').trim()} @ ${el?.closest('.card')?.textContent?.includes('Claude #3') ?? false}`;
+  });
+  await expect.poll(focused).toBe('Paste a new token @ true');
+});
+
+test('a failed action leaves the keyboard where the person has it in the dialog (#1714)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0&failpost=/api/admin/accounts'));
+  await screen.getByRole('button', 'Add subscription').first().click();
+  const add = screen.getByRole('dialog', 'Add a Claude subscription');
+  const name = add.getByRole('textbox', /^Name/);
+  await name.fill('laptop Max');
+  // Enter in the field runs the action; its refusal keeps the field's keyboard.
+  await browser.keyboard.press('Enter');
+  await expect(browser.locator('dialog.modal[open] .modal-error')).toBeVisible();
+  await expect(name).toBeFocused();
+  await browser.keyboard.type(' 2');
+  await expect(name).toHaveValue('laptop Max 2');
+});
+

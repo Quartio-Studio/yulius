@@ -117,6 +117,12 @@ test('a refused fork says why in the dialog, and a deleted source leaves its for
   const dialog = screen.getByRole('dialog', 'Fork #4');
   await dialog.getByRole('button', 'Fork').click();
   await expect(dialog.getByText('#4 has no conversation to fork yet: start it first')).toBeVisible();
+  // The keyboard stays in the dialog, on the action that failed, not on the page body (#1714).
+  await expect.poll(() => browser.evaluate(() => {
+    const el = document.activeElement;
+    return `${(el?.textContent ?? '').trim()} @ ${el?.closest('dialog') !== null}`;
+  })).toBe('Fork @ true');
+  expect(await axeViolations(browser)).toEqual([]);
   await dialog.getByRole('button', 'Cancel').click();
 
   await browser.evaluate(() => { delete (window as unknown as { __yuliusMock: { refuseFork?: string } }).__yuliusMock.refuseFork; });
