@@ -10,8 +10,8 @@ use std::path::Path;
 /// Where the server pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Point {
-    /// The ordinary queue recorded a decided armed merge's verdict, before it clears the saved
-    /// arm (#1691); keyed by the task id.
+    /// An armed merge's decision is ending: its verdict, when decided, is recorded and the
+    /// saved arm not yet cleared (#1691); keyed by the task id.
     ArmedVerdictRecorded,
     /// A refused production deploy's proof on its drill environment is registered, before that
     /// environment's deploy starts (#1817); keyed by the sandbox id.
