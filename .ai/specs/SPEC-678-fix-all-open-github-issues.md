@@ -126,6 +126,11 @@ reviewed and merged into `dev` by `delivery_merge`.
   moved straight to such a pull request head gets a run of its own, which runs every job. A
   run that ran every job still stands for any reference at its commit (no extra run), and pull
   request targets keep reusing a partial verdict.
+- **VID-1811** The Security scan card reads every `.config/vidoc.toml` the scanner refuses as
+  unreadable and every one it accepts as on or off: a byte-order mark and the TOML 1.1 escapes
+  `\e` and `\xHH` in a basic string are refused (TOML 1.0, as `tomllib`); blank is Python's
+  (`str.strip` also drops U+001C to U+001F); a `line` of any size from 1 is accepted, as Python
+  has no integer bound.
 
 ## Plan
 
@@ -344,3 +349,11 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   suite runs) and `a_branch_fast_forwarded_to_a_whole_verdict_reuses_it` (no extra run), from
   the probes of #1840's review round 1; the domain test also holds that a branch's own partial
   run never requeues it.
+
+### #1811 (the card and the scanner agree)
+
+- `ci::vidoc::tests::the_card_and_the_scanner_agree_on_the_corner_cases` runs each case through
+  the scanner's own `parse_config` (python3, `-I`) and the card: it failed on dev at the
+  byte-order mark (`left: true, right: false`) and passes with the change, for the mark, `\e`,
+  `\xHH`, an escaped backslash before `e`, a literal string, separators only, a separator and a
+  letter, a `line` past `u64::MAX`, 0 and 7. `ci::vidoc` tests: 10 passed.
