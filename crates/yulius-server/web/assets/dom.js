@@ -382,8 +382,11 @@ export function errorToast(error, prefix) {
  * Returns {dialog, body, close(result), result: Promise}.
  */
 export function openModal({ title, body, actions = [], wide = false, full = false, onClose, dismissible = true, className }) {
-  // Focus returns where it was when the dialog opened (WCAG 2.4.3), or to the main heading.
+  // Focus returns where it was when the dialog opened (WCAG 2.4.3): to that control, or, when
+  // the page drew it again meanwhile, to the control with its `data-focus-key` (SPEC-463,
+  // #1758); else to the main heading.
   const returnTo = document.activeElement;
+  const returnKey = returnTo instanceof HTMLElement ? returnTo.getAttribute('data-focus-key') : null;
   let resolve;
   const result = new Promise((r) => { resolve = r; });
   const bodyEl = h('div', { class: 'modal-body' }, body);
@@ -406,7 +409,11 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
     const toasts = document.getElementById('toasts');
     if (toasts && dialog.contains(toasts)) toastHost();
     dialog.remove();
+    const redrawn = returnKey
+      ? [...document.querySelectorAll('[data-focus-key]')].find((el) => el.getAttribute('data-focus-key') === returnKey && !el.closest('dialog'))
+      : null;
     if (returnTo instanceof HTMLElement && returnTo.isConnected && returnTo !== document.body) returnTo.focus({ preventScroll: true });
+    else if (redrawn instanceof HTMLElement) redrawn.focus({ preventScroll: true });
     else focusMainHeading();
     if (onClose) onClose(value);
     resolve(value);
@@ -449,6 +456,7 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
         button.disabled = true;
         button.classList.add('busy');
         errorEl.hidden = true;
+        let failed = false;
         try {
           const keep = await action.run(modal);
           if (keep !== false) close(action.value === undefined ? true : action.value);
@@ -457,9 +465,16 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
           const message = error && error.message ? error.message : String(error);
           errorEl.textContent = message.charAt(0).toUpperCase() + message.slice(1); // server sentences start lower-case
           errorEl.hidden = false;
+          failed = true;
         } finally {
           button.disabled = false;
           button.classList.remove('busy');
+        }
+        // The disabled button lost the keyboard: after a failure it goes to the field the
+        // action marked invalid, or back to this button, never to the page body (#1714).
+        if (failed && !closed && button.isConnected) {
+          const invalid = dialog.querySelector('[aria-invalid="true"]');
+          (invalid instanceof HTMLElement ? invalid : button).focus({ preventScroll: true });
         }
       } }, action.label);
       if (action.ref) action.ref(button);
