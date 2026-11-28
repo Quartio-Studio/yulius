@@ -186,6 +186,12 @@ reviewed and merged into `dev` by `delivery_merge`.
 - **BRW-1741** The opt-in live-display functional test waits for the page to take input
   (`focus_page`: clicks and Shift until a capture-phase keydown counts one) before its first
   click assertion, and forgets the events that recorded.
+- **CD-1817** A test holds prove-on-dev's refusal when the dev deploy that would prove
+  production's rollback cannot start: the answer is 409 naming production's refusal and "dev
+  could not be deployed to prove it: …", production's rollback waits for nothing, and no CD run
+  is added. A merge-first `[cd.dev]` refuses production earlier ("staging verified nothing
+  yet"), so the test makes the dev deploy fail by moving dev between the proof and its deploy,
+  at a new race point (`ProofRegistered`, keyed by the sandbox).
 
 ## Plan
 
@@ -200,7 +206,7 @@ reviewed and merged into `dev` by `delivery_merge`.
 - [ ] #1133 #321 #1647: remaining queue analysis and host-only checks recorded on their issues
 - [x] #1826 #1760: sweep and identity shim lib tests are deterministic
 - [x] #1820: the Telegram reply test waits for the second run's notice
-- [ ] #1817: a test holds prove-on-dev's refusal when dev cannot be deployed
+- [x] #1817: a test holds prove-on-dev's refusal when dev cannot be deployed
 - [x] #1811: the security scan card reads vidoc.toml as the scanner does
 - [x] #1800: the briefing's mandatory parts fit the budget in every docs layout
 - [x] #1795: a watch's write past its file bound is refused (EFBIG) on every host
@@ -513,3 +519,11 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   passed 3 runs of 3 with the change (and 3 of 3 before it: the cold-window loss did not
   happen here); its containment part cannot run in this sandbox (`bwrap: Creating new
   namespace failed: Operation not permitted`).
+
+### #1817 (prove-on-dev's refusal when dev cannot be deployed)
+
+- `cd_rollback::a_proving_dev_deploy_that_cannot_start_names_both_refusals`: the race point's
+  hook pushes a commit to dev after the proof is registered; the answer is 409 with both
+  refusals ("…; dev could not be deployed to prove it: nothing ran: dev moved since you
+  looked…"), `waiting` stays null and the run count is unchanged. With the branch at
+  `prove.rs` returning the dev error alone the test fails. `cd_rollback::`: 14 passed.
