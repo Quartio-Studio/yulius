@@ -129,7 +129,8 @@ for 16 letters and digits falls from 2^62 to about 2^56; 20 stay near 2^80.
   development host, the secrets' lengths spread over 20 values.
 - `POST /internal/scrub/fingerprints` takes `{version}` and answers `{version: 2, salt, names,
   needles: [{secret, len, tag, digest}]}`.
-- A session from before version 2 redacts from its file alone, a little slower than before:
+- A session from before version 2 redacted from its file alone (until #1239, below), a little
+  slower than before:
   its wrapper now confirms every window that ends in a needle's last byte (1 MB: 614 ms with 10
   secrets, 896 ms with 40, 923 ms with 200). Uncontained, it runs the new wrapper, which reads
   version 2 only: while the server cannot be reached its commands do not run, as without a

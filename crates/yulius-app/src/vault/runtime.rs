@@ -429,7 +429,8 @@ impl App {
     /// `POST /internal/scrub/fingerprints`: the caller's run's fingerprints, or those of a
     /// person's workspace (SPEC-147 SAM-003). `wrapper` is the format the asking wrapper reads:
     /// one from before this server's (a session an older Yulius launched, ADR-0313) cannot read
-    /// the answer and falls back on its fingerprint file, which is brought up to date first.
+    /// the answer, and its fingerprint file is rewritten as version 2, which it cannot read
+    /// either: it runs nothing until the session is continued (#1239).
     ///
     /// # Errors
     /// `Unauthenticated` for unknown or ended runs and for people who may no longer work in the
@@ -572,12 +573,10 @@ impl App {
     }
 
     /// Writes `holder`'s fingerprints of `sandbox` into the fingerprint file of `run_dir`, in
-    /// place and only when they differ; a run directory without one is left alone. A file in the
-    /// format from before version 2 belongs to a session an older Yulius launched, whose wrapper
-    /// reads only that format: it is written in it (ADR-0313). When its fingerprints cannot be
-    /// made, a file this server wrote stays as it is, and one an older server wrote, which says
-    /// too much about a value, becomes a bare `{"version":1}`: that wrapper runs nothing with
-    /// it, and the next rewrite still knows the format.
+    /// place and only when they differ, always as version 2; a run directory without one is left
+    /// alone. When its fingerprints cannot be made, a version 2 file stays as it is, and one from
+    /// before version 2 (an older server wrote it, and it says too much about a value) is emptied
+    /// to `{}`, with which no wrapper redacts or runs (ADR-0313, #1239).
     async fn rewrite_fingerprint_file(
         &self,
         run_dir: &Path,
