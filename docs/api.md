@@ -187,7 +187,10 @@ outcome is audited as `sandbox.creator_admin` about `owner/name` when it happens
 creator outside the organization), a refusal or a failure still creates the project: the answer's
 `access` is what GitHub gives them and its `admin_grant` says `invited`, `refused` or `failed`
 (the web UI words it with what to do); without it the creator is the repository's admin, or the
-project is in a personal account, where no grant is asked.
+project is in a personal account, where no grant is asked. In a personal account only its owner
+(or the superadmin) may create: another instance administrator is refused with `403` before
+anything is created, since a repository there is the owner's alone and a collaborator gets write
+at most.
 
 ```json
 Sandbox = {

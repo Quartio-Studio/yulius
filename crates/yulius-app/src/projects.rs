@@ -878,6 +878,16 @@ impl App {
                     "{owner} must sign in to Yulius with GitHub once before projects can be created in their account"
                 ))
             })?;
+            // Only the account's owner is a repository's admin there, and a collaborator gets
+            // write at most: another person would create a project they cannot open. Refused
+            // before anything is created; the superadmin holds every project (ACC-012, #1753).
+            if owner_user.id != ctx.user.id && !ctx.user.is_superadmin {
+                return Err(AppError::Forbidden(format!(
+                    "Only {owner} can create projects in their personal GitHub account: a \
+                     repository made there is theirs alone, and a collaborator gets write at most. \
+                     Ask {owner} to create it, or move the instance to an organization."
+                )));
+            }
             self.user_github_token(&owner_user).await?
         };
         let repo = match self

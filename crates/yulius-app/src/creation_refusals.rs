@@ -122,11 +122,15 @@ fn unreachable(owner: &str, name: &str, pages: Option<&AppPages>) -> String {
             || format!("in {owner}'s GitHub settings, on the Yulius App's installation"),
             |url| format!("at {url}"),
         );
+    // Import needs admin or maintain on the repository, which the person who created it need
+    // not have (the grant of its admin role needs the App to reach it): say who acts (#1751).
     format!(
         "{owner}/{name} was created on GitHub, but the Yulius GitHub App cannot reach it: its \
-         installation covers only selected repositories. Add {name} under Repository access \
-         {place} (or choose All repositories), then add {owner}/{name} with Import repository; \
-         Yulius gives the empty repository its first commit when onboarding starts."
+         installation covers only selected repositories. An owner of {owner} adds {name} under \
+         Repository access {place} (or chooses All repositories); then someone with admin or \
+         maintain on {owner}/{name} adds it with Import repository (an owner of {owner} can, or \
+         can give you that role). Yulius gives the empty repository its first commit when \
+         onboarding starts."
     )
 }
 
