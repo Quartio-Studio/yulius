@@ -639,7 +639,6 @@ mod tests {
         Ok(url)
     }
 
-    /// A URL nothing listens on.
     /// A URL nothing answers on: port 1, which no test is given (a freed port could be given
     /// to a test in another process, whose server would then take these requests; #1693).
     fn nobody() -> Result<String, Box<dyn std::error::Error>> {

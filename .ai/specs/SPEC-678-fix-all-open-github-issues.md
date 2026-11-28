@@ -313,9 +313,11 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   free a port and then connect to it, and a parallel test process given that port for its own
   `serve_once`, whose server takes the stray request. Review round 1 of #1839 reproduced it with
   an `LD_PRELOAD` shim narrowing `bind(0)` to 8 ports: the named test failed 39 of 400 with
-  `left: "POST /internal/scrub/fingerprints …"` (from `scrub_client`'s `nobody()`), 4 of 30,000
-  from the restart test's 300 ms gap. Now port 1 for every refused URL and a held port in the
-  gap; `a_refused_url_refuses_at_once` asserts `ConnectionRefused` within 2 s (a bound,
+  `left: "POST /internal/scrub/fingerprints …"` (from `scrub_client`'s `nobody()`), and 52 of
+  30,000 from `ipv6_only_listener`, which freed its 127.0.0.1 port. Now port 1 for every refused
+  URL, a held port in the restart test's gap and in `ipv6_only_listener` (on Linux; a
+  non-listening socket refuses there); an strace audit of every test of the crate's socket
+  binaries found none left connecting to a port it freed; `a_refused_url_refuses_at_once` asserts `ConnectionRefused` within 2 s (a bound,
   non-listening socket was the first fix, but macOS drops a SYN to it instead of refusing).
   `yulius-harness`: 275 passed.
 - #1544: the six `a_full_` tests in one process with two test threads: dev failed 16 of 600 runs

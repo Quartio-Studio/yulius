@@ -431,13 +431,33 @@ mod tests {
     use std::thread;
 
     /// A listener on ::1 whose port nothing holds on 127.0.0.1 (another test's listener there
-    /// would take the first connection): tried a few times, as ports are given at random.
-    fn ipv6_only_listener() -> std::io::Result<TcpListener> {
+    /// would take the first connection): tried a few times, as ports are given at random. On
+    /// Linux the port stays held on 127.0.0.1 by a socket that never listens (a connection there
+    /// is reset at once) until the guard drops: freed, it could be given to a test in another
+    /// process, whose server would then take the first connection (#1693).
+    fn ipv6_only_listener() -> std::io::Result<(TcpListener, Option<std::os::fd::OwnedFd>)> {
         for _ in 0..20 {
             let listener = TcpListener::bind("[::1]:0")?;
             let port = listener.local_addr()?.port();
+            #[cfg(target_os = "linux")]
+            {
+                use nix::sys::socket::{
+                    AddressFamily, SockFlag, SockType, SockaddrIn, bind, socket,
+                };
+                let holder = socket(
+                    AddressFamily::Inet,
+                    SockType::Stream,
+                    SockFlag::SOCK_CLOEXEC,
+                    None,
+                )?;
+                let at = SockaddrIn::new(127, 0, 0, 1, port);
+                if bind(std::os::fd::AsRawFd::as_raw_fd(&holder), &at).is_ok() {
+                    return Ok((listener, Some(holder)));
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
             if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-                return Ok(listener);
+                return Ok((listener, None));
             }
         }
         Err(std::io::Error::other(
@@ -449,7 +469,7 @@ mod tests {
     /// server on ::1 only through the second address.
     #[test]
     fn localhost_reaches_a_server_on_the_second_address() -> io::Result<()> {
-        let listener = ipv6_only_listener()?;
+        let (listener, _held) = ipv6_only_listener()?;
         let port = listener.local_addr()?.port();
         let server = thread::spawn(move || -> io::Result<()> {
             let (mut stream, _) = listener.accept()?;
