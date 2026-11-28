@@ -165,6 +165,14 @@ reviewed and merged into `dev` by `delivery_merge`.
   In a personal account (whose owner alone creates there, #1753) it says the owner adds it and
   imports it, with no role to give. The personal-account refusal comes before anything is asked
   of GitHub and names the owner or the superadmin as who can create.
+- **FP-1239** The old (version 1) fingerprint writer is gone (`LegacyFingerprintSet`,
+  `LegacyFingerprint`, `LEGACY_FINGERPRINT_VERSION`, `legacy_fingerprints_for` and the test
+  wrapper `old_wrapper_redacts`). Every fingerprint file is written as version 2; a version 1
+  file met at a server start or by a request is rewritten as version 2, and when the set cannot
+  be made it is emptied to `{}` (no wrapper redacts or runs with it). ADR-0313's "later release"
+  consequence and the upgrade note in `docs/operations.md` state the owner's rule: two weeks
+  after 2026-11-13, a session still running from before then only stops running commands until
+  it is continued.
 
 ## Plan
 
@@ -447,3 +455,11 @@ fixes are reproduced with probe delays at the await point (not by load) and stre
   creates in a personal account whose installation covers selected repositories) fails on
   3f0f4c5b1 (the organization's "An owner of … admin or maintain" wording) and passes now; the
   unit test covers both wordings; `projects::` and `creation_refusals`: 42 passed.
+
+### #1239 (version 1 fingerprints removed)
+
+- `secrets_scopes::a_starting_server_rewrites_the_fingerprint_files_of_live_runs`,
+  `secrets_scopes::a_version_1_file_is_emptied_by_a_failed_rewrite_and_rewritten_as_version_2`
+  and `cockpit::a_superagents_version_1_file_is_rewritten_as_version_2` fail on the old writer
+  (3 of 96 `secrets_scopes::`/`cockpit::` tests) and pass with the change: 96 passed; with the
+  `yulius-contracts` and `yulius-app` vault tests, 204 passed.
